@@ -23,13 +23,15 @@ typedef struct __attribute__((packed)) {
 } mesh_audio_hdr_t;
 
 typedef struct {
-    int is_writer;              // 1: writer (TX) element, 0: reader (RX)
-    int jitter_ms;              // target buffer on RX
-    int group_broadcast;        // 1: broadcast to group via root
-    int rx_queue_len;           // number of packets queued
+    int is_writer;       // 1: writer (TX), 0: reader (RX)
+    int jitter_ms;       // receiver jitter buffer target in ms
+    int group_broadcast; // 1 to fan-out to all, 0 for unicast (future)
+    int rx_queue_len;    // internal queue length for RX
 } mesh_stream_cfg_t;
 
-// Create mesh stream element (writer or reader depending on cfg.is_writer)
+// Create an audio element that either writes frames to mesh (writer)
+// or reads frames from mesh (reader). Actual mesh transport implemented in .c
+// using ESP-WIFI-MESH. For now this is a stub so pipelines can be composed.
 audio_element_handle_t mesh_stream_init(const mesh_stream_cfg_t *cfg);
 
 #ifdef __cplusplus

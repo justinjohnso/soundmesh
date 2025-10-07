@@ -25,7 +25,7 @@ void app_main(void) {
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     pipeline = audio_pipeline_init(&pipeline_cfg);
 
-    // USB audio in
+    // USB audio in (TODO: add Kconfig switch to use I2S line-in instead)
     usb_stream_cfg_t usb_cfg = {0};
     usb_cfg.stream_type = AUDIO_STREAM_READER;
     src_usb = usb_stream_init(&usb_cfg);

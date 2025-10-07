@@ -38,7 +38,7 @@ void app_main(void) {
     opus_decoder_cfg_t opus_cfg = DEFAULT_OPUS_DECODER_CONFIG();
     dec = decoder_opus_init(&opus_cfg);
 
-    // USB audio out
+    // USB audio out (TODO: add Kconfig switch to select I2S sink)
     usb_stream_cfg_t usb_cfg = {0};
     usb_cfg.stream_type = AUDIO_STREAM_WRITER;
     sink_usb = usb_stream_init(&usb_cfg);

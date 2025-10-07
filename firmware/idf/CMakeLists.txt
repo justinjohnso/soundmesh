@@ -24,6 +24,9 @@ set(EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/components
 )
 
+# Add project Kconfig
+idf_build_set_property(PROJECT_KCONFIG ${CMAKE_SOURCE_DIR}/Kconfig APPEND)
+
 # Map app names to directories
 if(${PROJECT} STREQUAL "tx")
     adf_project(tx)

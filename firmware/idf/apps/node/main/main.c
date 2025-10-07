@@ -1,9 +1,7 @@
 #include "audio_pipeline.h"
 #include "audio_element.h"
 #include "i2s_stream.h"
-#include "usb_stream.h"
-#include "opus_encoder.h"
-#include "opus_decoder.h"
+#include "raw_stream.h"
 #include "mesh_stream.h"
 #include "ctrl_plane.h"
 #include "driver/gpio.h"
@@ -19,48 +17,39 @@ static const char *TAG = "app_node";
 
 static void build_tx(audio_pipeline_handle_t *pl) {
     audio_pipeline_handle_t pipeline;
-    audio_element_handle_t src_usb, enc, mesh;
+    audio_element_handle_t src, mesh;
     audio_pipeline_cfg_t cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     pipeline = audio_pipeline_init(&cfg);
 
-    usb_stream_cfg_t usb_cfg = { .stream_type = AUDIO_STREAM_READER };
-    src_usb = usb_stream_init(&usb_cfg);
-
-    opus_encoder_cfg_t opus_cfg = DEFAULT_OPUS_ENCODER_CONFIG();
-    opus_cfg.sample_rate = 16000; opus_cfg.channels = 1; opus_cfg.frame_ms = 10;
-    enc = encoder_opus_init(&opus_cfg);
+    raw_stream_cfg_t raw_cfg = { .type = AUDIO_STREAM_READER };
+    src = raw_stream_init(&raw_cfg);
 
     mesh_stream_cfg_t mcfg = { .is_writer = 1, .jitter_ms = 0, .group_broadcast = 1, .rx_queue_len = 32 };
     audio_element_handle_t mesh_el = mesh_stream_init(&mcfg);
 
-    audio_pipeline_register(pipeline, src_usb, "usb");
-    audio_pipeline_register(pipeline, enc, "enc");
+    audio_pipeline_register(pipeline, src, "src");
     audio_pipeline_register(pipeline, mesh_el, "mesh");
-    const char *links[3] = {"usb", "enc", "mesh"};
-    audio_pipeline_link(pipeline, links, 3);
+    const char *links[2] = {"src", "mesh"};
+    audio_pipeline_link(pipeline, links, 2);
     *pl = pipeline;
 }
 
 static void build_rx(audio_pipeline_handle_t *pl) {
     audio_pipeline_handle_t pipeline;
-    audio_element_handle_t mesh, dec, sink_usb;
+    audio_element_handle_t mesh, sink;
     audio_pipeline_cfg_t cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     pipeline = audio_pipeline_init(&cfg);
 
     mesh_stream_cfg_t mcfg = { .is_writer = 0, .jitter_ms = 80, .group_broadcast = 1, .rx_queue_len = 64 };
     mesh = mesh_stream_init(&mcfg);
 
-    opus_decoder_cfg_t opus_cfg = DEFAULT_OPUS_DECODER_CONFIG();
-    dec = decoder_opus_init(&opus_cfg);
-
-    usb_stream_cfg_t usb_cfg = { .stream_type = AUDIO_STREAM_WRITER };
-    sink_usb = usb_stream_init(&usb_cfg);
+    raw_stream_cfg_t raw_cfg = { .type = AUDIO_STREAM_WRITER };
+    sink = raw_stream_init(&raw_cfg);
 
     audio_pipeline_register(pipeline, mesh, "mesh");
-    audio_pipeline_register(pipeline, dec, "dec");
-    audio_pipeline_register(pipeline, sink_usb, "usb");
-    const char *links[3] = {"mesh", "dec", "usb"};
-    audio_pipeline_link(pipeline, links, 3);
+    audio_pipeline_register(pipeline, sink, "sink");
+    const char *links[2] = {"mesh", "sink"};
+    audio_pipeline_link(pipeline, links, 2);
     *pl = pipeline;
 }
 

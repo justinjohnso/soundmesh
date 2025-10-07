@@ -6,6 +6,19 @@ list(APPEND EXTRA_COMPONENT_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/../../components
 )
 
+# ESP-ADF compatibility fixes for ESP-IDF v5.5+
+add_compile_definitions(
+    xSemaphoreHandle=SemaphoreHandle_t
+    portTICK_RATE_MS=portTICK_PERIOD_MS
+)
+add_compile_options(
+    -Wno-error=int-conversion
+    -Wno-error=return-type
+    -Wno-int-conversion
+    -Wno-return-type
+    -Wno-calloc-transposed-args
+)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(PROJECT_KCONFIG ${CMAKE_CURRENT_LIST_DIR}/../../Kconfig APPEND)
 

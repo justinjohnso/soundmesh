@@ -1,6 +1,20 @@
 # Build artifacts
 firmware/idf/build/
+firmware/idf/apps/*/build/
 build/
+
+# ESP-ADF submodule files (tracked via .gitmodules only)
+firmware/idf/esp-adf/components/
+firmware/idf/esp-adf/esp-idf/
+firmware/idf/esp-adf/examples/
+firmware/idf/esp-adf/docs/
+firmware/idf/esp-adf/tools/
+firmware/idf/esp-adf/micropython_adf/
+firmware/idf/esp-adf/idf_patches/
+
+# IDF component manager
+firmware/idf/apps/*/managed_components/
+firmware/idf/apps/*/dependencies.lock
 
 # IDE user files
 .DS_Store

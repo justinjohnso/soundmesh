@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.16)
 # Top-level multi-app workspace: select app via IDF_PROJECT_EXECUTABLE or set default.
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Export compile_commands.json for IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Default to building the dual-mode node app; override with `-DPROJECT=tx` or `-DPROJECT=rx`.
 if(NOT DEFINED PROJECT)
     set(PROJECT node)

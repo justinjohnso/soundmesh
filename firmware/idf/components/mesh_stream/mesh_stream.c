@@ -3,8 +3,7 @@
 #include "audio_mem.h"
 #include "audio_error.h"
 #include "esp_log.h"
-#include "esp_mesh.h"
-#include "esp_timer.h"
+#include "sdkconfig.h"
 #include <string.h>
 
 static const char *TAG = "mesh_stream";

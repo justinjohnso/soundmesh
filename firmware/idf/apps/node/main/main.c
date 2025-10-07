@@ -14,7 +14,8 @@
 
 static const char *TAG = "app_node";
 
-#define GPIO_MODE_SWITCH GPIO_NUM_0 // TODO: set actual pin for physical TX/RX switch
+#include "sdkconfig.h"
+#define GPIO_MODE_SWITCH (gpio_num_t)CONFIG_MESHNET_GPIO_MODE_SWITCH
 
 static void build_tx(audio_pipeline_handle_t *pl) {
     audio_pipeline_handle_t pipeline;

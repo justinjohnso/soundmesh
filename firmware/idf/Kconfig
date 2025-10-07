@@ -1,0 +1,17 @@
+menu "Meshnet Audio Config"
+
+config MESHNET_GPIO_MODE_SWITCH
+    int "GPIO for TX/RX mode switch"
+    default 0
+    help
+        GPIO number used to select TX(1)/RX(0) at boot for the dual-mode app.
+
+config MESHNET_USE_USB_AUDIO
+    bool "Use USB Audio (UAC) for I/O"
+    default y
+
+config MESHNET_USE_I2S_AUDIO
+    bool "Use I2S Audio for I/O"
+    default n
+
+endmenu

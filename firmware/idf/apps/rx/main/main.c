@@ -1,47 +1,110 @@
-#include "audio_pipeline.h"
-#include "i2s_stream.h"
-#include "raw_stream.h"
-#include "mesh_stream.h"
-#include "ctrl_plane.h"
+/* Minimal UDP receiver (WiFi STA connect to AP) for fast MVP
+   - Connects to SSID set by TX SoftAP and listens for UDP packets on port 3333
+   - Prints packet sizes; a follow-up can route samples to I2S for audio playback
+*/
+
+#include <string.h>
+#include <sys/socket.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
 #include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
-#include "esp_log.h"
+#include "lwip/sockets.h"
 
-static const char *TAG = "app_rx";
+static const char *TAG = "udp_rx";
 
-void app_main(void) {
-    esp_event_loop_create_default();
-    esp_netif_init();
-    // Initialize WiFi + Mesh here (stub)
+#define RX_SSID "MeshAudioAP"
+#define RX_PASS "meshpass123"
+#define UDP_PORT 3333
 
-    audio_pipeline_handle_t pipeline;
-    audio_element_handle_t mesh = NULL;
-    audio_element_handle_t sink = NULL; // raw sink placeholder
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    }
+}
 
-    audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-    pipeline = audio_pipeline_init(&pipeline_cfg);
+static void start_sta(void)
+{
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
 
-    // Mesh reader
-    mesh_stream_cfg_t mcfg = {
-        .is_writer = 0,
-        .jitter_ms = 80,
-        .group_broadcast = 1,
-        .rx_queue_len = 64,
-    };
-    mesh = mesh_stream_init(&mcfg);
+    wifi_config_t wifi_config = {0};
+    strcpy((char *)wifi_config.sta.ssid, RX_SSID);
+    strcpy((char *)wifi_config.sta.password, RX_PASS);
 
-    // Raw sink (placeholder)
-    raw_stream_cfg_t raw_cfg = { .type = AUDIO_STREAM_WRITER };
-    sink = raw_stream_init(&raw_cfg);
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 
-    audio_pipeline_register(pipeline, mesh, "mesh");
-    audio_pipeline_register(pipeline, sink, "sink");
+    ESP_LOGI(TAG, "Started STA and attempting to connect to '%s'", RX_SSID);
+}
 
-    const char *link_tag[2] = {"mesh", "sink"};
-    audio_pipeline_link(pipeline, &link_tag[0], 2);
+static void udp_receive_task(void *arg)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
 
-    audio_pipeline_run(pipeline);
+    struct sockaddr_in local_addr;
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(UDP_PORT);
 
-    ESP_LOGI(TAG, "Receiver running (Mesh->Raw placeholder)");
+    if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        ESP_LOGE(TAG, "Socket bind failed: errno %d", errno);
+        close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    const int rx_len = 2048;
+    uint8_t *rx_buf = malloc(rx_len);
+    if (!rx_buf) {
+        close(sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        int len = recv(sock, rx_buf, rx_len, 0);
+        if (len < 0) {
+            ESP_LOGW(TAG, "recv failed: errno %d", errno);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        ESP_LOGI(TAG, "Received UDP packet, %d bytes", len);
+        // TODO: push samples to I2S for audio playback
+    }
+
+    free(rx_buf);
+    close(sock);
+    vTaskDelete(NULL);
+}
+
+void app_main(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    start_sta();
+
+    xTaskCreate(udp_receive_task, "udp_rx", 8192, NULL, 5, NULL);
 }

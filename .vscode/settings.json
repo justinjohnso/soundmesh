@@ -1,8 +1,10 @@
 {
-  "idf.pythonInstallPath": "/Users/justin/.local/bin/python",
+  "idf.pythonInstallPath": "/opt/homebrew/bin/python3",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
   "idf.port": "/dev/tty.usbmodem1101",
-  "idf.flashType": "JTAG"
+  "idf.flashType": "JTAG",
+  "idf.espIdfPath": "/Users/justin/esp/esp-idf",
+  "idf.toolsPath": "/Users/justin/.espressif"
 }

@@ -1,49 +1,115 @@
-#include "audio_pipeline.h"
-#include "i2s_stream.h"
-#include "raw_stream.h"
-#include "mesh_stream.h"
-#include "ctrl_plane.h"
+/* Minimal UDP sender (WiFi AP + UDP) for fast MVP
+   - Acts as transmitter: generates a simple tone buffer and sends UDP packets to any receiver
+   - Intentionally minimal: no ADF, no mesh. We'll use SoftAP + UDP to ensure connectivity between devices
+*/
+
+#include <string.h>
+#include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
 #include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
-#include "esp_log.h"
+#include "lwip/sockets.h"
 
-static const char *TAG = "app_tx";
+static const char *TAG = "udp_tx";
 
-void app_main(void) {
-    esp_event_loop_create_default();
-    esp_netif_init();
-    // Initialize WiFi + Mesh here (stub)
+#define TX_SSID "MeshAudioAP"
+#define TX_PASS "meshpass123"
+#define TX_CHANNEL 6
+#define UDP_PORT 3333
 
-    audio_pipeline_handle_t pipeline;
-    audio_element_handle_t tone = NULL; // placeholder source via raw_stream/tone
-    audio_element_handle_t mesh = NULL;
+// Tone generation params
+#define SAMPLE_RATE 16000
+#define TONE_FREQ 440.0f
+#define SAMPLES_PER_PACKET 160 // 10ms @ 16kHz
 
-    audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-    pipeline = audio_pipeline_init(&pipeline_cfg);
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    // no-op for AP mode
+}
 
-    // Simple raw source placeholder (we can later swap for I2S/USB)
-    raw_stream_cfg_t raw_cfg = {
-        .type = AUDIO_STREAM_READER,
-    };
-    tone = raw_stream_init(&raw_cfg);
+static void start_softap(void)
+{
+    esp_netif_create_default_wifi_ap();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
 
-    // Mesh writer
-    mesh_stream_cfg_t mcfg = {
-        .is_writer = 1,
-        .jitter_ms = 0,
-        .group_broadcast = 1,
-        .rx_queue_len = 32,
-    };
-    mesh = mesh_stream_init(&mcfg);
+    wifi_config_t wifi_config = {0};
+    strcpy((char *)wifi_config.ap.ssid, TX_SSID);
+    wifi_config.ap.ssid_len = strlen(TX_SSID);
+    strcpy((char *)wifi_config.ap.password, TX_PASS);
+    wifi_config.ap.channel = TX_CHANNEL;
+    wifi_config.ap.max_connection = 4;
+    wifi_config.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
 
-    audio_pipeline_register(pipeline, tone, "src");
-    audio_pipeline_register(pipeline, mesh, "mesh");
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 
-    const char *link_tag[2] = {"src", "mesh"};
-    audio_pipeline_link(pipeline, &link_tag[0], 2);
+    ESP_LOGI(TAG, "Started SoftAP '%s' channel %d", TX_SSID, TX_CHANNEL);
+}
 
-    audio_pipeline_run(pipeline);
+static void udp_sender_task(void *arg)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create socket");
+        vTaskDelete(NULL);
+        return;
+    }
 
-    ESP_LOGI(TAG, "Transmitter running (Raw->Mesh placeholder)");
+    struct sockaddr_in dest_addr;
+    dest_addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(UDP_PORT);
+
+    // allow broadcast
+    int broadcast = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    // prepare tone buffer (16-bit PCM little endian)
+    int16_t buffer[SAMPLES_PER_PACKET];
+    float phase = 0.0f;
+    const float phase_inc = 2.0f * M_PI * TONE_FREQ / SAMPLE_RATE;
+
+    while (1) {
+        for (int i = 0; i < SAMPLES_PER_PACKET; ++i) {
+            buffer[i] = (int16_t)(sinf(phase) * 3000.0f);
+            phase += phase_inc;
+            if (phase > 2.0f * M_PI) phase -= 2.0f * M_PI;
+        }
+
+        int sent = sendto(sock, (const void *)buffer, sizeof(buffer), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+        if (sent < 0) {
+            ESP_LOGW(TAG, "sendto failed: errno=%d", errno);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10)); // ~10ms per packet
+    }
+
+    close(sock);
+    vTaskDelete(NULL);
+}
+
+void app_main(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    start_softap();
+
+    xTaskCreate(udp_sender_task, "udp_sender", 4096, NULL, 5, NULL);
 }

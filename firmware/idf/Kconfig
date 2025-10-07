@@ -2,7 +2,7 @@ menu "Meshnet Audio Config"
 
 config MESHNET_GPIO_MODE_SWITCH
     int "GPIO for TX/RX mode switch"
-    default 0
+    default 10
     help
         GPIO number used to select TX(1)/RX(0) at boot for the dual-mode app.
 

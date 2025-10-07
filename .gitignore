@@ -1,0 +1,11 @@
+# Build artifacts
+firmware/idf/build/
+build/
+
+# IDE user files
+.DS_Store
+
+# Node/pip caches (if any in future)
+node_modules/
+__pycache__/
+*.pyc

@@ -1,0 +1,74 @@
+{
+  "folders": [
+    {
+      "name": "TX (Transmitter)",
+      "path": "firmware/idf/apps/tx"
+    },
+    {
+      "name": "RX (Receiver)",
+      "path": "firmware/idf/apps/rx"
+    },
+    {
+      "name": "Root",
+      "path": "."
+    }
+  ],
+  "settings": {
+    // Global ESP-IDF settings
+    "idf.pythonInstallPath": "/opt/homebrew/bin/python3",
+    "idf.espIdfPath": "/Users/justin/esp/esp-idf",
+    "idf.toolsPath": "/Users/justin/.espressif",
+    "idf.openOcdConfigs": [
+      "board/esp32s3-builtin.cfg"
+    ],
+    "idf.flashType": "JTAG",
+    
+    // File and search exclusions
+    "files.exclude": {
+      "**/build": true,
+      "**/managed_components": true
+    },
+    "search.exclude": {
+      "**/build": true,
+      "**/managed_components": true,
+      "/tmp/tx_build": true,
+      "/tmp/rx_build": true
+    },
+    
+    // Clangd configuration
+    "clangd.path": "/Users/justin/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
+    "clangd.arguments": [
+      "--background-index"
+    ]
+  },
+  "extensions": {
+    "recommendations": [
+      "espressif.esp-idf-extension",
+      "ms-vscode.cpptools",
+      "llvm-vs-code-extensions.vscode-clangd"
+    ]
+  },
+  // Folder-specific settings
+  "TX (Transmitter)": {
+    "settings": {
+      "idf.port": "/dev/cu.usbmodem1101",
+      "idf.buildPath": "/tmp/tx_build",
+      "clangd.arguments": [
+        "--background-index",
+        "--query-driver=/Users/justin/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-gcc",
+        "--compile-commands-dir=/tmp/tx_build"
+      ]
+    }
+  },
+  "RX (Receiver)": {
+    "settings": {
+      "idf.port": "/dev/cu.usbmodem101",
+      "idf.buildPath": "/tmp/rx_build",
+      "clangd.arguments": [
+        "--background-index",
+        "--query-driver=/Users/justin/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-gcc",
+        "--compile-commands-dir=/tmp/rx_build"
+      ]
+    }
+  }
+}

@@ -45,7 +45,7 @@ static const char *TAG = "udp_tx";
 static uint32_t packet_count = 0;
 static bool wifi_connected = false;
 
-// Forward declarations
+// Forward declaration
 static void update_oled_display();
 
 // Simple OLED commands for SSD1306 128x32
@@ -65,6 +65,51 @@ static void oled_send_cmd(uint8_t cmd) {
     i2c_write_oled(data, 2);
 }
 
+// OLED helpers for page-addressing mode
+static void oled_set_page(uint8_t page) {
+    oled_send_cmd(0xB0 | (page & 0x07));
+    oled_send_cmd(0x00); // lower column = 0
+    oled_send_cmd(0x10); // higher column = 0
+}
+
+static void oled_write_page(uint8_t page, const uint8_t *buf128) {
+    oled_set_page(page);
+    uint8_t data[129];
+    data[0] = 0x40; // data mode
+    memcpy(&data[1], buf128, 128);
+    i2c_write_oled(data, 129);
+}
+
+static void oled_clear_all() {
+    uint8_t zero[128];
+    memset(zero, 0x00, sizeof(zero));
+    for (uint8_t p = 0; p < 4; ++p) {
+        oled_write_page(p, zero);
+    }
+}
+
+static void oled_fill(uint8_t pattern) {
+    uint8_t row[128];
+    memset(row, pattern, sizeof(row));
+    for (uint8_t p = 0; p < 4; ++p) {
+        oled_write_page(p, row);
+    }
+}
+
+static void i2c_scan_log() {
+    for (uint8_t addr = 0x03; addr <= 0x77; ++addr) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+        esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "I2C device found at 0x%02X", addr);
+        }
+    }
+}
+
 static void init_oled() {
     ESP_LOGI(TAG, "Initializing OLED display...");
     
@@ -80,7 +125,7 @@ static void init_oled() {
     oled_send_cmd(0x8D); // Charge pump
     oled_send_cmd(0x14); // Enable charge pump
     oled_send_cmd(0x20); // Memory mode
-    oled_send_cmd(0x00); // Horizontal addressing
+    oled_send_cmd(0x02); // Page addressing mode
     oled_send_cmd(0xA1); // Set segment remap
     oled_send_cmd(0xC8); // Set COM scan direction
     oled_send_cmd(0xDA); // Set COM pins
@@ -94,26 +139,16 @@ static void init_oled() {
     oled_send_cmd(0xA4); // Display follows RAM content
     oled_send_cmd(0xA6); // Normal display (not inverted)
     
-    // Clear the display
-    oled_send_cmd(0x21); // Set column address
-    oled_send_cmd(0x00); // Start column 0
-    oled_send_cmd(0x7F); // End column 127
-    oled_send_cmd(0x22); // Set page address
-    oled_send_cmd(0x00); // Start page 0
-    oled_send_cmd(0x03); // End page 3 (4 pages for 32 rows)
-    
-    // Clear all pixels
-    uint8_t clear_data[129];
-    clear_data[0] = 0x40; // Data mode
-    for (int i = 1; i < 129; i++) {
-        clear_data[i] = 0x00;
-    }
-    for (int page = 0; page < 4; page++) {
-        i2c_write_oled(clear_data, 129);
-    }
-    
+    // Clear the display (page by page)
+    oled_clear_all();
     oled_send_cmd(0xAF); // Display on
-    
+
+    // Diagnostics: scan I2C and flash a test pattern briefly
+    i2c_scan_log();
+    oled_fill(0xFF); // full white
+    vTaskDelay(pdMS_TO_TICKS(200));
+    oled_clear_all();
+
     ESP_LOGI(TAG, "OLED display initialized");
     
     // Show initial "TX" display
@@ -121,33 +156,23 @@ static void init_oled() {
 }
 
 static void update_oled_display() {
-    // Set addressing window (full screen)
-    oled_send_cmd(0x21); // Set column address
-    oled_send_cmd(0x00); // Start column 0
-    oled_send_cmd(0x7F); // End column 127
-    oled_send_cmd(0x22); // Set page address
-    oled_send_cmd(0x00); // Start page 0
-    oled_send_cmd(0x03); // End page 3
+    // Clear top half (pages 0 and 1)
+    uint8_t top[128];
+    memset(top, 0x00, sizeof(top));
+    oled_write_page(0, top);
+    oled_write_page(1, top);
 
-    uint8_t data[129];
-    data[0] = 0x40; // Data mode
+    // Bar length based on packet_count over 100-packet window
+    int step = (int)(packet_count % 100);        // 0..99
+    int bar_len = (step * 128) / 100;            // 0..127
+    if (bar_len < 2) bar_len = 2;               // ensure visible even at start
 
-    // Clear top half pages (0 and 1)
-    memset(data+1, 0x00, 128);
-    i2c_write_oled(data, 129); // Page 0
-    i2c_write_oled(data, 129); // Page 1
-
-    // Prepare bar length based on packet_count (cycle over 10 packets)
-    int progress = packet_count % 10;
-    int bar_len = (progress * 128) / 10; // full width (128 cols)
-
-    // Draw bar in bottom half (pages 2 and 3)
-    memset(data+1, 0x00, 128);
-    for (int i = 0; i < bar_len; i++) {
-        data[i+1] = 0xFF;
-    }
-    i2c_write_oled(data, 129); // Page 2
-    i2c_write_oled(data, 129); // Page 3
+    // Draw bar in pages 2 and 3
+    uint8_t bar[128];
+    memset(bar, 0x00, sizeof(bar));
+    for (int i = 0; i < bar_len && i < 128; i++) bar[i] = 0xFF;
+    oled_write_page(2, bar);
+    oled_write_page(3, bar);
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,

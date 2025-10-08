@@ -1,18 +1,18 @@
 {
-  "idf.pythonInstallPath": "/opt/homebrew/bin/python3",
+  "idf.pythonInstallPath": "python3",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.port": "/dev/cu.usbmodem1101",
+  "idf.port": "/dev/ttyUSB0",
   "idf.flashType": "JTAG",
-  "idf.espIdfPath": "/Users/justin/esp/esp-idf",
-  "idf.toolsPath": "/Users/justin/.espressif",
+  "idf.espIdfPath": "/opt/esp/idf",
+  "idf.toolsPath": "/opt/esp",
   "idf.cmakeCompilerArgs": [],
   "idf.customExtraPaths": "",
   "idf.customExtraVars": {},
   "idf.useIDFKconfigStyle": false,
   "idf.projectPath": "${workspaceFolder}/firmware/idf/apps/tx",
-  "idf.buildPath": "/tmp/tx_build",
+  "idf.buildPath": "${workspaceFolder}/firmware/idf/apps/tx/build",
   "files.exclude": {
     "**/build": true,
     "**/managed_components": true
@@ -23,10 +23,15 @@
     "/tmp/tx_build": true,
     "/tmp/rx_build": true
   },
-  "clangd.path": "/Users/justin/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
+  "clangd.path": "clangd",
   "clangd.arguments": [
     "--background-index",
-    "--query-driver=/Users/justin/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-gcc",
-    "--compile-commands-dir=/tmp/tx_build"
+    "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/tx/build",
+    "--header-insertion=never"
+  ],
+  "clangd.arguments.rx": [
+    "--background-index",
+    "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/rx/build",
+    "--header-insertion=never"
   ]
 }

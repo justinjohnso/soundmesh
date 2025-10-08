@@ -113,38 +113,31 @@ static void init_oled() {
 }
 
 static void update_oled_display() {
-    // Set addressing window
+    // Set addressing window (full screen)
     oled_send_cmd(0x21); // Set column address
     oled_send_cmd(0x00); // Start column 0
     oled_send_cmd(0x7F); // End column 127
     oled_send_cmd(0x22); // Set page address
     oled_send_cmd(0x00); // Start page 0
     oled_send_cmd(0x03); // End page 3
-    
-    // Page 0: Show "RX" text
+
     uint8_t data[129];
     data[0] = 0x40; // Data mode
-    for (int i = 1; i < 129; i++) data[i] = 0x00; // Clear
-    
-    // Simple "RX" pattern
-    data[16] = 0xFF; data[17] = 0x66; data[18] = 0x3C; data[19] = 0x00; // R
-    data[24] = 0xC3; data[25] = 0x3C; data[26] = 0x18; data[27] = 0x3C; data[28] = 0xC3; // X
-    
-    i2c_write_oled(data, 129);
-    
-    // Page 1: Packet count bar
-    data[0] = 0x40;
-    for (int i = 1; i < 129; i++) data[i] = 0x00;
-    
-    int bar_len = (packet_count % 100) * 120 / 100; // Scale to display width
-    for (int i = 4; i < bar_len + 4 && i < 125; i++) {
-        data[i] = 0xFF;
+
+    // Clear top half pages (0 and 1)
+    memset(data+1, 0x00, 128);
+    i2c_write_oled(data, 129); // Page 0
+    i2c_write_oled(data, 129); // Page 1
+
+    // Prepare bar length based on packet_count (cycle over 10 packets)
+    int progress = packet_count % 10;
+    int bar_len = (progress * 128) / 10; // full width (128 cols)
+
+    // Draw bar in bottom half (pages 2 and 3)
+    memset(data+1, 0x00, 128);
+    for (int i = 0; i < bar_len; i++) {
+        data[i+1] = 0xFF;
     }
-    
-    i2c_write_oled(data, 129);
-    
-    // Clear remaining pages
-    for (int i = 1; i < 129; i++) data[i] = 0x00;
     i2c_write_oled(data, 129); // Page 2
     i2c_write_oled(data, 129); // Page 3
 }
@@ -260,8 +253,8 @@ static void udp_receive_task(void *arg)
             output_audio_pwm((int16_t*)rx_buf, 160);
         }
         
-        // Update display every 25 packets (~250ms)
-        if (packet_count % 25 == 0) {
+        // Update display every 10 packets (~100ms)
+        if (packet_count % 10 == 0) {
             update_oled_display();
         }
     }

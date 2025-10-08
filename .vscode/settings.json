@@ -3,8 +3,30 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.port": "/dev/tty.usbmodem1101",
+  "idf.port": "/dev/cu.usbmodem1101",
   "idf.flashType": "JTAG",
   "idf.espIdfPath": "/Users/justin/esp/esp-idf",
-  "idf.toolsPath": "/Users/justin/.espressif"
+  "idf.toolsPath": "/Users/justin/.espressif",
+  "idf.cmakeCompilerArgs": [],
+  "idf.customExtraPaths": "",
+  "idf.customExtraVars": {},
+  "idf.useIDFKconfigStyle": false,
+  "idf.projectPath": "${workspaceFolder}/firmware/idf/apps/tx",
+  "idf.buildPath": "/tmp/tx_build",
+  "files.exclude": {
+    "**/build": true,
+    "**/managed_components": true
+  },
+  "search.exclude": {
+    "**/build": true,
+    "**/managed_components": true,
+    "/tmp/tx_build": true,
+    "/tmp/rx_build": true
+  },
+  "clangd.path": "/Users/justin/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=/Users/justin/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-gcc",
+    "--compile-commands-dir=/tmp/tx_build"
+  ]
 }

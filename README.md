@@ -120,6 +120,22 @@ cd /tmp/meshnet_rx
 idf.py -p /dev/cu.usbmodem101 monitor
 ```
 
+### VS Code Tasks (macOS-friendly)
+
+Tasks are available in `.vscode/tasks.json` that automatically copy the TX/RX apps to `/tmp` to avoid path issues on macOS and source the ESP-IDF environment before running commands:
+
+- Build in /tmp:
+    - "idf: build tmp tx"
+    - "idf: build tmp rx"
+- Flash (prompts for serial port):
+    - "idf: flash tmp tx"
+    - "idf: flash tmp rx"
+- Monitor (prompts for serial port):
+    - "idf: monitor tmp tx"
+    - "idf: monitor tmp rx"
+
+These tasks call `source ~/esp/esp-idf/export.sh` in a zsh subshell and work even when the repository path contains spaces or parentheses.
+
 ## 📋 Project Structure
 
 ```

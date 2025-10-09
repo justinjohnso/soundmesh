@@ -1,5 +1,13 @@
 {
   "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "serialPort",
+      "type": "promptString",
+      "description": "Enter serial port (e.g., /dev/cu.usbmodem1101)",
+      "default": "/dev/cu.usbmodem1101"
+    }
+  ],
   "tasks": [
     {
       "label": "idf: build tx",
@@ -28,6 +36,61 @@
       "type": "shell",
       "command": "idf.py -B build -DIDF_TARGET=esp32s3 reconfigure",
       "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" }
+    }
+    ,
+    {
+      "label": "idf: copy-to-tmp tx",
+      "type": "shell",
+      "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R '${workspaceFolder}/firmware/idf/apps/tx' /tmp/meshnet_tx",
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: copy-to-tmp rx",
+      "type": "shell",
+      "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R '${workspaceFolder}/firmware/idf/apps/rx' /tmp/meshnet_rx",
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: build tmp tx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -B build -DIDF_TARGET=esp32s3 build'",
+      "dependsOn": ["idf: copy-to-tmp tx"],
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "idf: build tmp rx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -B build -DIDF_TARGET=esp32s3 build'",
+      "dependsOn": ["idf: copy-to-tmp rx"],
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "idf: flash tmp tx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash'",
+      "dependsOn": ["idf: build tmp tx"],
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: flash tmp rx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash'",
+      "dependsOn": ["idf: build tmp rx"],
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: monitor tmp tx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" monitor'",
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: monitor tmp rx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" monitor'",
+      "problemMatcher": []
     }
   ]
 }

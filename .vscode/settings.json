@@ -3,10 +3,9 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.port": "/dev/ttyUSB0",
-  "idf.flashType": "JTAG",
-  "idf.espIdfPath": "/opt/esp/idf",
-  "idf.toolsPath": "/opt/esp",
+  "idf.flashType": "UART",
+  "idf.espIdfPath": "/Users/justin/esp/esp-idf",
+  "idf.toolsPath": "/Users/justin/esp",
   "idf.cmakeCompilerArgs": [],
   "idf.customExtraPaths": "",
   "idf.customExtraVars": {},
@@ -33,5 +32,6 @@
     "--background-index",
     "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/rx/build",
     "--header-insertion=never"
-  ]
+  ],
+  "cmake.sourceDirectory": "${workspaceFolder}/firmware/idf"
 }

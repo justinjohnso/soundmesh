@@ -92,5 +92,32 @@
       "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" monitor'",
       "problemMatcher": []
     }
+    ,
+    {
+      "label": "idf: flash tmp tx (1101)",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 flash'",
+      "dependsOn": ["idf: build tmp tx"],
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: flash tmp rx (101)",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 flash'",
+      "dependsOn": ["idf: build tmp rx"],
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: monitor tmp tx (1101)",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 monitor'",
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: monitor tmp rx (101)",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 monitor'",
+      "problemMatcher": []
+    }
   ]
 }

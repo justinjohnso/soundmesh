@@ -12,7 +12,7 @@
     {
       "label": "idf: build tx",
       "type": "shell",
-      "command": "idf.py -B build -DIDF_TARGET=esp32s3 build",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 build'",
       "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" },
       "group": "build",
       "problemMatcher": ["$gcc"]
@@ -20,7 +20,7 @@
     {
       "label": "idf: build rx",
       "type": "shell",
-      "command": "idf.py -B build -DIDF_TARGET=esp32s3 build",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 build'",
       "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" },
       "group": "build",
       "problemMatcher": ["$gcc"]
@@ -28,13 +28,13 @@
     {
       "label": "idf: reconfigure tx",
       "type": "shell",
-      "command": "idf.py -B build -DIDF_TARGET=esp32s3 reconfigure",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 reconfigure'",
       "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" }
     },
     {
       "label": "idf: reconfigure rx",
       "type": "shell",
-      "command": "idf.py -B build -DIDF_TARGET=esp32s3 reconfigure",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 reconfigure'",
       "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" }
     }
     ,
@@ -69,14 +69,14 @@
     {
       "label": "idf: flash tmp tx",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash && idf.py -p \"$PORT\" monitor'",
       "dependsOn": ["idf: build tmp tx"],
       "problemMatcher": []
     },
     {
       "label": "idf: flash tmp rx",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash && idf.py -p \"$PORT\" monitor'",
       "dependsOn": ["idf: build tmp rx"],
       "problemMatcher": []
     },
@@ -96,14 +96,14 @@
     {
       "label": "idf: flash tmp tx (1101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 flash'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 flash && idf.py -p /dev/cu.usbmodem1101 monitor'",
       "dependsOn": ["idf: build tmp tx"],
       "problemMatcher": []
     },
     {
       "label": "idf: flash tmp rx (101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 flash'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 flash && idf.py -p /dev/cu.usbmodem101 monitor'",
       "dependsOn": ["idf: build tmp rx"],
       "problemMatcher": []
     },

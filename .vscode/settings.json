@@ -5,7 +5,7 @@
   ],
   "idf.flashType": "UART",
   "idf.espIdfPath": "/Users/justin/esp/esp-idf",
-  "idf.toolsPath": "/Users/justin/esp",
+  "idf.toolsPath": "/Users/justin/.espressif",
   "idf.cmakeCompilerArgs": [],
   "idf.customExtraPaths": "",
   "idf.customExtraVars": {},

@@ -122,19 +122,54 @@ idf.py -p /dev/cu.usbmodem101 monitor
 
 ### VS Code Tasks (macOS-friendly)
 
-Tasks are available in `.vscode/tasks.json` that automatically copy the TX/RX apps to `/tmp` to avoid path issues on macOS and source the ESP-IDF environment before running commands:
+Tasks in `.vscode/tasks.json` automatically copy the TX/RX apps to `/tmp` (to avoid path-with-spaces issues) and source `~/esp/esp-idf/export.sh` before running any `idf.py` command.
 
 - Build in /tmp:
-    - "idf: build tmp tx"
-    - "idf: build tmp rx"
-- Flash (prompts for serial port):
-    - "idf: flash tmp tx"
-    - "idf: flash tmp rx"
-- Monitor (prompts for serial port):
-    - "idf: monitor tmp tx"
-    - "idf: monitor tmp rx"
+    - idf: build tmp tx
+    - idf: build tmp rx
 
-These tasks call `source ~/esp/esp-idf/export.sh` in a zsh subshell and work even when the repository path contains spaces or parentheses.
+- Flash + auto-monitor (prompts for serial port):
+    - idf: flash tmp tx
+    - idf: flash tmp rx
+
+- Flash + auto-monitor (preset common ports):
+    - idf: flash tmp tx (1101)
+    - idf: flash tmp rx (101)
+
+- Monitor only (prompts):
+    - idf: monitor tmp tx
+    - idf: monitor tmp rx
+
+- Monitor only (preset ports):
+    - idf: monitor tmp tx (1101)
+    - idf: monitor tmp rx (101)
+
+- Maintenance:
+    - idf: fullclean tx
+    - idf: fullclean rx
+
+Notes
+
+- The “flash” tasks automatically open `idf.py monitor` after a successful flash.
+- The “build tmp …” tasks ensure a fresh configure by cleaning `/tmp/.../build` first.
+- If your serial device IDs change, use the prompting variants; otherwise the preset (1101/101) tasks are one-click.
+
+Recommended flow (multi-board)
+
+1) Build both in /tmp:
+     - Run idf: build tmp tx
+     - Run idf: build tmp rx
+2) Flash each and auto-open monitors:
+     - Run idf: flash tmp tx (1101)
+     - Run idf: flash tmp rx (101)
+3) Iterate quickly:
+     - Re-run the build tmp task that changed, then re-run the matching flash task. The monitor will re-open automatically.
+
+Troubleshooting
+
+- If you see mbedtls symlink "File exists" errors, run:
+    - idf: fullclean rx (or tx) in the original app folder, then use the /tmp build tasks again.
+    - Or remove `/tmp/meshnet_rx/build` (or tx) and rebuild.
 
 ## 📋 Project Structure
 

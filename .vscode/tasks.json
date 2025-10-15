@@ -39,15 +39,30 @@
     }
     ,
     {
+      "label": "idf: fullclean tx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py fullclean'",
+      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" },
+      "problemMatcher": []
+    },
+    {
+      "label": "idf: fullclean rx",
+      "type": "shell",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py fullclean'",
+      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" },
+      "problemMatcher": []
+    }
+    ,
+    {
       "label": "idf: copy-to-tmp tx",
       "type": "shell",
-      "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R '${workspaceFolder}/firmware/idf/apps/tx' /tmp/meshnet_tx",
+      "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/tx\" /tmp/meshnet_tx && rm -rf /tmp/meshnet_tx/build /tmp/meshnet_tx/managed_components",
       "problemMatcher": []
     },
     {
       "label": "idf: copy-to-tmp rx",
       "type": "shell",
-      "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R '${workspaceFolder}/firmware/idf/apps/rx' /tmp/meshnet_rx",
+      "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/rx\" /tmp/meshnet_rx && rm -rf /tmp/meshnet_rx/build /tmp/meshnet_rx/managed_components",
       "problemMatcher": []
     },
     {
@@ -61,7 +76,7 @@
     {
       "label": "idf: build tmp rx",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -B build -DIDF_TARGET=esp32s3 build'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && rm -rf build && idf.py -B build -DIDF_TARGET=esp32s3 build'",
       "dependsOn": ["idf: copy-to-tmp rx"],
       "group": "build",
       "problemMatcher": ["$gcc"]

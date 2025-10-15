@@ -1,7 +1,8 @@
 # ESP32-S3 Configuration
 CONFIG_IDF_TARGET="esp32s3"
 
-
+# WiFi Mesh
+#CONFIG_ESP_WIFI_MESH_ENABLE=y
 
 # Audio Performance
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

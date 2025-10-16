@@ -42,6 +42,7 @@ static void button_task(void *arg) {
 #include "lwip/sockets.h"
 #include "driver/i2c.h"
 #include "driver/ledc.h"
+#include "driver/i2s.h"
 #include "driver/gpio.h"
 
 static const char *TAG = "udp_rx";
@@ -57,10 +58,13 @@ static const char *TAG = "udp_rx";
 #define I2C_MASTER_FREQ_HZ 400000
 #define OLED_ADDR 0x3C
 
-// PWM Audio configuration
-#define PWM_AUDIO_GPIO 1
-#define PWM_FREQ 32000  // PWM frequency
-#define PWM_RESOLUTION LEDC_TIMER_8_BIT
+
+// I2S Audio configuration for UDA1334
+#define I2S_NUM         (0)
+#define I2S_BCK_IO      (GPIO_NUM_4)
+#define I2S_WS_IO       (GPIO_NUM_5)
+#define I2S_DO_IO       (GPIO_NUM_18)
+#define I2S_DI_IO       (-1)
 
 // Global variables
 static uint32_t packet_count = 0;
@@ -186,6 +190,12 @@ static void mesh_stats_sim_task(void *arg) {
     ESP_LOGI(TAG, "Started STA and attempting to connect to '%s'", RX_SSID);
 }
 
+// Output audio via I2S (UDA1334 DAC)
+static void output_audio_i2s(const int16_t *samples, int n) {
+    size_t bytes_written = 0;
+    i2s_write(I2S_NUM, (const char *)samples, n * sizeof(int16_t), &bytes_written, 10);
+}
+
 static void udp_receive_task(void *arg)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
@@ -226,9 +236,9 @@ static void udp_receive_task(void *arg)
         packet_count++;
         ESP_LOGI(TAG, "Received UDP packet, %d bytes", len);
         
-        // Output audio via PWM (if we received 320 bytes = 160 samples)
+        // Output audio via I2S (if we received 320 bytes = 160 samples)
         if (len == 320) {
-            output_audio_pwm((int16_t*)rx_buf, 160);
+            output_audio_i2s((int16_t*)rx_buf, 160);
         }
         
         // Update display every 10 packets (~100ms)
@@ -266,8 +276,29 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
     
-    // Initialize PWM for audio output
-    init_pwm_audio();
+    // Initialize I2S for UDA1334 DAC
+    i2s_config_t i2s_cfg = {
+        .mode = I2S_MODE_MASTER | I2S_MODE_TX,
+        .sample_rate = 16000,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+        .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+        .intr_alloc_flags = 0,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+        .fixed_mclk = 0
+    };
+    i2s_pin_config_t pin_cfg = {
+        .bck_io_num = I2S_BCK_IO,
+        .ws_io_num = I2S_WS_IO,
+        .data_out_num = I2S_DO_IO,
+        .data_in_num = I2S_DI_IO
+    };
+    ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM, &i2s_cfg, 0, NULL));
+    ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM, &pin_cfg));
+    ESP_ERROR_CHECK(i2s_set_clk(I2S_NUM, 16000, I2S_BITS_PER_SAMPLE_16BIT, 2));
     
     // Initialize OLED display
     vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize

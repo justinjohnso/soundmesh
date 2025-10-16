@@ -13,84 +13,60 @@ static void button_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
             level = gpio_get_level(BUTTON_GPIO);
             pressed = (level == 0);
-            if (pressed != last_pressed) {
-                last_pressed = pressed;
-                if (pressed) {
-                    display_mode = (display_mode == 0) ? 1 : 0;
-                    update_oled_display();
+
+        #include "ssd1306.h"
+        static ssd1306_t dev;
+
+        static void init_oled() {
+            ESP_LOGI(TAG, "Initializing OLED display (k0i05/esp_ssd1306)...");
+            ssd1306_init(&dev, 128, 32); // Adjust width/height if needed
+            ssd1306_clear(&dev);
+            ssd1306_draw_string(&dev, 0, 0, "RX Ready", 12, true);
+            ssd1306_refresh(&dev);
+        }
+
+        static void update_oled_display() {
+            ssd1306_clear(&dev);
+            char buf[32];
+            if (display_mode == 0) {
+                // View 0: Mesh stats (latency/hops)
+                snprintf(buf, sizeof(buf), "Latency: %d ms", mesh_latency_ms);
+                ssd1306_draw_string(&dev, 0, 0, buf, 12, true);
+                snprintf(buf, sizeof(buf), "Hops: %d", mesh_hops);
+                ssd1306_draw_string(&dev, 0, 16, buf, 12, true);
+            } else {
+                // View 1: Audio streaming waveform animation
+                ssd1306_draw_string(&dev, 0, 0, "Streaming...", 12, true);
+                for (int x = 0; x < 128; x++) {
+                    float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
+                    int y = 16 + (int)(sin(phase) * 10.0f);
+                    if (y >= 0 && y < 32) {
+                        ssd1306_draw_pixel(&dev, x, y);
+                    }
                 }
             }
+            ssd1306_refresh(&dev);
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-}
-/* Minimal UDP receiver (WiFi STA connect to AP) for fast MVP
-   - Connects to SSID set by TX SoftAP and listens for UDP packets on port 3333
-   - Prints packet sizes; a follow-up can route samples to I2S for audio playback
-*/
-
-#include <string.h>
-#include <sys/socket.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_system.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "nvs_flash.h"
-#include "esp_netif.h"
-#include "esp_wifi.h"
-#include "lwip/sockets.h"
-#include "driver/i2c.h"
-#include "driver/ledc.h"
-#include "driver/i2s.h"
-#include "driver/gpio.h"
-
-static const char *TAG = "udp_rx";
-
-#define RX_SSID "MeshAudioAP"
-#define RX_PASS "meshpass123"
-#define UDP_PORT 3333
-
-// I2C and OLED configuration
-#define I2C_MASTER_SCL_IO 6
-#define I2C_MASTER_SDA_IO 5
-#define I2C_MASTER_NUM I2C_NUM_0
-#define I2C_MASTER_FREQ_HZ 400000
-#define OLED_ADDR 0x3C
-
-
-// I2S Audio configuration for UDA1334
-#define I2S_NUM         (0)
-#define I2S_BCK_IO      (GPIO_NUM_4)
-#define I2S_WS_IO       (GPIO_NUM_5)
-#define I2S_DO_IO       (GPIO_NUM_18)
-#define I2S_DI_IO       (-1)
-
-// Global variables
-static uint32_t packet_count = 0;
-static bool wifi_connected = false;
-static volatile int mesh_latency_ms = 10; // Simulated mesh latency
-static volatile int mesh_hops = 1;        // Simulated mesh hop count
-
-// Forward declaration
-static void update_oled_display();
-
-// Simple OLED commands for SSD1306 128x32
-static esp_err_t i2c_write_oled(uint8_t *data, size_t len) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (OLED_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, data, len, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
-
-static void oled_send_cmd(uint8_t cmd) {
-    uint8_t data[2] = {0x00, cmd}; // 0x00 = command mode
-    i2c_write_oled(data, 2);
-}
+                // View 0: Mesh latency and hops (simulated)
+                snprintf(buf, sizeof(buf), "Latency: %d ms\nHops: %d", mesh_latency_ms, mesh_hops);
+                ssd1306_display_text(&dev, 0, buf, strlen(buf), false);
+            } else {
+                // View 1: Audio streaming waveform animation
+                ssd1306_display_text(&dev, 0, "Streaming...", 11, false);
+                uint8_t wave[128];
+                int y_base = 2; // page 2 (middle)
+                for (int x = 0; x < 128; x++) {
+                    float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
+                    int y = y_base * 8 + 4 + (int)(sin(phase) * 10.0f);
+                    if (y >= 0 && y < 32) {
+                        wave[x] = 1 << (y % 8);
+                    } else {
+                        wave[x] = 0;
+                    }
+                }
+                ssd1306_display_image(&dev, y_base, 0, wave, 128);
+            }
+        }
 
 // OLED helpers for page-addressing mode
 static void oled_set_page(uint8_t page) {
@@ -301,8 +277,8 @@ void app_main(void)
     ESP_ERROR_CHECK(i2s_set_clk(I2S_NUM, 16000, I2S_BITS_PER_SAMPLE_16BIT, 2));
     
     // Initialize OLED display
-    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
-    init_oled();
+        vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
+        init_oled();
     
     // Initialize button GPIO
     gpio_config_t btn_cfg = {

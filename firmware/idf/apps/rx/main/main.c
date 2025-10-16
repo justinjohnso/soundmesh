@@ -1,7 +1,264 @@
+/* Minimal UDP receiver (WiFi STA + UDP + I2S DAC) for fast MVP
+   - Acts as receiver: connects to TX's SoftAP, receives UDP audio packets, outputs to I2S DAC
+   - Intentionally minimal: no ADF, no mesh. We'll use WiFi STA + UDP + I2S to validate connectivity
+*/
+
+#include "sdkconfig.h"
+#include <string.h>
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "lwip/sockets.h"
+#include "driver/i2s_std.h"
+#include "driver/gpio.h"
+#include "nvs_flash.h"
+
+// Use k0i05/esp_ssd1306 library for OLED display
+#include "ssd1306.h"
+
+static const char *TAG = "udp_rx";
+
+#define TX_SSID "MeshAudioAP"
+#define TX_PASS "meshpass123"
+#define UDP_PORT 3333
+
+// I2S pins for UDA1334 DAC
+#define I2S_BCK_IO 7
+#define I2S_WS_IO 8
+#define I2S_DATA_OUT_IO 9
+
+// I2C and OLED configuration
+#define I2C_MASTER_SCL_IO 6
+#define I2C_MASTER_SDA_IO 5
+#define I2C_MASTER_NUM I2C_NUM_0
+#define I2C_MASTER_FREQ_HZ 400000
+
 // Button (mode toggle)
 #define BUTTON_GPIO 4
 #define BUTTON_DEBOUNCE_MS 50
+
+// Display modes: 0 = mesh stats (latency/hops), 1 = streaming visualization
 static volatile int display_mode = 0;
+
+// Global variables
+static uint32_t packet_count = 0;
+static bool wifi_connected = false;
+static i2s_chan_handle_t tx_handle = NULL;
+static volatile int mesh_latency_ms = 10; // Simulated mesh latency
+static volatile int mesh_hops = 1; // Simulated hop count
+static uint32_t frame_counter = 0; // Smooth animation frame counter
+static int last_display_mode = -1; // Track mode changes
+
+// OLED display handles
+static i2c_master_bus_handle_t i2c_bus = NULL;
+static ssd1306_handle_t ssd1306_dev = NULL;
+
+// Forward declaration
+static void update_oled_display();
+
+// Minimal 5x7 font bitmap (ASCII 32-126)
+static const uint8_t font_5x7[][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ' ' (32)
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // '!'
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // '"'
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // '#'
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // '$'
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // '%'
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // '&'
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '\''
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // '('
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // ')'
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, // '*'
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // '+'
+    {0x00, 0x50, 0x30, 0x00, 0x00}, // ','
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // '-'
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // '.'
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // '/'
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // '0' (48)
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // '1'
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // '2'
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // '3'
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // '4'
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // '5'
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // '6'
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // '7'
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // '8'
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // '9'
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // ':'
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ';'
+    {0x08, 0x14, 0x22, 0x41, 0x00}, // '<'
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // '='
+    {0x00, 0x41, 0x22, 0x14, 0x08}, // '>'
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // '?'
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, // '@'
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 'A' (65)
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // 'B'
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // 'C'
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // 'D'
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // 'E'
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // 'F'
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // 'G'
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // 'H'
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // 'I'
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // 'J'
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // 'K'
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // 'L'
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // 'M'
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // 'N'
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 'O'
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // 'P'
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // 'Q'
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // 'R'
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // 'S'
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // 'T'
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // 'U'
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // 'V'
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, // 'W'
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // 'X'
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // 'Y'
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // 'Z'
+    {0x00, 0x7F, 0x41, 0x41, 0x00}, // '['
+    {0x02, 0x04, 0x08, 0x10, 0x20}, // '\\'
+    {0x00, 0x41, 0x41, 0x7F, 0x00}, // ']'
+    {0x04, 0x02, 0x01, 0x02, 0x04}, // '^'
+    {0x40, 0x40, 0x40, 0x40, 0x40}, // '_'
+    {0x00, 0x01, 0x02, 0x04, 0x00}, // '`'
+    {0x20, 0x54, 0x54, 0x54, 0x78}, // 'a' (97)
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, // 'b'
+    {0x38, 0x44, 0x44, 0x44, 0x20}, // 'c'
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, // 'd'
+    {0x38, 0x54, 0x54, 0x54, 0x18}, // 'e'
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, // 'f'
+    {0x0C, 0x52, 0x52, 0x52, 0x3E}, // 'g'
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, // 'h'
+    {0x00, 0x44, 0x7D, 0x40, 0x00}, // 'i'
+    {0x20, 0x40, 0x44, 0x3D, 0x00}, // 'j'
+    {0x7F, 0x10, 0x28, 0x44, 0x00}, // 'k'
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, // 'l'
+    {0x7C, 0x04, 0x18, 0x04, 0x78}, // 'm'
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, // 'n'
+    {0x38, 0x44, 0x44, 0x44, 0x38}, // 'o'
+    {0x7C, 0x14, 0x14, 0x14, 0x08}, // 'p'
+    {0x08, 0x14, 0x14, 0x18, 0x7C}, // 'q'
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, // 'r'
+    {0x48, 0x54, 0x54, 0x54, 0x20}, // 's'
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, // 't'
+    {0x3C, 0x40, 0x40, 0x20, 0x7C}, // 'u'
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, // 'v'
+    {0x3C, 0x40, 0x30, 0x40, 0x3C}, // 'w'
+    {0x44, 0x28, 0x10, 0x28, 0x44}, // 'x'
+    {0x0C, 0x50, 0x50, 0x50, 0x3C}, // 'y'
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, // 'z'
+};
+
+static void draw_char(char c, int x, int y) {
+    if (c < 32 || c > 122) return;
+    const uint8_t *glyph = font_5x7[c - 32];
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = glyph[col];
+        for (int row = 0; row < 7; row++) {
+            if (line & (1 << row)) {
+                ssd1306_set_pixel(ssd1306_dev, x + col, y + row, false);
+            }
+        }
+    }
+}
+
+static void draw_text(const char *str, int x, int y) {
+    while (*str) {
+        draw_char(*str, x, y);
+        x += 6; // 5 pixels + 1 space
+        str++;
+    }
+}
+
+static void init_oled() {
+    ESP_LOGI(TAG, "Initializing OLED display (k0i05/esp_ssd1306)...");
+    
+    // Initialize I2C master bus
+    i2c_master_bus_config_t i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_MASTER_NUM,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus));
+    
+    // Initialize SSD1306 (128x32 panel)
+    ssd1306_config_t ssd1306_config = I2C_SSD1306_128x32_CONFIG_DEFAULT;
+    ESP_ERROR_CHECK(ssd1306_init(i2c_bus, &ssd1306_config, &ssd1306_dev));
+    ESP_ERROR_CHECK(ssd1306_clear_display(ssd1306_dev, false));
+    draw_text("RX Ready", 0, 0);
+    ESP_ERROR_CHECK(ssd1306_display_pages(ssd1306_dev));
+}
+
+static void update_oled_display() {
+    char buf[32];
+    
+    // Only clear display when mode changes
+    if (display_mode != last_display_mode) {
+        ssd1306_clear_display(ssd1306_dev, false);
+        last_display_mode = display_mode;
+    }
+    
+    if (display_mode == 0) {
+        // Clear only the text area for mesh stats mode
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, true);
+            }
+        }
+        // View 0: Mesh latency and hops
+        snprintf(buf, sizeof(buf), "Latency: %dms", mesh_latency_ms);
+        draw_text(buf, 0, 0);
+        snprintf(buf, sizeof(buf), "Hops: %d", mesh_hops);
+        draw_text(buf, 0, 8);
+        snprintf(buf, sizeof(buf), "WiFi: %s", wifi_connected ? "OK" : "Down");
+        draw_text(buf, 0, 16);
+    } else {
+        // Clear only the waveform area (bottom portion)
+        for (int y = 8; y < 32; y++) {
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, true);
+            }
+        }
+        // View 1: Audio streaming waveform animation
+        draw_text("Streaming...", 0, 0);
+        
+        // Use frame counter for smoother animation
+        for (int x = 0; x < 128; x++) {
+            float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(frame_counter % 100) * 0.1f;
+            int y = 20 + (int)(sin(phase) * 8.0f);
+            if (y >= 8 && y < 32) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, false);
+            }
+        }
+        frame_counter++;
+    }
+    ssd1306_display_pages(ssd1306_dev);
+}
+
+// Simulate mesh stats by incrementing every 5 seconds
+static void mesh_stats_sim_task(void *arg) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        mesh_latency_ms += 10;
+        if (mesh_latency_ms > 100) mesh_latency_ms = 10;
+        mesh_hops++;
+        if (mesh_hops > 4) mesh_hops = 1;
+        if (display_mode == 0) update_oled_display();
+    }
+}
 
 // Button polling + debounce (active low)
 static void button_task(void *arg) {
@@ -13,163 +270,73 @@ static void button_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
             level = gpio_get_level(BUTTON_GPIO);
             pressed = (level == 0);
-
-        #include "ssd1306.h"
-        static ssd1306_t dev;
-
-        static void init_oled() {
-            ESP_LOGI(TAG, "Initializing OLED display (k0i05/esp_ssd1306)...");
-            ssd1306_init(&dev, 128, 32); // Adjust width/height if needed
-            ssd1306_clear(&dev);
-            ssd1306_draw_string(&dev, 0, 0, "RX Ready", 12, true);
-            ssd1306_refresh(&dev);
-        }
-
-        static void update_oled_display() {
-            ssd1306_clear(&dev);
-            char buf[32];
-            if (display_mode == 0) {
-                // View 0: Mesh stats (latency/hops)
-                snprintf(buf, sizeof(buf), "Latency: %d ms", mesh_latency_ms);
-                ssd1306_draw_string(&dev, 0, 0, buf, 12, true);
-                snprintf(buf, sizeof(buf), "Hops: %d", mesh_hops);
-                ssd1306_draw_string(&dev, 0, 16, buf, 12, true);
-            } else {
-                // View 1: Audio streaming waveform animation
-                ssd1306_draw_string(&dev, 0, 0, "Streaming...", 12, true);
-                for (int x = 0; x < 128; x++) {
-                    float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-                    int y = 16 + (int)(sin(phase) * 10.0f);
-                    if (y >= 0 && y < 32) {
-                        ssd1306_draw_pixel(&dev, x, y);
-                    }
+            if (pressed != last_pressed) {
+                last_pressed = pressed;
+                if (pressed) {
+                    display_mode = (display_mode == 0) ? 1 : 0;
+                    update_oled_display();
                 }
             }
-            ssd1306_refresh(&dev);
         }
-                // View 0: Mesh latency and hops (simulated)
-                snprintf(buf, sizeof(buf), "Latency: %d ms\nHops: %d", mesh_latency_ms, mesh_hops);
-                ssd1306_display_text(&dev, 0, buf, strlen(buf), false);
-            } else {
-                // View 1: Audio streaming waveform animation
-                ssd1306_display_text(&dev, 0, "Streaming...", 11, false);
-                uint8_t wave[128];
-                int y_base = 2; // page 2 (middle)
-                for (int x = 0; x < 128; x++) {
-                    float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-                    int y = y_base * 8 + 4 + (int)(sin(phase) * 10.0f);
-                    if (y >= 0 && y < 32) {
-                        wave[x] = 1 << (y % 8);
-                    } else {
-                        wave[x] = 0;
-                    }
-                }
-                ssd1306_display_image(&dev, y_base, 0, wave, 128);
-            }
-        }
-
-// OLED helpers for page-addressing mode
-static void oled_set_page(uint8_t page) {
-    oled_send_cmd(0xB0 | (page & 0x07));
-    oled_send_cmd(0x00); // lower column = 0
-    oled_send_cmd(0x10); // higher column = 0
-}
-
-static void oled_write_page(uint8_t page, const uint8_t *buf128) {
-    oled_set_page(page);
-    uint8_t data[129];
-    data[0] = 0x40; // data mode
-    memcpy(&data[1], buf128, 128);
-    i2c_write_oled(data, 129);
-}
-
-static void oled_clear_all() {
-    uint8_t zero[128];
-    memset(zero, 0x00, sizeof(zero));
-    for (uint8_t p = 0; p < 4; ++p) {
-        oled_write_page(p, zero);
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
-static void oled_fill(uint8_t pattern) {
-    uint8_t row[128];
-    memset(row, pattern, sizeof(row));
-    for (uint8_t p = 0; p < 4; ++p) {
-        oled_write_page(p, row);
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
+        wifi_connected = true;
+        ESP_LOGI(TAG, "Connected to WiFi");
     }
 }
 
-static void i2c_scan_log() {
-    for (uint8_t addr = 0x03; addr <= 0x77; ++addr) {
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-        i2c_master_stop(cmd);
-        esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
-        i2c_cmd_link_delete(cmd);
-        if (ret == ESP_OK) {
+static void start_wifi_sta(void)
+{
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
 
-            #include "Adafruit_SSD1306.h"
+    wifi_config_t wifi_config = {0};
+    strcpy((char *)wifi_config.sta.ssid, TX_SSID);
+    strcpy((char *)wifi_config.sta.password, TX_PASS);
 
-            Adafruit_SSD1306 display;
-
-            static void init_oled() {
-                ESP_LOGI(TAG, "Initializing OLED display (Adafruit_SSD1306)...");
-                if (!display.init(128, 32, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, OLED_ADDR)) {
-                    ESP_LOGE(TAG, "SSD1306 allocation failed");
-                    return;
-                }
-                display.clearDisplay();
-                display.setTextSize(1);
-                display.setTextColor(SSD1306_WHITE);
-                display.setCursor(0,0);
-                display.println("RX Ready");
-                display.display();
-            }
-
-            static void update_oled_display() {
-                display.clearDisplay();
-                if (display_mode == 0) {
-                    // View 0: Mesh latency and hops (simulated)
-                    display.setCursor(0,0);
-                    display.print("Latency: ");
-                    display.print(mesh_latency_ms);
-                    display.print(" ms\nHops: ");
-                    display.println(mesh_hops);
-                } else {
-                    // View 1: Audio streaming waveform animation
-                    display.setCursor(0,0);
-                    display.println("Streaming...");
-                    int y_base = 16;
-                    for (int x = 0; x < 128; x++) {
-                        float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-                        int y = y_base + (int)(sin(phase) * 10.0f);
-                        display.drawPixel(x, y, SSD1306_WHITE);
-                    }
-                }
-                display.display();
-            }
-// Simulate mesh latency and hops by incrementing every 5 seconds
-static void mesh_stats_sim_task(void *arg) {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        mesh_latency_ms += 10;
-        if (mesh_latency_ms > 100) mesh_latency_ms = 10;
-        mesh_hops++;
-        if (mesh_hops > 4) mesh_hops = 1;
-        if (display_mode == 0) update_oled_display();
-    }
-}
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Started STA and attempting to connect to '%s'", RX_SSID);
+    ESP_LOGI(TAG, "Connecting to '%s'...", TX_SSID);
 }
 
-// Output audio via I2S (UDA1334 DAC)
-static void output_audio_i2s(const int16_t *samples, int n) {
-    size_t bytes_written = 0;
-    i2s_write(I2S_NUM, (const char *)samples, n * sizeof(int16_t), &bytes_written, 10);
+static void init_i2s_dac(void)
+{
+    ESP_LOGI(TAG, "Initializing I2S for UDA1334 DAC...");
+    
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_BCK_IO,
+            .ws   = I2S_WS_IO,
+            .dout = I2S_DATA_OUT_IO,
+            .din  = I2S_GPIO_UNUSED,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
+    ESP_LOGI(TAG, "I2S DAC initialized");
 }
 
 static void udp_receive_task(void *arg)
@@ -210,16 +377,24 @@ static void udp_receive_task(void *arg)
         }
         
         packet_count++;
-        ESP_LOGI(TAG, "Received UDP packet, %d bytes", len);
         
-        // Output audio via I2S (if we received 320 bytes = 160 samples)
-        if (len == 320) {
-            output_audio_i2s((int16_t*)rx_buf, 160);
+        // Convert mono to stereo and output to I2S DAC
+        if (len == 320) { // 160 samples * 2 bytes per sample
+            int16_t *mono_samples = (int16_t*)rx_buf;
+            int16_t stereo_buffer[320]; // 160 samples * 2 channels
+            
+            for (int i = 0; i < 160; i++) {
+                stereo_buffer[i * 2] = mono_samples[i];
+                stereo_buffer[i * 2 + 1] = mono_samples[i];
+            }
+            
+            size_t bytes_written = 0;
+            i2s_channel_write(tx_handle, stereo_buffer, sizeof(stereo_buffer), &bytes_written, portMAX_DELAY);
         }
         
-        // Update display every 10 packets (~100ms)
-        if (packet_count % 10 == 0) {
-            update_oled_display();
+        update_oled_display();
+        if (packet_count % 100 == 0) {
+            ESP_LOGI(TAG, "Received %lu packets", packet_count);
         }
     }
 
@@ -240,45 +415,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Initialize I2C for OLED
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
-    };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
-    
-    // Initialize I2S for UDA1334 DAC
-    i2s_config_t i2s_cfg = {
-        .mode = I2S_MODE_MASTER | I2S_MODE_TX,
-        .sample_rate = 16000,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = I2S_COMM_FORMAT_I2S_MSB,
-        .intr_alloc_flags = 0,
-        .dma_buf_count = 4,
-        .dma_buf_len = 256,
-        .use_apll = false,
-        .tx_desc_auto_clear = true,
-        .fixed_mclk = 0
-    };
-    i2s_pin_config_t pin_cfg = {
-        .bck_io_num = I2S_BCK_IO,
-        .ws_io_num = I2S_WS_IO,
-        .data_out_num = I2S_DO_IO,
-        .data_in_num = I2S_DI_IO
-    };
-    ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM, &i2s_cfg, 0, NULL));
-    ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM, &pin_cfg));
-    ESP_ERROR_CHECK(i2s_set_clk(I2S_NUM, 16000, I2S_BITS_PER_SAMPLE_16BIT, 2));
-    
-    // Initialize OLED display
-        vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
-        init_oled();
+    // Initialize OLED display (handles I2C initialization internally)
+    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
+    init_oled();
     
     // Initialize button GPIO
     gpio_config_t btn_cfg = {
@@ -294,7 +433,10 @@ void app_main(void)
     // Start mesh stats simulation task
     xTaskCreate(mesh_stats_sim_task, "mesh_stats_sim", 1024, NULL, 2, NULL);
 
-    start_sta();
+    // Initialize I2S DAC
+    init_i2s_dac();
+    
+    start_wifi_sta();
 
-    xTaskCreate(udp_receive_task, "udp_rx", 8192, NULL, 5, NULL);
+    xTaskCreate(udp_receive_task, "udp_receiver", 4096, NULL, 5, NULL);
 }

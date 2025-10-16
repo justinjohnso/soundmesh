@@ -80,15 +80,15 @@
     }
     ,
     {
-      "label": "idf: copy-to-tmp tx",
-      "type": "shell",
-      "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/tx\" /tmp/meshnet_tx && rm -rf /tmp/meshnet_tx/build /tmp/meshnet_tx/managed_components",
+    "label": "idf: copy-to-tmp tx",
+    "type": "shell",
+  "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/tx\" /tmp/meshnet_tx && cp -R \"${workspaceFolder}/firmware/idf/components\" /tmp/meshnet_tx/components && \"${workspaceFolder}/firmware/idf/copy-adf-deps.sh\" \"${workspaceFolder}/firmware/idf/esp-adf/components\" /tmp/meshnet_tx/components audio_pipeline && cp \"${workspaceFolder}/firmware/idf/idf_component.yml\" /tmp/meshnet_tx/main/idf_component.yml && rm -rf /tmp/meshnet_tx/build /tmp/meshnet_tx/managed_components",
       "problemMatcher": []
     },
     {
-      "label": "idf: copy-to-tmp rx",
-      "type": "shell",
-      "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/rx\" /tmp/meshnet_rx && rm -rf /tmp/meshnet_rx/build /tmp/meshnet_rx/managed_components",
+    "label": "idf: copy-to-tmp rx",
+    "type": "shell",
+  "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/rx\" /tmp/meshnet_rx && cp -R \"${workspaceFolder}/firmware/idf/components\" /tmp/meshnet_rx/components && \"${workspaceFolder}/firmware/idf/copy-adf-deps.sh\" \"${workspaceFolder}/firmware/idf/esp-adf/components\" /tmp/meshnet_rx/components audio_pipeline && cp \"${workspaceFolder}/firmware/idf/idf_component.yml\" /tmp/meshnet_rx/main/idf_component.yml && rm -rf /tmp/meshnet_rx/build /tmp/meshnet_rx/managed_components",
       "problemMatcher": []
     },
     {

@@ -23,17 +23,6 @@ static volatile audio_input_mode_t audio_mode = AUDIO_INPUT_TONE;
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
-        switch (audio_mode) {
-            case AUDIO_INPUT_TONE:
-                display.println("Streaming: TONE");
-                break;
-            case AUDIO_INPUT_AUX:
-                display.println("Streaming: AUX");
-                break;
-            case AUDIO_INPUT_USB:
-                display.println("Streaming: USB");
-                break;
-        }
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -77,48 +66,46 @@ static volatile int rx_node_count = 1; // Simulated RX node count
 static void update_oled_display();
 
 
-// Adafruit_SSD1306 integration (C version for ESP-IDF)
 
-#include "Adafruit_SSD1306.h"
+#include "ssd1306.h"
+#include "font8x8_basic.h"
 
-// ESP-IDF compatible Adafruit_SSD1306 instance
-Adafruit_SSD1306 display;
+static SSD1306_t dev;
 
 static void init_oled() {
-    ESP_LOGI(TAG, "Initializing OLED display (Adafruit_SSD1306)...");
-    if (!display.init(128, 32, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, OLED_ADDR)) {
-        ESP_LOGE(TAG, "SSD1306 allocation failed");
-        return;
-    }
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0,0);
-    display.println("TX Ready");
-    display.display();
+    ESP_LOGI(TAG, "Initializing OLED display (esp-idf-ssd1306)...");
+    i2c_master_init(&dev, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, -1);
+    ssd1306_init(&dev, 128, 32);
+    ssd1306_clear_screen(&dev, false);
+    ssd1306_contrast(&dev, 0xff);
+    ssd1306_display_text(&dev, 0, "TX Ready", 8, false);
 }
 
 // Placeholder for new display update logic
 static void update_oled_display() {
-    display.clearDisplay();
+    ssd1306_clear_screen(&dev, false);
+    char buf[32];
     if (display_mode == 0) {
         // View 0: Audio streaming waveform animation
-        display.setCursor(0,0);
-        display.println("Streaming...");
-        // Simple waveform animation (sine bar)
-        int y_base = 16;
+        ssd1306_display_text(&dev, 0, "Streaming...", 11, false);
+        // Sine waveform animation (draw pixels)
+        uint8_t wave[128];
+        int y_base = 2; // page 2 (middle)
         for (int x = 0; x < 128; x++) {
             float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-            int y = y_base + (int)(sin(phase) * 10.0f);
-            display.drawPixel(x, y, SSD1306_WHITE);
+            int y = y_base * 8 + 4 + (int)(sin(phase) * 10.0f);
+            if (y >= 0 && y < 32) {
+                wave[x] = 1 << (y % 8);
+            } else {
+                wave[x] = 0;
+            }
         }
+        ssd1306_display_image(&dev, y_base, 0, wave, 128);
     } else {
         // View 1: Number of connected RX nodes (simulated)
-        display.setCursor(0,0);
-        display.print("Receivers: ");
-        display.println(rx_node_count);
+        snprintf(buf, sizeof(buf), "Receivers: %d", rx_node_count);
+        ssd1306_display_text(&dev, 0, buf, strlen(buf), false);
     }
-    display.display();
 }
 // Simulate RX node count by incrementing every 5 seconds
 static void rx_node_sim_task(void *arg) {

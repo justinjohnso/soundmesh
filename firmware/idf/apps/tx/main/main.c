@@ -664,19 +664,59 @@ static void usb_monitor_task(void *arg)
     }
 }
 
+// TinyUSB descriptor callbacks (required for custom descriptors)
+uint8_t const *tud_descriptor_device_cb(void)
+{
+    return (uint8_t const *)&usb_audio_device_descriptor;
+}
+
+uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return usb_audio_configuration_descriptor;
+}
+
+static uint16_t _desc_str[32];
+
+uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
+{
+    (void)langid;
+    uint8_t chr_count;
+    
+    if (index == 0) {
+        _desc_str[0] = (TUSB_DESC_STRING << 8) | (2 + 2);
+        _desc_str[1] = 0x0409; // English (United States)
+        return _desc_str;
+    }
+    
+    const char *str = (index < sizeof(usb_string_descriptors) / sizeof(usb_string_descriptors[0])) 
+                      ? usb_string_descriptors[index] : "";
+    
+    // Convert ASCII to UTF-16
+    chr_count = strlen(str);
+    if (chr_count > 31) chr_count = 31;
+    
+    for (uint8_t i = 0; i < chr_count; i++) {
+        _desc_str[1 + i] = str[i];
+    }
+    
+    _desc_str[0] = (TUSB_DESC_STRING << 8) | (2 * chr_count + 2);
+    return _desc_str;
+}
+
 static void init_usb_audio(void)
 {
     ESP_LOGI(TAG, "╔════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   Initializing USB Audio Class Device     ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════════╝");
     
-    // Configure TinyUSB with custom audio descriptors
+    // Configure TinyUSB with descriptor callbacks
     const tinyusb_config_t tusb_cfg = {
-        .device_descriptor = &usb_audio_device_descriptor,
-        .string_descriptor = usb_string_descriptors,
-        .string_descriptor_count = sizeof(usb_string_descriptors) / sizeof(usb_string_descriptors[0]),
+        .device_descriptor = NULL,  // Will use callback
+        .string_descriptor = NULL,   // Will use callback
+        .string_descriptor_count = 0,
         .external_phy = false,
-        .configuration_descriptor = usb_audio_configuration_descriptor,
+        .configuration_descriptor = NULL,  // Will use callback
     };
     
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));

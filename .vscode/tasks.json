@@ -109,29 +109,29 @@
     }
     ,
     {
-      "label": "idf: flash tmp tx (1101)",
+      "label": "idf: flash tmp tx (101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 flash && idf.py -p /dev/cu.usbmodem1101 monitor'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem101 flash && idf.py -p /dev/cu.usbmodem101 monitor'",
       "dependsOn": ["idf: build tmp tx"],
       "problemMatcher": []
     },
     {
-      "label": "idf: flash tmp rx (101)",
+      "label": "idf: flash tmp rx (2101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 flash && idf.py -p /dev/cu.usbmodem101 monitor'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem2101 flash && idf.py -p /dev/cu.usbmodem2101 monitor'",
       "dependsOn": ["idf: build tmp rx"],
       "problemMatcher": []
     },
     {
-      "label": "idf: monitor tmp tx (1101)",
+      "label": "idf: monitor tmp tx (101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem1101 monitor'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem101 monitor'",
       "problemMatcher": []
     },
     {
-      "label": "idf: monitor tmp rx (101)",
+      "label": "idf: monitor tmp rx (2101)",
       "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem101 monitor'",
+      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem2101 monitor'",
       "problemMatcher": []
     }
   ]

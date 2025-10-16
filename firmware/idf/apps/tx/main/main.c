@@ -41,6 +41,14 @@ static const char *TAG = "udp_tx";
 #define I2C_MASTER_FREQ_HZ 400000
 #define OLED_ADDR 0x3C
 
+// Button (mode toggle) -- use a non-UART, non-boot pin. Avoid GPIO1 which is U0TXD.
+// Using GPIO4 is safer for button inputs on XIAO-ESP32-S3.
+#define BUTTON_GPIO 4
+#define BUTTON_DEBOUNCE_MS 50
+
+// 0 = streaming bar (bottom), 1 = info bar (top)
+static volatile int display_mode = 0;
+
 // Global variables
 static uint32_t packet_count = 0;
 static bool wifi_connected = false;
@@ -156,23 +164,49 @@ static void init_oled() {
 }
 
 static void update_oled_display() {
-    // Clear top half (pages 0 and 1)
-    uint8_t top[128];
-    memset(top, 0x00, sizeof(top));
-    oled_write_page(0, top);
-    oled_write_page(1, top);
+    int step = (int)(packet_count % 100);
+    int bar_len = (step * 128) / 100;
+    if (bar_len < 2) bar_len = 2;
 
-    // Bar length based on packet_count over 100-packet window
-    int step = (int)(packet_count % 100);        // 0..99
-    int bar_len = (step * 128) / 100;            // 0..127
-    if (bar_len < 2) bar_len = 2;               // ensure visible even at start
-
-    // Draw bar in pages 2 and 3
+    uint8_t blank[128];
+    memset(blank, 0x00, sizeof(blank));
     uint8_t bar[128];
     memset(bar, 0x00, sizeof(bar));
     for (int i = 0; i < bar_len && i < 128; i++) bar[i] = 0xFF;
-    oled_write_page(2, bar);
-    oled_write_page(3, bar);
+
+    if (display_mode == 0) {
+        oled_write_page(0, blank);
+        oled_write_page(1, blank);
+        oled_write_page(2, bar);
+        oled_write_page(3, bar);
+    } else {
+        oled_write_page(0, bar);
+        oled_write_page(1, bar);
+        oled_write_page(2, blank);
+        oled_write_page(3, blank);
+    }
+}
+
+// Button polling + debounce (active low)
+static void button_task(void *arg) {
+    bool last_pressed = false;
+    for (;;) {
+        int level = gpio_get_level(BUTTON_GPIO);
+        bool pressed = (level == 0);
+        if (pressed != last_pressed) {
+            vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
+            level = gpio_get_level(BUTTON_GPIO);
+            pressed = (level == 0);
+            if (pressed != last_pressed) {
+                last_pressed = pressed;
+                if (pressed) {
+                    display_mode = (display_mode == 0) ? 1 : 0;
+                    update_oled_display();
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -285,6 +319,17 @@ void app_main(void)
     // Initialize OLED display
     vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
     init_oled();
+    
+    // Initialize button GPIO
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = (1ULL << BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&btn_cfg);
+    xTaskCreate(button_task, "btn_task", 2048, NULL, 3, NULL);
     
     start_softap();
 

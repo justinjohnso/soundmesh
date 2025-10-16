@@ -65,6 +65,8 @@ static const char *TAG = "udp_rx";
 // Global variables
 static uint32_t packet_count = 0;
 static bool wifi_connected = false;
+static volatile int mesh_latency_ms = 10; // Simulated mesh latency
+static volatile int mesh_hops = 1;        // Simulated mesh hop count
 
 // Forward declaration
 static void update_oled_display();
@@ -148,12 +150,12 @@ static void i2c_scan_log() {
             static void update_oled_display() {
                 display.clearDisplay();
                 if (display_mode == 0) {
-                    // View 0: Mesh latency and hops
+                    // View 0: Mesh latency and hops (simulated)
                     display.setCursor(0,0);
                     display.print("Latency: ");
-                    display.print(0); // TODO: Replace with actual latency (ms)
+                    display.print(mesh_latency_ms);
                     display.print(" ms\nHops: ");
-                    display.println(0); // TODO: Replace with actual hop count
+                    display.println(mesh_hops);
                 } else {
                     // View 1: Audio streaming waveform animation
                     display.setCursor(0,0);
@@ -167,6 +169,17 @@ static void i2c_scan_log() {
                 }
                 display.display();
             }
+// Simulate mesh latency and hops by incrementing every 5 seconds
+static void mesh_stats_sim_task(void *arg) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        mesh_latency_ms += 10;
+        if (mesh_latency_ms > 100) mesh_latency_ms = 10;
+        mesh_hops++;
+        if (mesh_hops > 4) mesh_hops = 1;
+        if (display_mode == 0) update_oled_display();
+    }
+}
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -270,6 +283,9 @@ void app_main(void)
     };
     gpio_config(&btn_cfg);
     xTaskCreate(button_task, "btn_task", 2048, NULL, 3, NULL);
+
+    // Start mesh stats simulation task
+    xTaskCreate(mesh_stats_sim_task, "mesh_stats_sim", 1024, NULL, 2, NULL);
 
     start_sta();
 

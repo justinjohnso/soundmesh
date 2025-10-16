@@ -52,6 +52,7 @@ static volatile int display_mode = 0;
 // Global variables
 static uint32_t packet_count = 0;
 static bool wifi_connected = false;
+static volatile int rx_node_count = 1; // Simulated RX node count
 
 // Forward declaration
 static void update_oled_display();
@@ -93,12 +94,21 @@ static void update_oled_display() {
             display.drawPixel(x, y, SSD1306_WHITE);
         }
     } else {
-        // View 1: Number of connected RX nodes
+        // View 1: Number of connected RX nodes (simulated)
         display.setCursor(0,0);
         display.print("Receivers: ");
-        display.println(0); // TODO: Replace with actual RX node count
+        display.println(rx_node_count);
     }
     display.display();
+}
+// Simulate RX node count by incrementing every 5 seconds
+static void rx_node_sim_task(void *arg) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        rx_node_count++;
+        if (rx_node_count > 4) rx_node_count = 1;
+        if (display_mode == 1) update_oled_display();
+    }
 }
 
 // Button polling + debounce (active low)
@@ -244,6 +254,9 @@ void app_main(void)
     };
     gpio_config(&btn_cfg);
     xTaskCreate(button_task, "btn_task", 2048, NULL, 3, NULL);
+
+    // Start RX node simulation task
+    xTaskCreate(rx_node_sim_task, "rx_node_sim", 1024, NULL, 2, NULL);
     
     start_softap();
 

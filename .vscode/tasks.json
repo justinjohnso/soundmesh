@@ -9,6 +9,32 @@
     }
   ],
   "tasks": [
+        {
+          "label": "idf: full tx workflow (101)",
+          "dependsOn": [
+            "idf: copy-to-tmp tx",
+            "idf: build tmp tx",
+            "idf: flash tmp tx (101)"
+          ],
+          "type": "shell",
+          "group": "build",
+          "presentation": {
+            "reveal": "always"
+          }
+        },
+        {
+          "label": "idf: full rx workflow (2101)",
+          "dependsOn": [
+            "idf: copy-to-tmp rx",
+            "idf: build tmp rx",
+            "idf: flash tmp rx (2101)"
+          ],
+          "type": "shell",
+          "group": "build",
+          "presentation": {
+            "reveal": "always"
+          }
+        }
     {
       "label": "idf: build tx",
       "type": "shell",

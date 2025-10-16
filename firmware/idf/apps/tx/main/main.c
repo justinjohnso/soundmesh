@@ -7,14 +7,33 @@
 #include <string.h>
 #include <math.h>
 #ifndef M_PI
-#define M_PI 3.14159265358979323846f
+// 0 = streaming bar (bottom), 1 = info bar (top)
+static volatile int display_mode = 0;
+
+// Audio input mode
+typedef enum {
+    AUDIO_INPUT_TONE = 0,
+    AUDIO_INPUT_AUX = 1,
+    AUDIO_INPUT_USB = 2
+} audio_input_mode_t;
+static volatile audio_input_mode_t audio_mode = AUDIO_INPUT_TONE;
 #endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
+        switch (audio_mode) {
+            case AUDIO_INPUT_TONE:
+                display.println("Streaming: TONE");
+                break;
+            case AUDIO_INPUT_AUX:
+                display.println("Streaming: AUX");
+                break;
+            case AUDIO_INPUT_USB:
+                display.println("Streaming: USB");
+                break;
+        }
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"

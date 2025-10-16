@@ -33,10 +33,15 @@ static volatile audio_input_mode_t audio_mode = AUDIO_INPUT_USB;
 #include "ssd1306.h"
 #include "nvs_flash.h"
 
-// TinyUSB audio configuration - must be defined before including audio headers
-#define CFG_TUD_AUDIO_FUNC_1_DESC_LEN 109
-#define CFG_TUD_AUDIO_FUNC_1_N_AS_INT 1
-#define CFG_TUD_AUDIO_FUNC_1_CTRL_BUF_SZ 64
+// ============================================================================
+// TinyUSB Audio Configuration - MUST be defined before including audio_device.h
+#define CFG_TUD_AUDIO_FUNC_1_DESC_LEN 132  // Length of audio function descriptors (not including config desc)
+#define CFG_TUD_AUDIO_FUNC_1_N_AS_INT 1    // Number of audio streaming interfaces
+#define CFG_TUD_AUDIO_FUNC_1_CTRL_BUF_SZ 64  // Control request buffer size
+
+// Helper macros for multi-byte values (little-endian)
+#define U16_TO_U8S_LE(u16) ((u16) & 0xFF), (((u16) >> 8) & 0xFF)
+#define U32_TO_U8S_LE(u32) ((u32) & 0xFF), (((u32) >> 8) & 0xFF), (((u32) >> 16) & 0xFF), (((u32) >> 24) & 0xFF)
 
 #include "tinyusb.h"
 #include "tusb.h"
@@ -100,8 +105,9 @@ static int last_display_mode = -1; // Track mode changes
 static volatile audio_input_mode_t audio_mode = AUDIO_INPUT_USB;
 static RingbufHandle_t audio_ring_buffer = NULL;
 
-// Forward declaration
+// Forward declarations
 static void update_oled_display();
+static void init_usb_audio(void);
 
 // TinyUSB and OLED use driver_ng I2C API
 static i2c_master_bus_handle_t i2c_bus = NULL;
@@ -303,7 +309,7 @@ static void update_oled_display() {
     }
     ESP_ERROR_CHECK(ssd1306_display_pages(ssd1306_dev));
 }
-// Simulate RX node count by incrementing every 5 seconds
+
 static void rx_node_sim_task(void *arg) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(5000));
@@ -389,7 +395,22 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-// USB Audio Device Descriptor
+// ============================================================================
+// USB AUDIO CONFIGURATION - Simple speaker configuration
+// This makes the ESP32 appear as a SPEAKER (audio OUTPUT from computer)
+// ============================================================================
+
+// Interface and endpoint definitions
+enum {
+    ITF_NUM_AUDIO_CONTROL = 0,
+    ITF_NUM_AUDIO_STREAMING,
+    ITF_NUM_TOTAL
+};
+
+#define EPNUM_AUDIO_OUT 0x01
+#define AUDIO_SAMPLE_RATE 16000
+
+// Device Descriptor
 static tusb_desc_device_t const usb_audio_device_descriptor = {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
@@ -407,153 +428,138 @@ static tusb_desc_device_t const usb_audio_device_descriptor = {
     .bNumConfigurations = 0x01
 };
 
-// USB String Descriptors
-static char const* usb_string_descriptors[] = {
-    (const char[]) { 0x09, 0x04 }, // 0: Language (English)
-    "Espressif",                    // 1: Manufacturer
-    "ESP32-S3 Audio Output",        // 2: Product
-    "123456",                        // 3: Serial Number
-    "ESP32 Audio",                   // 4: Audio Interface
-};
+// Configuration Descriptor Length Calculation
+// Based on UAC2 speaker device structure
+#define TUD_AUDIO_DESC_IAD_LEN 8
+#define TUD_AUDIO_DESC_STD_AC_LEN 9
+#define TUD_AUDIO_DESC_CS_AC_LEN 9
+#define TUD_AUDIO_DESC_CLK_SRC_LEN 8
+#define TUD_AUDIO_DESC_INPUT_TERM_LEN 17
+#define TUD_AUDIO_DESC_OUTPUT_TERM_LEN 12
+#define TUD_AUDIO_DESC_FEATURE_UNIT_ONE_CHANNEL_LEN 14
 
-// USB Audio Configuration - Manual descriptor for UAC1 audio input device
-enum {
-    ITF_NUM_AUDIO_CONTROL = 0,
-    ITF_NUM_AUDIO_STREAMING,
-    ITF_NUM_TOTAL
-};
+#define TUD_AUDIO_SPEAKER_CTRL_LEN (TUD_AUDIO_DESC_CLK_SRC_LEN + TUD_AUDIO_DESC_INPUT_TERM_LEN + \
+                                     TUD_AUDIO_DESC_OUTPUT_TERM_LEN + TUD_AUDIO_DESC_FEATURE_UNIT_ONE_CHANNEL_LEN)
 
-#define EPNUM_AUDIO_OUT 0x01
-#define AUDIO_SAMPLE_RATE 16000
+#define TUD_AUDIO_DESC_STD_AS_INT_LEN 9
+#define TUD_AUDIO_DESC_CS_AS_INT_LEN 16
+#define TUD_AUDIO_DESC_TYPE_I_FORMAT_LEN 6
+#define TUD_AUDIO_DESC_STD_AS_ISO_EP_LEN 7
+#define TUD_AUDIO_DESC_CS_AS_ISO_EP_LEN 8
 
-// UAC1 Configuration Descriptor
+#define TUD_AUDIO_SPEAKER_STREAMING_LEN (2 * TUD_AUDIO_DESC_STD_AS_INT_LEN + TUD_AUDIO_DESC_CS_AS_INT_LEN + \
+                                          TUD_AUDIO_DESC_TYPE_I_FORMAT_LEN + TUD_AUDIO_DESC_STD_AS_ISO_EP_LEN + \
+                                          TUD_AUDIO_DESC_CS_AS_ISO_EP_LEN)
+
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_AUDIO_DESC_IAD_LEN + TUD_AUDIO_DESC_STD_AC_LEN + \
+                          TUD_AUDIO_DESC_CS_AC_LEN + TUD_AUDIO_SPEAKER_CTRL_LEN + TUD_AUDIO_SPEAKER_STREAMING_LEN)
+
+// USB Audio Configuration Descriptor - Simple speaker (mono, 16kHz, 16-bit)
+// Based on UAC2 specification and uac2_headset example structure
 static uint8_t const usb_audio_configuration_descriptor[] = {
-    // Interface Association Descriptor (IAD)
-    TUD_AUDIO_DESC_IAD(
-        /*_firstitfs*/ ITF_NUM_AUDIO_CONTROL,
-        /*_nitfs*/ ITF_NUM_TOTAL,
-        /*_stridx*/ 0x00
-    ),
+    // Configuration Descriptor (9 bytes)
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     
-    // Standard AC Interface Descriptor (4.7.1)
-    TUD_AUDIO_DESC_STD_AC(
-        /*_itfnum*/ ITF_NUM_AUDIO_CONTROL,
-        /*_nEPs*/ 0,
-        /*_stridx*/ 0x00
-    ),
+    // Interface Association Descriptor (8 bytes)
+    8, TUSB_DESC_INTERFACE_ASSOCIATION, ITF_NUM_AUDIO_CONTROL, 2, TUSB_CLASS_AUDIO, AUDIO_SUBCLASS_UNDEFINED, AUDIO_INT_PROTOCOL_CODE_V2, 0,
     
-    // Class-Specific AC Interface Header Descriptor (4.7.2)
-    TUD_AUDIO_DESC_CS_AC(
-        /*_bcdADC*/ 0x0100,
-        /*_category*/ AUDIO_FUNC_DESKTOP_SPEAKER,
-        /*_totallen*/ TUD_AUDIO_DESC_CLK_SRC_LEN + TUD_AUDIO_DESC_INPUT_TERM_LEN + TUD_AUDIO_DESC_OUTPUT_TERM_LEN + TUD_AUDIO_DESC_FEATURE_UNIT_ONE_CHANNEL_LEN,
-        /*_ctrl*/ AUDIO_CS_AS_INTERFACE_CTRL_LATENCY_POS
-    ),
+    // Standard AC Interface Descriptor (9 bytes)
+    9, TUSB_DESC_INTERFACE, ITF_NUM_AUDIO_CONTROL, 0, 0, TUSB_CLASS_AUDIO, AUDIO_SUBCLASS_CONTROL, AUDIO_INT_PROTOCOL_CODE_V2, 0,
     
-    // Clock Source Descriptor (4.7.2.1)
-    TUD_AUDIO_DESC_CLK_SRC(
-        /*_clkid*/ 0x04,
-        /*_attr*/ AUDIO_CLOCK_SOURCE_ATT_INT_FIX_CLK,
-        /*_ctrl*/ (AUDIO_CTRL_R << AUDIO_CLOCK_SOURCE_CTRL_CLK_FRQ_POS),
-        /*_assocTerm*/ 0x00,
-        /*_stridx*/ 0x00
-    ),
+    // Class-Specific AC Interface Header Descriptor (9 bytes)
+    9, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AC_INTERFACE_HEADER, U16_TO_U8S_LE(0x0200), AUDIO_FUNC_DESKTOP_SPEAKER,
+    U16_TO_U8S_LE(TUD_AUDIO_SPEAKER_CTRL_LEN), AUDIO_CS_AS_INTERFACE_CTRL_LATENCY_POS,
     
-    // Input Terminal Descriptor (4.7.2.4 - USB Streaming IN)
-    TUD_AUDIO_DESC_INPUT_TERM(
-        /*_termid*/ 0x01,
-        /*_termtype*/ AUDIO_TERM_TYPE_USB_STREAMING,
-        /*_assocTerm*/ 0x00,
-        /*_clkid*/ 0x04,
-        /*_nchannelslogical*/ 0x01,
-        /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED,
-        /*_idxchannelnames*/ 0x00,
-        /*_ctrl*/ 0,
-        /*_stridx*/ 0x00
-    ),
+    // Clock Source Descriptor (8 bytes) - ID 0x04
+    8, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AC_INTERFACE_CLOCK_SOURCE, 0x04, AUDIO_CLOCK_SOURCE_ATT_INT_FIX_CLK,
+    (AUDIO_CTRL_R << AUDIO_CLOCK_SOURCE_CTRL_CLK_FRQ_POS), 0x00, 0x00,
     
-    // Output Terminal Descriptor (4.7.2.5 - Desktop Speaker OUT)
-    TUD_AUDIO_DESC_OUTPUT_TERM(
-        /*_termid*/ 0x03,
-        /*_termtype*/ AUDIO_TERM_TYPE_OUT_DESKTOP_SPEAKER,
-        /*_assocTerm*/ 0x00,
-        /*_srcid*/ 0x01,
-        /*_clkid*/ 0x04,
-        /*_ctrl*/ 0x0000,
-        /*_stridx*/ 0x00
-    ),
+    // Input Terminal Descriptor (17 bytes) - ID 0x01 (USB streaming IN)
+    17, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AC_INTERFACE_INPUT_TERMINAL, 0x01, U16_TO_U8S_LE(AUDIO_TERM_TYPE_USB_STREAMING),
+    0x00, 0x04, 0x01, U32_TO_U8S_LE(AUDIO_CHANNEL_CONFIG_NON_PREDEFINED), 0x00, U16_TO_U8S_LE(0x0000), 0x00,
     
-    // Standard AS Interface Descriptor (4.9.1) - Alternate 0 (Zero Bandwidth)
-    TUD_AUDIO_DESC_STD_AS_INT(
-        /*_itfnum*/ ITF_NUM_AUDIO_STREAMING,
-        /*_altset*/ 0x00,
-        /*_nEPs*/ 0x00,
-        /*_stridx*/ 0x00
-    ),
+    // Feature Unit Descriptor (14 bytes) - ID 0x02 (Volume control)
+    14, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AC_INTERFACE_FEATURE_UNIT, 0x02, 0x01,
+    U32_TO_U8S_LE((AUDIO_CTRL_RW << AUDIO_FEATURE_UNIT_CTRL_MUTE_POS) | (AUDIO_CTRL_RW << AUDIO_FEATURE_UNIT_CTRL_VOLUME_POS)),
+    U32_TO_U8S_LE(0x00000000), 0x00,
     
-    // Standard AS Interface Descriptor (4.9.1) - Alternate 1 (Operational)
-    TUD_AUDIO_DESC_STD_AS_INT(
-        /*_itfnum*/ ITF_NUM_AUDIO_STREAMING,
-        /*_altset*/ 0x01,
-        /*_nEPs*/ 0x01,
-        /*_stridx*/ 0x00
-    ),
+    // Output Terminal Descriptor (12 bytes) - ID 0x03 (Desktop speaker OUT)
+    12, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AC_INTERFACE_OUTPUT_TERMINAL, 0x03, U16_TO_U8S_LE(AUDIO_TERM_TYPE_OUT_DESKTOP_SPEAKER),
+    0x00, 0x02, 0x04, U16_TO_U8S_LE(0x0000), 0x00,
     
-    // Class-Specific AS Interface Descriptor (4.9.2)
-    TUD_AUDIO_DESC_CS_AS_INT(
-        /*_termid*/ 0x03,
-        /*_ctrl*/ AUDIO_CTRL_NONE,
-        /*_formattype*/ AUDIO_FORMAT_TYPE_I,
-        /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM,
-        /*_nchannelsphysical*/ 0x01,
-        /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED,
-        /*_stridx*/ 0x00
-    ),
+    // Standard AS Interface Descriptor - Alt 0 (Zero Bandwidth) (9 bytes)
+    9, TUSB_DESC_INTERFACE, ITF_NUM_AUDIO_STREAMING, 0, 0, TUSB_CLASS_AUDIO, AUDIO_SUBCLASS_STREAMING, AUDIO_INT_PROTOCOL_CODE_V2, 0,
     
-    // Type I Format Type Descriptor (2.3.1.6)
-    TUD_AUDIO_DESC_TYPE_I_FORMAT(
-        /*_subslotsize*/ 2,
-        /*_bitresolution*/ 16
-    ),
+    // Standard AS Interface Descriptor - Alt 1 (Operational) (9 bytes)
+    9, TUSB_DESC_INTERFACE, ITF_NUM_AUDIO_STREAMING, 1, 1, TUSB_CLASS_AUDIO, AUDIO_SUBCLASS_STREAMING, AUDIO_INT_PROTOCOL_CODE_V2, 0,
     
-    // Standard AS Isochronous Audio Data Endpoint Descriptor (4.10.1.1)
-    TUD_AUDIO_DESC_STD_AS_ISO_EP(
-        /*_ep*/ EPNUM_AUDIO_OUT,
-        /*_attr*/ (TUSB_XFER_ISOCHRONOUS | TUSB_ISO_EP_ATT_ADAPTIVE | TUSB_ISO_EP_ATT_DATA),
-        /*_maxEPsize*/ TUD_AUDIO_EP_SIZE(AUDIO_SAMPLE_RATE, 2, 1),
-        /*_interval*/ 0x01
-    ),
+    // Class-Specific AS Interface Descriptor (16 bytes)
+    16, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AS_INTERFACE_AS_GENERAL, 0x01, AUDIO_CTRL_NONE, AUDIO_FORMAT_TYPE_I,
+    U32_TO_U8S_LE(AUDIO_DATA_FORMAT_TYPE_I_PCM), 0x01, U32_TO_U8S_LE(AUDIO_CHANNEL_CONFIG_NON_PREDEFINED), 0x00,
     
-    // Class-Specific AS Isochronous Audio Data Endpoint Descriptor (4.10.1.2)
-    TUD_AUDIO_DESC_CS_AS_ISO_EP(
-        /*_attr*/ AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK,
-        /*_ctrl*/ AUDIO_CTRL_NONE,
-        /*_lockdelayunit*/ AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_UNDEFINED,
-        /*_lockdelay*/ 0x0000
-    )
+    // Type I Format Type Descriptor (6 bytes)
+    6, TUSB_DESC_CS_INTERFACE, AUDIO_CS_AS_INTERFACE_FORMAT_TYPE, AUDIO_FORMAT_TYPE_I, 0x02, 0x10,
+    
+    // Standard AS Isochronous Audio Data Endpoint Descriptor (7 bytes)
+    7, TUSB_DESC_ENDPOINT, EPNUM_AUDIO_OUT, (TUSB_XFER_ISOCHRONOUS | TUSB_ISO_EP_ATT_ADAPTIVE | TUSB_ISO_EP_ATT_DATA),
+    U16_TO_U8S_LE(64), 1,
+    
+    // Class-Specific AS Isochronous Audio Data Endpoint Descriptor (8 bytes)
+    8, TUSB_DESC_CS_ENDPOINT, AUDIO_CS_EP_SUBTYPE_GENERAL, AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK,
+    AUDIO_CTRL_NONE, AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_UNDEFINED, U16_TO_U8S_LE(0x0000),
 };
 
-// TinyUSB Audio Callback - Called when USB audio data arrives
-// Note: For UAC1 devices, audio data must be read using tud_audio_n_read() in the main loop
-// This callback just signals that data is available
+// String Descriptors
+static const char* usb_string_descriptors[] = {
+    "",                       // 0: Language (filled by TinyUSB)
+    "NYU ITP",               // 1: Manufacturer
+    "MeshNet Audio TX",      // 2: Product
+    "123456",                // 3: Serial Number
+    "MeshNet Speakers",      // 4: Audio Interface
+};
+
+// ============================================================================
+// USB AUDIO CALLBACKS
+// ============================================================================
+
+// Buffer for speaker data (receiving audio FROM computer)
+static uint8_t spk_buf[512];
+static int spk_data_size = 0;
+
+// Called when USB audio data arrives FROM the computer
 bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, uint8_t func_id, uint8_t ep_out, uint8_t cur_alt_setting)
 {
     (void)rhport;
-    (void)n_bytes_received;
     (void)func_id;
     (void)ep_out;
     (void)cur_alt_setting;
     
-    // Audio data will be polled in the main UDP sender task
-    // This callback just confirms the interface is active
+    // If we have a ring buffer and received audio data, write it
+    if (audio_ring_buffer != NULL && n_bytes_received > 0 && audio_mode == AUDIO_INPUT_USB) {
+        uint16_t bytes_to_copy = n_bytes_received < sizeof(spk_buf) ? n_bytes_received : sizeof(spk_buf);
+        
+        // Write to ring buffer for UDP transmission
+        xRingbufferSendFromISR(audio_ring_buffer, spk_buf, bytes_to_copy, NULL);
+        
+        is_streaming = true;
+        spk_data_size = bytes_to_copy;
+    }
+    
     return true;
 }
 
-// TinyUSB Audio Control Callbacks (required but minimal)
+// Interface control callbacks
 bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const * p_request)
 {
     (void)rhport;
-    (void)p_request;
+    uint8_t const itf = tu_u16_low(tu_le16toh(p_request->wIndex));
+    uint8_t const alt = tu_u16_low(tu_le16toh(p_request->wValue));
+    
+    ESP_LOGI(TAG, "USB Audio: Set interface %d alt %d", itf, alt);
+    
+    // Clear buffer when streaming format changes
+    spk_data_size = 0;
+    
     return true;
 }
 
@@ -564,9 +570,105 @@ bool tud_audio_set_itf_close_EP_cb(uint8_t rhport, tusb_control_request_t const 
     return true;
 }
 
+// Required entity control callbacks (minimal implementation)
+bool tud_audio_get_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request)
+{
+    (void)rhport;
+    (void)p_request;
+    ESP_LOGD(TAG, "USB Audio: Get request entity");
+    return false;
+}
+
+bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p_request, uint8_t *buf)
+{
+    (void)rhport;
+    (void)p_request;
+    (void)buf;
+    ESP_LOGD(TAG, "USB Audio: Set request entity");
+    return false;
+}
+
+static void scan_i2c_bus(void)
+{
+    ESP_LOGI(TAG, "Scanning I2C bus...");
+    int devices_found = 0;
+    
+    // Scan all 7-bit I2C addresses (0x03 to 0x77, skipping reserved)
+    for (uint8_t addr = 0x03; addr < 0x78; addr++) {
+        // Create temporary device config for probing
+        i2c_device_config_t probe_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = addr,
+            .scl_speed_hz = I2C_MASTER_FREQ_HZ,
+        };
+        
+        i2c_master_dev_handle_t probe_handle;
+        esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &probe_cfg, &probe_handle);
+        if (ret == ESP_OK) {
+            // Try to probe the device with a zero-byte write
+            ret = i2c_master_probe(i2c_bus, addr, pdMS_TO_TICKS(10));
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "  Found device at address 0x%02X", addr);
+                devices_found++;
+            }
+            i2c_master_bus_rm_device(probe_handle);
+        }
+    }
+    
+    if (devices_found == 0) {
+        ESP_LOGW(TAG, "No I2C devices found on bus");
+    } else {
+        ESP_LOGI(TAG, "Found %d I2C device(s)", devices_found);
+    }
+    ESP_LOGI(TAG, "PCF8591 expected at address 0x%02X", PCF8591_ADDR);
+}
+
+static void usb_monitor_task(void *arg)
+{
+    bool last_mounted = false;
+    bool last_suspended = false;
+    
+    ESP_LOGI(TAG, "USB Monitor task started");
+    ESP_LOGI(TAG, "Waiting for USB host connection...");
+    ESP_LOGI(TAG, "TIP: For Android, connect via USB-C cable");
+    
+    for (;;) {
+        bool mounted = tud_mounted();
+        bool suspended = tud_suspended();
+        
+        // Log state changes
+        if (mounted != last_mounted) {
+            if (mounted) {
+                ESP_LOGI(TAG, "=================================");
+                ESP_LOGI(TAG, "USB Device CONNECTED!");
+                ESP_LOGI(TAG, "Device appears as: USB Audio Output");
+                ESP_LOGI(TAG, "Android: Play music/audio on phone");
+                ESP_LOGI(TAG, "Audio will stream via UDP to RX");
+                ESP_LOGI(TAG, "=================================");
+            } else {
+                ESP_LOGW(TAG, "USB Device disconnected");
+            }
+            last_mounted = mounted;
+        }
+        
+        if (suspended != last_suspended) {
+            if (suspended) {
+                ESP_LOGW(TAG, "USB suspended");
+            } else {
+                ESP_LOGI(TAG, "USB resumed");
+            }
+            last_suspended = suspended;
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Check once per second
+    }
+}
+
 static void init_usb_audio(void)
 {
-    ESP_LOGI(TAG, "Initializing USB Audio Class device...");
+    ESP_LOGI(TAG, "╔════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   Initializing USB Audio Class Device     ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════════════╝");
     
     // Configure TinyUSB with custom audio descriptors
     const tinyusb_config_t tusb_cfg = {
@@ -579,17 +681,36 @@ static void init_usb_audio(void)
     
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
     
-    ESP_LOGI(TAG, "USB Audio device initialized:");
-    ESP_LOGI(TAG, "  Sample Rate: %d Hz", USB_AUDIO_SAMPLE_RATE);
-    ESP_LOGI(TAG, "  Channels: %d (Mono)", USB_AUDIO_CHANNEL_COUNT);
-    ESP_LOGI(TAG, "  Bit Depth: %d-bit", USB_AUDIO_BIT_RESOLUTION);
-    ESP_LOGI(TAG, "Connect USB cable and select as audio output device on host");
+    ESP_LOGI(TAG, "✓ USB Audio device configured:");
+    ESP_LOGI(TAG, "  • Sample Rate: %d Hz", USB_AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "  • Channels: %d (Mono)", USB_AUDIO_CHANNEL_COUNT);
+    ESP_LOGI(TAG, "  • Bit Depth: %d-bit", USB_AUDIO_BIT_RESOLUTION);
+    ESP_LOGI(TAG, "  • Device Name: %s", usb_string_descriptors[1]);
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "⚠️  NOTE: Serial monitor will disconnect when USB audio activates!");
+    ESP_LOGI(TAG, "   This is expected - USB audio uses the same USB port.");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📱 For Android testing:");
+    ESP_LOGI(TAG, "   1. Connect device to Android phone via USB-C cable");
+    ESP_LOGI(TAG, "   2. Phone should show 'USB device detected' notification");
+    ESP_LOGI(TAG, "   3. Open any audio recording app (Voice Recorder, etc.)");
+    ESP_LOGI(TAG, "   4. Select 'USB Audio Device' as input source");
+    ESP_LOGI(TAG, "   5. You should see/hear the audio streaming!");
+    ESP_LOGI(TAG, "");
+    
+    // Start USB monitoring task
+    xTaskCreate(usb_monitor_task, "usb_monitor", 4096, NULL, 5, NULL);
 }
 
 static void pcf8591_read_task(void *arg)
 {
     uint8_t cmd = PCF8591_CHANNEL; // Select AIN0
     int16_t sample_buffer[SAMPLES_PER_PACKET];
+    bool pcf8591_available = false;
+    i2c_master_dev_handle_t pcf8591_handle = NULL;
+    
+    // Scan I2C bus to detect devices
+    scan_i2c_bus();
     
     // Add I2C device for PCF8591 using existing bus
     i2c_device_config_t pcf8591_cfg = {
@@ -597,12 +718,39 @@ static void pcf8591_read_task(void *arg)
         .device_address = PCF8591_ADDR,
         .scl_speed_hz = I2C_MASTER_FREQ_HZ,
     };
-    i2c_master_dev_handle_t pcf8591_handle;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &pcf8591_cfg, &pcf8591_handle));
+    
+    esp_err_t ret = i2c_master_bus_add_device(i2c_bus, &pcf8591_cfg, &pcf8591_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add PCF8591 I2C device: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "PCF8591 ADC not available - AUX input will not work");
+    } else {
+        // Test if device responds
+        uint8_t test_read;
+        ret = i2c_master_transmit_receive(pcf8591_handle, &cmd, 1, &test_read, 1, pdMS_TO_TICKS(10));
+        if (ret == ESP_OK) {
+            pcf8591_available = true;
+            ESP_LOGI(TAG, "PCF8591 ADC initialized successfully");
+        } else {
+            ESP_LOGW(TAG, "PCF8591 not responding on I2C bus - check wiring (SDA=GPIO%d, SCL=GPIO%d)", I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+        }
+    }
+    
+    int consecutive_errors = 0;
+    const int MAX_CONSECUTIVE_ERRORS = 10;
     
     for (;;) {
-        if (audio_mode == AUDIO_INPUT_AUX && audio_ring_buffer != NULL) {
+        // If too many errors, disable device and wait before retrying
+        if (consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
+            pcf8591_available = false;
+            ESP_LOGW(TAG, "PCF8591 disabled after %d consecutive errors - will retry in 5s", MAX_CONSECUTIVE_ERRORS);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            consecutive_errors = 0; // Reset counter to allow retry
+            pcf8591_available = true; // Try again
+        }
+        
+        if (audio_mode == AUDIO_INPUT_AUX && audio_ring_buffer != NULL && pcf8591_available) {
             // Read samples at 16kHz rate (one packet every 10ms)
+            int errors_in_packet = 0;
             for (int i = 0; i < SAMPLES_PER_PACKET; i++) {
                 // Send command and read ADC value using driver_ng API
                 uint8_t adc_value = 0;
@@ -612,16 +760,26 @@ static void pcf8591_read_task(void *arg)
                     // Convert 8-bit ADC (0-255) to 16-bit PCM (-32768 to 32767)
                     // Center around 0 and scale up
                     sample_buffer[i] = ((int16_t)adc_value - 128) * 256;
+                    consecutive_errors = 0; // Reset on successful read
                 } else {
                     sample_buffer[i] = 0; // Silence on error
+                    errors_in_packet++;
                 }
                 
-                // Delay to achieve ~16kHz sampling (62.5us per sample)
-                // Since we process in batches, delay after full buffer
+                // Small delay to prevent I2C bus saturation (62.5us per sample at 16kHz)
+                vTaskDelay(1); // ~1ms delay, will read slower but safer
+            }
+            
+            // Track consecutive errors across packets
+            if (errors_in_packet > SAMPLES_PER_PACKET / 2) {
+                consecutive_errors++;
             }
             
             // Write packet to ring buffer
             xRingbufferSend(audio_ring_buffer, sample_buffer, sizeof(sample_buffer), 0);
+        } else {
+            // Reset error count when not actively using PCF8591
+            consecutive_errors = 0;
         }
         
         vTaskDelay(pdMS_TO_TICKS(10)); // 10ms per packet
@@ -680,17 +838,16 @@ static void udp_sender_task(void *arg)
     bool has_audio = false;
 
     while (1) {
-        has_audio = false;
-        
         // Route audio based on current mode
         if (audio_mode == AUDIO_INPUT_TONE) {
-            // Generate tone - always has audio
+            // Generate tone - always streaming in tone mode
             for (int i = 0; i < SAMPLES_PER_PACKET; ++i) {
                 buffer[i] = (int16_t)(sinf(phase) * 3000.0f);
                 phase += phase_inc;
                 if (phase > 2.0f * M_PI) phase -= 2.0f * M_PI;
             }
             has_audio = true;
+            is_streaming = true;
         } else if (audio_mode == AUDIO_INPUT_USB) {
             // Try to read from TinyUSB audio buffer using direct API
             // Note: TinyUSB audio functions may vary by version
@@ -793,13 +950,15 @@ void app_main(void)
     }
     
     // Initialize USB audio (TinyUSB UAC)
+    // NOTE: Serial monitor will disconnect when USB audio takes over!
+    // Audio data is received via tud_audio_rx_done_post_read_cb()
     init_usb_audio();
     
-    // Start PCF8591 ADC reading task for AUX input
+    // Start PCF8591 ADC reading task for AUX input (only runs in AUX mode)
     xTaskCreate(pcf8591_read_task, "pcf8591_adc", 3072, NULL, 4, NULL);
-
+    
     // Start RX node simulation task
-    xTaskCreate(rx_node_sim_task, "rx_node_sim", 1024, NULL, 2, NULL);
+    xTaskCreate(rx_node_sim_task, "rx_node_sim", 2048, NULL, 2, NULL);
     
     start_softap();
 

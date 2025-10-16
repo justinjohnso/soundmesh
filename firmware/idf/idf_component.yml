@@ -15,3 +15,4 @@ dependencies:
   #   # All dependencies of `main` are public by default.
   #   public: true
   k0i05/esp_ssd1306: '*'
+  espressif/esp_tinyusb: ^1.4.0

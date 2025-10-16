@@ -50,10 +50,12 @@ static volatile int display_mode = 0;
 
 // Global variables
 static uint32_t packet_count = 0;
+static uint32_t audio_packet_count = 0; // Packets with actual audio (not silence)
+static volatile bool is_streaming = false; // True if receiving audio (not silence)
 static bool wifi_connected = false;
 static i2s_chan_handle_t tx_handle = NULL;
-static volatile int mesh_latency_ms = 10; // Simulated mesh latency
-static volatile int mesh_hops = 1; // Simulated hop count
+static volatile int wifi_rssi = -100; // WiFi signal strength (dBm)
+static const int mesh_hops = 1; // Direct connection = 1 hop
 static uint32_t frame_counter = 0; // Smooth animation frame counter
 static int last_display_mode = -1; // Track mode changes
 
@@ -205,21 +207,35 @@ static void init_oled() {
 static void update_oled_display() {
     char buf[32];
     
-    // Only clear display when mode changes
+    // Clear entire display manually when mode changes
     if (display_mode != last_display_mode) {
-        ssd1306_clear_display(ssd1306_dev, false);
-        last_display_mode = display_mode;
-    }
-    
-    if (display_mode == 0) {
-        // Clear only the text area for mesh stats mode
         for (int y = 0; y < 32; y++) {
             for (int x = 0; x < 128; x++) {
                 ssd1306_set_pixel(ssd1306_dev, x, y, true);
             }
         }
-        // View 0: Mesh latency and hops
-        snprintf(buf, sizeof(buf), "Latency: %dms", mesh_latency_ms);
+        last_display_mode = display_mode;
+    }
+    
+    if (display_mode == 0) {
+        // Clear only the text area for mesh stats mode
+        for (int y = 0; y < 24; y++) {
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, true);
+            }
+        }
+        // View 0: WiFi signal strength as "ping" latency (lower is better)
+        // Convert dBm to ping-style metric: -30dBm (excellent) = 10ms, -90dBm (poor) = 200ms
+        int ping_ms;
+        if (wifi_rssi >= -30) {
+            ping_ms = 10; // Excellent signal
+        } else if (wifi_rssi <= -90) {
+            ping_ms = 200; // Very poor signal
+        } else {
+            // Linear mapping: -30dBm = 10ms, -90dBm = 200ms
+            ping_ms = 10 + ((wifi_rssi + 30) * -190 / 60);
+        }
+        snprintf(buf, sizeof(buf), "Ping: %d ms", ping_ms);
         draw_text(buf, 0, 0);
         snprintf(buf, sizeof(buf), "Hops: %d", mesh_hops);
         draw_text(buf, 0, 8);
@@ -233,30 +249,48 @@ static void update_oled_display() {
             }
         }
         // View 1: Audio streaming waveform animation
-        draw_text("Streaming...", 0, 0);
-        
-        // Use frame counter for smoother animation
-        for (int x = 0; x < 128; x++) {
-            float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(frame_counter % 100) * 0.1f;
-            int y = 20 + (int)(sin(phase) * 8.0f);
-            if (y >= 8 && y < 32) {
-                ssd1306_set_pixel(ssd1306_dev, x, y, false);
+        if (is_streaming) {
+            draw_text("Streaming...", 0, 0);
+            
+            // Use frame counter for smoother animation
+            for (int x = 0; x < 128; x++) {
+                float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(frame_counter % 100) * 0.1f;
+                int y = 20 + (int)(sin(phase) * 8.0f);
+                if (y >= 8 && y < 32) {
+                    ssd1306_set_pixel(ssd1306_dev, x, y, false);
+                }
+            }
+            frame_counter++;
+        } else {
+            draw_text("Waiting...", 0, 0);
+            // Draw flat line when not streaming
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, 20, false);
             }
         }
-        frame_counter++;
     }
     ssd1306_display_pages(ssd1306_dev);
 }
 
-// Simulate mesh stats by incrementing every 5 seconds
-static void mesh_stats_sim_task(void *arg) {
+// Update WiFi RSSI (signal strength) every 2 seconds
+static void wifi_rssi_update_task(void *arg) {
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        mesh_latency_ms += 10;
-        if (mesh_latency_ms > 100) mesh_latency_ms = 10;
-        mesh_hops++;
-        if (mesh_hops > 4) mesh_hops = 1;
-        if (display_mode == 0) update_oled_display();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        
+        // Query WiFi RSSI if connected
+        if (wifi_connected) {
+            wifi_ap_record_t ap_info;
+            if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+                wifi_rssi = ap_info.rssi;
+            }
+        } else {
+            wifi_rssi = -100; // No signal when disconnected
+        }
+        
+        // Update display in mesh stats mode
+        if (display_mode == 0) {
+            update_oled_display();
+        }
     }
 }
 
@@ -287,9 +321,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 {
     if (event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
-    } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
+    } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_connected = false;
+        ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+        esp_wifi_connect();
+    }
+}
+
+static void ip_event_handler(void *arg, esp_event_base_t event_base,
+                             int32_t event_id, void *event_data)
+{
+    if (event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         wifi_connected = true;
-        ESP_LOGI(TAG, "Connected to WiFi");
+    } else if (event_id == IP_EVENT_STA_LOST_IP) {
+        ESP_LOGI(TAG, "Lost IP address");
+        wifi_connected = false;
     }
 }
 
@@ -299,6 +347,7 @@ static void start_wifi_sta(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL));
 
     wifi_config_t wifi_config = {0};
     strcpy((char *)wifi_config.sta.ssid, TX_SSID);
@@ -368,6 +417,9 @@ static void udp_receive_task(void *arg)
         return;
     }
 
+    TickType_t last_audio_time = 0;
+    const TickType_t streaming_timeout = pdMS_TO_TICKS(500); // 500ms timeout for streaming status
+    
     while (1) {
         int len = recv(sock, rx_buf, rx_len, 0);
         if (len < 0) {
@@ -377,12 +429,23 @@ static void udp_receive_task(void *arg)
         }
         
         packet_count++;
+        bool has_audio = false;
         
         // Convert mono to stereo and output to I2S DAC
         if (len == 320) { // 160 samples * 2 bytes per sample
             int16_t *mono_samples = (int16_t*)rx_buf;
             int16_t stereo_buffer[320]; // 160 samples * 2 channels
             
+            // Check if packet contains actual audio (not silence)
+            const int16_t silence_threshold = 100;
+            for (int i = 0; i < 160; i++) {
+                if (mono_samples[i] > silence_threshold || mono_samples[i] < -silence_threshold) {
+                    has_audio = true;
+                    break;
+                }
+            }
+            
+            // Convert to stereo
             for (int i = 0; i < 160; i++) {
                 stereo_buffer[i * 2] = mono_samples[i];
                 stereo_buffer[i * 2 + 1] = mono_samples[i];
@@ -392,9 +455,25 @@ static void udp_receive_task(void *arg)
             i2s_channel_write(tx_handle, stereo_buffer, sizeof(stereo_buffer), &bytes_written, portMAX_DELAY);
         }
         
-        update_oled_display();
+        // Update streaming status based on audio detection
+        if (has_audio) {
+            audio_packet_count++;
+            last_audio_time = xTaskGetTickCount();
+            is_streaming = true;
+        } else {
+            // Check if we've timed out (no audio for streaming_timeout)
+            if ((xTaskGetTickCount() - last_audio_time) > streaming_timeout) {
+                is_streaming = false;
+            }
+        }
+        
+        // Throttle display updates - only update every 50 packets (~500ms) in streaming mode
+        if (display_mode == 1 && packet_count % 50 == 0) {
+            update_oled_display();
+        }
+        
         if (packet_count % 100 == 0) {
-            ESP_LOGI(TAG, "Received %lu packets", packet_count);
+            ESP_LOGI(TAG, "Received %lu packets (%lu with audio)", packet_count, audio_packet_count);
         }
     }
 
@@ -430,8 +509,8 @@ void app_main(void)
     gpio_config(&btn_cfg);
     xTaskCreate(button_task, "btn_task", 2048, NULL, 3, NULL);
 
-    // Start mesh stats simulation task
-    xTaskCreate(mesh_stats_sim_task, "mesh_stats_sim", 1024, NULL, 2, NULL);
+    // Start WiFi RSSI update task with larger stack for display operations
+    xTaskCreate(wifi_rssi_update_task, "wifi_rssi_update", 3072, NULL, 2, NULL);
 
     // Initialize I2S DAC
     init_i2s_dac();

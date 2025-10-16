@@ -10,3 +10,7 @@ CONFIG_FREERTOS_HZ=1000
 
 # ESP-ADF Compatibility
 CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+
+# USB OTG (TinyUSB via esp_tinyusb component)
+# Note: TinyUSB is now managed by esp_tinyusb component
+# Audio device configuration requires custom descriptors

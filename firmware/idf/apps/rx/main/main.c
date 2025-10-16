@@ -1,3 +1,29 @@
+// Button (mode toggle)
+#define BUTTON_GPIO 4
+#define BUTTON_DEBOUNCE_MS 50
+static volatile int display_mode = 0;
+
+// Button polling + debounce (active low)
+static void button_task(void *arg) {
+    bool last_pressed = false;
+    for (;;) {
+        int level = gpio_get_level(BUTTON_GPIO);
+        bool pressed = (level == 0);
+        if (pressed != last_pressed) {
+            vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
+            level = gpio_get_level(BUTTON_GPIO);
+            pressed = (level == 0);
+            if (pressed != last_pressed) {
+                last_pressed = pressed;
+                if (pressed) {
+                    display_mode = (display_mode == 0) ? 1 : 0;
+                    update_oled_display();
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 /* Minimal UDP receiver (WiFi STA connect to AP) for fast MVP
    - Connects to SSID set by TX SoftAP and listens for UDP packets on port 3333
    - Prints packet sizes; a follow-up can route samples to I2S for audio playback
@@ -100,136 +126,47 @@ static void i2c_scan_log() {
         esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(50));
         i2c_cmd_link_delete(cmd);
         if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "I2C device found at 0x%02X", addr);
-        }
-    }
-}
 
-static void init_oled() {
-    ESP_LOGI(TAG, "Initializing OLED display...");
-    
-    // SSD1306 128x32 initialization sequence
-    oled_send_cmd(0xAE); // Display off
-    oled_send_cmd(0xD5); // Set display clock
-    oled_send_cmd(0x80); // Default ratio
-    oled_send_cmd(0xA8); // Set multiplex
-    oled_send_cmd(0x1F); // 32 rows (0x1F = 31)
-    oled_send_cmd(0xD3); // Set display offset
-    oled_send_cmd(0x00); // No offset
-    oled_send_cmd(0x40); // Set start line
-    oled_send_cmd(0x8D); // Charge pump
-    oled_send_cmd(0x14); // Enable charge pump
-    oled_send_cmd(0x20); // Memory mode
-    oled_send_cmd(0x02); // Page addressing mode
-    oled_send_cmd(0xA1); // Set segment remap
-    oled_send_cmd(0xC8); // Set COM scan direction
-    oled_send_cmd(0xDA); // Set COM pins
-    oled_send_cmd(0x02); // Sequential, no remap (128x32)
-    oled_send_cmd(0x81); // Set contrast
-    oled_send_cmd(0x8F); // Contrast value
-    oled_send_cmd(0xD9); // Set precharge
-    oled_send_cmd(0xF1); // Precharge value
-    oled_send_cmd(0xDB); // Set VCOM detect
-    oled_send_cmd(0x40); // VCOM level
-    oled_send_cmd(0xA4); // Display follows RAM content
-    oled_send_cmd(0xA6); // Normal display (not inverted)
-    
-    // Clear the display (page by page)
-    oled_clear_all();
-    oled_send_cmd(0xAF); // Display on
+            #include "Adafruit_SSD1306.h"
 
-    // Diagnostics: scan I2C and flash a test pattern briefly
-    i2c_scan_log();
-    oled_fill(0xFF); // full white
-    vTaskDelay(pdMS_TO_TICKS(200));
-    oled_clear_all();
-    
-    ESP_LOGI(TAG, "OLED display initialized");
-    
-    // Show initial "RX" display
-    update_oled_display();
-}
+            Adafruit_SSD1306 display;
 
-static void update_oled_display() {
-    // Clear top half (pages 0 and 1)
-    uint8_t top[128];
-    memset(top, 0x00, sizeof(top));
-    oled_write_page(0, top);
-    oled_write_page(1, top);
+            static void init_oled() {
+                ESP_LOGI(TAG, "Initializing OLED display (Adafruit_SSD1306)...");
+                if (!display.init(128, 32, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, OLED_ADDR)) {
+                    ESP_LOGE(TAG, "SSD1306 allocation failed");
+                    return;
+                }
+                display.clearDisplay();
+                display.setTextSize(1);
+                display.setTextColor(SSD1306_WHITE);
+                display.setCursor(0,0);
+                display.println("RX Ready");
+                display.display();
+            }
 
-    // Bar length based on packet_count over 100-packet window
-    int step = (int)(packet_count % 100);        // 0..99
-    int bar_len = (step * 128) / 100;            // 0..127
-    if (bar_len < 2) bar_len = 2;               // ensure visible even at start
-
-    // Draw bar in pages 2 and 3
-    uint8_t bar[128];
-    memset(bar, 0x00, sizeof(bar));
-    for (int i = 0; i < bar_len && i < 128; i++) bar[i] = 0xFF;
-    oled_write_page(2, bar);
-    oled_write_page(3, bar);
-}
-
-static void init_pwm_audio() {
-    // Configure PWM timer
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .timer_num = LEDC_TIMER_0,
-        .duty_resolution = PWM_RESOLUTION,
-        .freq_hz = PWM_FREQ,
-        .clk_cfg = LEDC_AUTO_CLK
-    };
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
-    
-    // Configure PWM channel
-    ledc_channel_config_t ledc_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = PWM_AUDIO_GPIO,
-        .duty = 0,
-        .hpoint = 0
-    };
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
-}
-
-static void output_audio_pwm(int16_t *samples, int count) {
-    // Simple PWM audio output - convert 16-bit samples to 8-bit PWM duty
-    for (int i = 0; i < count; i++) {
-        // Convert signed 16-bit to unsigned 8-bit for PWM
-        uint32_t duty = ((uint32_t)(samples[i] + 32768)) >> 8; // Convert to 0-255 range
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        
-        // Small delay to approximate sample rate (very crude)
-        esp_rom_delay_us(62); // ~16kHz sample rate
-    }
-}
-
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    if (event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
-        wifi_connected = true;
-        ESP_LOGI(TAG, "Connected to WiFi");
-    }
-}
-
-static void start_sta(void)
-{
-    esp_netif_create_default_wifi_sta();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-
-    wifi_config_t wifi_config = {0};
-    strcpy((char *)wifi_config.sta.ssid, RX_SSID);
-    strcpy((char *)wifi_config.sta.password, RX_PASS);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+            static void update_oled_display() {
+                display.clearDisplay();
+                if (display_mode == 0) {
+                    // View 0: Mesh latency and hops
+                    display.setCursor(0,0);
+                    display.print("Latency: ");
+                    display.print(0); // TODO: Replace with actual latency (ms)
+                    display.print(" ms\nHops: ");
+                    display.println(0); // TODO: Replace with actual hop count
+                } else {
+                    // View 1: Audio streaming waveform animation
+                    display.setCursor(0,0);
+                    display.println("Streaming...");
+                    int y_base = 16;
+                    for (int x = 0; x < 128; x++) {
+                        float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
+                        int y = y_base + (int)(sin(phase) * 10.0f);
+                        display.drawPixel(x, y, SSD1306_WHITE);
+                    }
+                }
+                display.display();
+            }
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -323,6 +260,17 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
     init_oled();
     
+    // Initialize button GPIO
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = (1ULL << BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&btn_cfg);
+    xTaskCreate(button_task, "btn_task", 2048, NULL, 3, NULL);
+
     start_sta();
 
     xTaskCreate(udp_receive_task, "udp_rx", 8192, NULL, 5, NULL);

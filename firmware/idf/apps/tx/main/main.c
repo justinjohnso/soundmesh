@@ -67,45 +67,40 @@ static void update_oled_display();
 
 
 
+// ESP-IDF built-in SSD1306 driver
+// ESP-IDF built-in SSD1306 driver (correct API usage)
+// Use k0i05/esp_ssd1306 library for OLED display
 #include "ssd1306.h"
-#include "font8x8_basic.h"
+#include "nvs_flash.h"
 
-static SSD1306_t dev;
+
+static ssd1306_t dev;
 
 static void init_oled() {
-    ESP_LOGI(TAG, "Initializing OLED display (esp-idf-ssd1306)...");
-    i2c_master_init(&dev, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, -1);
-    ssd1306_init(&dev, 128, 32);
-    ssd1306_clear_screen(&dev, false);
-    ssd1306_contrast(&dev, 0xff);
-    ssd1306_display_text(&dev, 0, "TX Ready", 8, false);
+    ESP_LOGI(TAG, "Initializing OLED display (k0i05/esp_ssd1306)...");
+    ssd1306_init(&dev, 128, 32); // Adjust width/height if needed
+    ssd1306_clear(&dev);
+    ssd1306_draw_string(&dev, 0, 0, "TX Ready", 12, true);
+    ssd1306_refresh(&dev);
 }
 
-// Placeholder for new display update logic
 static void update_oled_display() {
-    ssd1306_clear_screen(&dev, false);
+    ssd1306_clear(&dev);
     char buf[32];
     if (display_mode == 0) {
-        // View 0: Audio streaming waveform animation
-        ssd1306_display_text(&dev, 0, "Streaming...", 11, false);
-        // Sine waveform animation (draw pixels)
-        uint8_t wave[128];
-        int y_base = 2; // page 2 (middle)
+        ssd1306_draw_string(&dev, 0, 0, "Streaming...", 12, true);
         for (int x = 0; x < 128; x++) {
             float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-            int y = y_base * 8 + 4 + (int)(sin(phase) * 10.0f);
+            int y = 16 + (int)(sin(phase) * 10.0f);
             if (y >= 0 && y < 32) {
-                wave[x] = 1 << (y % 8);
-            } else {
-                wave[x] = 0;
+                ssd1306_draw_pixel(&dev, x, y);
             }
         }
-        ssd1306_display_image(&dev, y_base, 0, wave, 128);
     } else {
-        // View 1: Number of connected RX nodes (simulated)
         snprintf(buf, sizeof(buf), "Receivers: %d", rx_node_count);
-        ssd1306_display_text(&dev, 0, buf, strlen(buf), false);
+        ssd1306_draw_string(&dev, 0, 0, buf, 12, true);
     }
+    ssd1306_refresh(&dev);
 }
 // Simulate RX node count by incrementing every 5 seconds
 static void rx_node_sim_task(void *arg) {

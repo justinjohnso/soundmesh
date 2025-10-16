@@ -61,46 +61,198 @@ static volatile int display_mode = 0;
 static uint32_t packet_count = 0;
 static bool wifi_connected = false;
 static volatile int rx_node_count = 1; // Simulated RX node count
+static uint32_t frame_counter = 0; // Smooth animation frame counter
+static int last_display_mode = -1; // Track mode changes
 
 // Forward declaration
 static void update_oled_display();
 
 
-
 // ESP-IDF built-in SSD1306 driver
-// ESP-IDF built-in SSD1306 driver (correct API usage)
 // Use k0i05/esp_ssd1306 library for OLED display
 #include "ssd1306.h"
 #include "nvs_flash.h"
 
+static i2c_master_bus_handle_t i2c_bus = NULL;
+static ssd1306_handle_t ssd1306_dev = NULL;
 
-static ssd1306_t dev;
+// Minimal 5x7 font bitmap (ASCII 32-126)
+// Each character is 5 bytes, each byte is a column
+static const uint8_t font_5x7[][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ' ' (32)
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // '!'
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // '"'
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // '#'
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // '$'
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // '%'
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // '&'
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '\''
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // '('
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // ')'
+    {0x14, 0x08, 0x3E, 0x08, 0x14}, // '*'
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // '+'
+    {0x00, 0x50, 0x30, 0x00, 0x00}, // ','
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // '-'
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // '.'
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // '/'
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // '0' (48)
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // '1'
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // '2'
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // '3'
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // '4'
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // '5'
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // '6'
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // '7'
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // '8'
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // '9'
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // ':'
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ';'
+    {0x08, 0x14, 0x22, 0x41, 0x00}, // '<'
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // '='
+    {0x00, 0x41, 0x22, 0x14, 0x08}, // '>'
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // '?'
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, // '@'
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 'A' (65)
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // 'B'
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // 'C'
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // 'D'
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // 'E'
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // 'F'
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // 'G'
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // 'H'
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // 'I'
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // 'J'
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // 'K'
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // 'L'
+    {0x7F, 0x02, 0x0C, 0x02, 0x7F}, // 'M'
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // 'N'
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 'O'
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // 'P'
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // 'Q'
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // 'R'
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // 'S'
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // 'T'
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // 'U'
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // 'V'
+    {0x3F, 0x40, 0x38, 0x40, 0x3F}, // 'W'
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // 'X'
+    {0x07, 0x08, 0x70, 0x08, 0x07}, // 'Y'
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // 'Z'
+    {0x00, 0x7F, 0x41, 0x41, 0x00}, // '['
+    {0x02, 0x04, 0x08, 0x10, 0x20}, // '\\'
+    {0x00, 0x41, 0x41, 0x7F, 0x00}, // ']'
+    {0x04, 0x02, 0x01, 0x02, 0x04}, // '^'
+    {0x40, 0x40, 0x40, 0x40, 0x40}, // '_'
+    {0x00, 0x01, 0x02, 0x04, 0x00}, // '`'
+    {0x20, 0x54, 0x54, 0x54, 0x78}, // 'a' (97)
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, // 'b'
+    {0x38, 0x44, 0x44, 0x44, 0x20}, // 'c'
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, // 'd'
+    {0x38, 0x54, 0x54, 0x54, 0x18}, // 'e'
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, // 'f'
+    {0x0C, 0x52, 0x52, 0x52, 0x3E}, // 'g'
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, // 'h'
+    {0x00, 0x44, 0x7D, 0x40, 0x00}, // 'i'
+    {0x20, 0x40, 0x44, 0x3D, 0x00}, // 'j'
+    {0x7F, 0x10, 0x28, 0x44, 0x00}, // 'k'
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, // 'l'
+    {0x7C, 0x04, 0x18, 0x04, 0x78}, // 'm'
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, // 'n'
+    {0x38, 0x44, 0x44, 0x44, 0x38}, // 'o'
+    {0x7C, 0x14, 0x14, 0x14, 0x08}, // 'p'
+    {0x08, 0x14, 0x14, 0x18, 0x7C}, // 'q'
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, // 'r'
+    {0x48, 0x54, 0x54, 0x54, 0x20}, // 's'
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, // 't'
+    {0x3C, 0x40, 0x40, 0x20, 0x7C}, // 'u'
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, // 'v'
+    {0x3C, 0x40, 0x30, 0x40, 0x3C}, // 'w'
+    {0x44, 0x28, 0x10, 0x28, 0x44}, // 'x'
+    {0x0C, 0x50, 0x50, 0x50, 0x3C}, // 'y'
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, // 'z'
+};
+
+static void draw_char(char c, int x, int y) {
+    if (c < 32 || c > 122) return;
+    const uint8_t *glyph = font_5x7[c - 32];
+    for (int col = 0; col < 5; col++) {
+        uint8_t line = glyph[col];
+        for (int row = 0; row < 7; row++) {
+            if (line & (1 << row)) {
+                ssd1306_set_pixel(ssd1306_dev, x + col, y + row, false);
+            }
+        }
+    }
+}
+
+static void draw_text(const char *str, int x, int y) {
+    while (*str) {
+        draw_char(*str, x, y);
+        x += 6; // 5 pixels + 1 space
+        str++;
+    }
+}
 
 static void init_oled() {
     ESP_LOGI(TAG, "Initializing OLED display (k0i05/esp_ssd1306)...");
-    ssd1306_init(&dev, 128, 32); // Adjust width/height if needed
-    ssd1306_clear(&dev);
-    ssd1306_draw_string(&dev, 0, 0, "TX Ready", 12, true);
-    ssd1306_refresh(&dev);
+    
+    // Initialize I2C master bus
+    i2c_master_bus_config_t i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C_MASTER_NUM,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus));
+    
+    // Initialize SSD1306 (128x32 panel)
+    ssd1306_config_t ssd1306_config = I2C_SSD1306_128x32_CONFIG_DEFAULT;
+    ESP_ERROR_CHECK(ssd1306_init(i2c_bus, &ssd1306_config, &ssd1306_dev));
+    ESP_ERROR_CHECK(ssd1306_clear_display(ssd1306_dev, false));
+    draw_text("TX Ready", 0, 0);
+    ESP_ERROR_CHECK(ssd1306_display_pages(ssd1306_dev));
 }
 
 static void update_oled_display() {
-    ssd1306_clear(&dev);
     char buf[32];
+    
+    // Only clear display when mode changes
+    if (display_mode != last_display_mode) {
+        ssd1306_clear_display(ssd1306_dev, false);
+        last_display_mode = display_mode;
+    }
+    
     if (display_mode == 0) {
-        ssd1306_draw_string(&dev, 0, 0, "Streaming...", 12, true);
-        for (int x = 0; x < 128; x++) {
-            float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(packet_count % 100) * 0.1f;
-            int y = 16 + (int)(sin(phase) * 10.0f);
-            if (y >= 0 && y < 32) {
-                ssd1306_draw_pixel(&dev, x, y);
+        // Clear only the waveform area (bottom portion)
+        for (int y = 8; y < 32; y++) {
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, true);
             }
         }
+        draw_text("Streaming...", 0, 0);
+        
+        // Use frame counter for smoother animation
+        for (int x = 0; x < 128; x++) {
+            float phase = ((float)x / 128.0f) * 2.0f * M_PI + (float)(frame_counter % 100) * 0.1f;
+            int y = 20 + (int)(sin(phase) * 8.0f);
+            if (y >= 8 && y < 32) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, false);
+            }
+        }
+        frame_counter++;
     } else {
+        // Clear only the text area for info mode
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 128; x++) {
+                ssd1306_set_pixel(ssd1306_dev, x, y, true);
+            }
+        }
         snprintf(buf, sizeof(buf), "Receivers: %d", rx_node_count);
-        ssd1306_draw_string(&dev, 0, 0, buf, 12, true);
+        draw_text(buf, 0, 0);
     }
-    ssd1306_refresh(&dev);
+    ssd1306_display_pages(ssd1306_dev);
 }
 // Simulate RX node count by incrementing every 5 seconds
 static void rx_node_sim_task(void *arg) {
@@ -204,8 +356,8 @@ static void udp_sender_task(void *arg)
             ESP_LOGW(TAG, "sendto failed: errno=%d", errno);
         } else {
             packet_count++;
-            if (packet_count % 10 == 0) { // Update display every 10 packets (~100ms)
-                update_oled_display();
+            update_oled_display();
+            if (packet_count % 100 == 0) {
                 ESP_LOGI(TAG, "Sent %lu packets", packet_count);
             }
         }
@@ -229,19 +381,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Initialize I2C for OLED
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
-    };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0));
-    
-    // Initialize OLED display
+    // Initialize OLED display (handles I2C initialization internally)
     vTaskDelay(pdMS_TO_TICKS(100)); // Wait for OLED to stabilize
     init_oled();
     

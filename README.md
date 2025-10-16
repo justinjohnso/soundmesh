@@ -351,7 +351,7 @@ This project is developed for educational purposes as part of the NYU ITP Projec
 
 ## 📞 Support
 
-For build issues or hardware questions, check the development logs in `Documentation/Posts/` or refer to the ESP-IDF documentation.
+For build issues or hardware questions, check the development logs in `docs/posts/` or refer to the ESP-IDF documentation.
 
 ---
 

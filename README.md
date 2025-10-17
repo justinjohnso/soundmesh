@@ -38,13 +38,40 @@ GPIO1 -> 1kΩ resistor -> + side of 10µF capacitor -> Audio output (3.5mm jack 
 
 ## 🏗️ Build System & Environment
 
-### Prerequisites
-- **ESP-IDF v5.5.1** (tested version)
-- **Python 3.13.7** (or compatible)
+### Current Build System: PlatformIO (Recommended)
+
+**Prerequisites:**
+- **PlatformIO Core** or **PlatformIO IDE** (VS Code extension)
 - **macOS/Linux development environment**
 - **Serial/USB drivers** for XIAO ESP32-S3
 
-### ESP-IDF Setup
+**Quick Start:**
+```bash
+# Install PlatformIO IDE extension in VS Code
+code --install-extension platformio.platformio-ide
+
+# Open the PlatformIO workspace
+code meshnet-audio-pio.code-workspace
+
+# Build and upload using VS Code tasks:
+# - "pio: full tx workflow (101)"
+# - "pio: full rx workflow (2101)"
+```
+
+See `firmware/platformio/README.md` for complete PlatformIO documentation.
+
+### Legacy Build System: ESP-IDF
+
+The original ESP-IDF build system is still available in `firmware/idf/` but is no longer the primary development method.
+
+<details>
+<summary>ESP-IDF Setup Instructions (Legacy)</summary>
+
+**Prerequisites:**
+- **ESP-IDF v5.5.1** (tested version)
+- **Python 3.13.7** (or compatible)
+
+**Setup:**
 ```bash
 # Install ESP-IDF (if not already installed)
 git clone -b v5.5.1 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf
@@ -55,39 +82,69 @@ cd ~/esp/esp-idf
 source ~/esp/esp-idf/export.sh
 ```
 
+</details>
+
 ## 🔨 Building and Flashing
 
-### ⚠️ Critical Build Workarounds
+### Using PlatformIO (Recommended)
 
-**1. Path Issues with Spaces/Parentheses**
+**VS Code Tasks:**
+
+Open `meshnet-audio-pio.code-workspace` in VS Code and use the integrated tasks:
+
+**Quick Workflow:**
+- `pio: full tx workflow (101)` - Complete TX build and flash
+- `pio: full rx workflow (2101)` - Complete RX build and flash
+
+**Individual Tasks:**
+- Build: `pio: build tx` / `pio: build rx`
+- Upload: `pio: upload tx (101)` / `pio: upload rx (2101)`
+- Monitor: `pio: monitor tx (101)` / `pio: monitor rx (2101)`
+- Clean: `pio: clean tx` / `pio: clean rx`
+
+**Command Line:**
 ```bash
-# ❌ DON'T build directly in paths with spaces/parentheses
-cd "/Users/user/Project Development Studio/meshnet-audio"  # FAILS
+# Build TX
+cd firmware/platformio/tx
+pio run
 
-# ✅ DO copy to /tmp for building
+# Upload and monitor TX
+pio run --target upload --target monitor
+
+# Build RX
+cd firmware/platformio/rx
+pio run
+
+# Upload and monitor RX
+pio run --target upload --target monitor
+```
+
+### Using ESP-IDF (Legacy)
+
+<details>
+<summary>ESP-IDF Build Instructions</summary>
+
+**⚠️ Critical Workarounds for ESP-IDF:**
+
+Path issues with spaces require copying to `/tmp`:
+```bash
+# Copy projects to /tmp (avoid path issues)
 cp -r "firmware/idf/apps/tx" /tmp/meshnet_tx
 cp -r "firmware/idf/apps/rx" /tmp/meshnet_rx
-cd /tmp/meshnet_tx && idf.py build
-```
 
-**2. PSRAM Configuration Issues**
-```bash
-# If you get PSRAM boot errors, clean rebuild:
-rm -f sdkconfig
-rm -rf build
+# Build and flash
+cd /tmp/meshnet_tx
 idf.py build
+idf.py -p /dev/cu.usbmodem101 flash monitor
 ```
 
-**3. Device Connection Issues**
-```bash
-# Check available ports
-ls /dev/cu.usbmodem*
+**VS Code Tasks (ESP-IDF):**
+- `idf: full tx workflow (101)` - Complete build and flash for TX
+- `idf: full rx workflow (2101)` - Complete build and flash for RX
 
-# If flash fails with "No serial data received":
-# 1. Unplug and replug the device
-# 2. Try lower baud rate: idf.py -b 115200 flash
-# 3. Hold BOOT button during flash (if available)
-```
+See legacy documentation in `firmware/idf/` for complete ESP-IDF instructions.
+
+</details>
 
 ### Build Commands
 ```bash
@@ -175,20 +232,32 @@ Troubleshooting
 
 ```
 meshnet-audio/
-├── firmware/idf/
-│   ├── apps/
-│   │   ├── tx/                 # Transmitter application
-│   │   │   ├── main/main.c     # TX source code
-│   │   │   ├── CMakeLists.txt
+├── firmware/
+│   ├── platformio/           # 🔧 PlatformIO build system (PRIMARY)
+│   │   ├── tx/              # Transmitter project
+│   │   │   ├── platformio.ini
+│   │   │   ├── src/main.c
 │   │   │   └── sdkconfig.defaults
-│   │   └── rx/                 # Receiver application
-│   │       ├── main/main.c     # RX source code
-│   │       ├── CMakeLists.txt
-│   │       └── sdkconfig.defaults
-│   └── components/             # Custom ESP-IDF components
+│   │   ├── rx/              # Receiver project
+│   │   │   ├── platformio.ini
+│   │   │   ├── src/main.c
+│   │   │   └── sdkconfig.defaults
+│   │   ├── lib/             # Shared component libraries
+│   │   │   ├── audio_board/
+│   │   │   ├── ctrl_plane/
+│   │   │   ├── mesh_stream/
+│   │   │   └── usb_audio/
+│   │   └── README.md        # PlatformIO documentation
+│   └── idf/                 # Legacy ESP-IDF build system
+│       ├── apps/
+│       │   ├── tx/
+│       │   └── rx/
+│       └── components/
 ├── Documentation/
-│   └── Posts/                  # Development blog posts
-└── README.md                   # This file
+│   └── Posts/               # Development blog posts
+├── meshnet-audio-pio.code-workspace  # VS Code workspace (PRIMARY)
+├── meshnet-audio.code-workspace       # Legacy ESP-IDF workspace
+└── README.md                # This file
 ```
 
 ## 🎛️ System Configuration
@@ -238,6 +307,41 @@ meshnet-audio/
 ## ⚠️ Common Issues & Solutions
 
 ### Build Issues
+
+**Problem**: `pio: command not found`
+```bash
+# Solution: Install PlatformIO
+pip install platformio
+# Or via VS Code extension
+code --install-extension platformio.platformio-ide
+```
+
+**Problem**: Library dependencies not found
+```bash
+# Solution: PlatformIO will auto-fetch on first build
+cd firmware/platformio/tx
+pio run  # Dependencies downloaded automatically
+```
+
+**Problem**: ESP-ADF components not available
+```bash
+# Solution: Clean rebuild to fetch ESP-ADF
+pio run --target clean
+pio run  # ESP-ADF v2.6 will be fetched automatically
+```
+
+**Problem**: Serial port permission denied (macOS/Linux)
+```bash
+# Solution: Add user to dialout group (Linux)
+sudo usermod -a -G dialout $USER
+# Or use sudo for upload (not recommended)
+```
+
+### Legacy ESP-IDF Build Issues
+
+<details>
+<summary>ESP-IDF Troubleshooting</summary>
+
 **Problem**: `zsh: command not found: idf.py`
 ```bash
 # Solution: Source ESP-IDF environment
@@ -257,6 +361,8 @@ idf.py build
 cp -r path/with/spaces /tmp/project_name
 cd /tmp/project_name
 ```
+
+</details>
 
 ### Hardware Issues
 **Problem**: OLED shows cursor/fuzz instead of content
@@ -313,10 +419,17 @@ cd /tmp/project_name
 
 ## 📝 Development Notes
 
-### Build Performance
+### Build Performance (PlatformIO)
+- **Initial build time**: ~45-60 seconds (fetches dependencies)
+- **Incremental build**: ~5-15 seconds
+- **Flash time**: ~10-15 seconds per device
+- **Automatic dependency management**: Libraries fetched once and cached
+
+### Build Performance (ESP-IDF Legacy)
 - **Clean build time**: ~30-45 seconds
 - **Incremental build**: ~5-10 seconds
 - **Flash time**: ~10-15 seconds per device
+- **Manual dependency management**: Requires component copying
 
 ### Memory Usage
 - **Flash**: ~787KB used of 2MB available (39%)
@@ -355,7 +468,9 @@ For build issues or hardware questions, check the development logs in `docs/post
 
 ---
 
-**Last Updated**: October 7, 2025  
+**Last Updated**: October 16, 2025  
+**Build System**: PlatformIO + ESP-IDF Framework (Primary), ESP-IDF Native (Legacy)  
 **ESP-IDF Version**: v5.5.1  
+**ESP-ADF Version**: v2.6 (via PlatformIO)  
 **Hardware**: XIAO ESP32-S3, SSD1306 OLED  
-**Status**: MVP Complete, Audio Streaming Verified ✅
+**Status**: PlatformIO Migration Complete, MVP Audio Streaming Verified ✅

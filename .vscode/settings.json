@@ -34,5 +34,5 @@
     "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/rx/build",
     "--header-insertion=never"
   ],
-  "cmake.sourceDirectory": "/Users/justin/Library/CloudStorage/Dropbox/NYU/Semester 3 ('25 Fall)/Project Development Studio/meshnet-audio/firmware/idf"
+  "cmake.sourceDirectory": "/Users/justin/Library/CloudStorage/Dropbox/NYU/Semester 3 (2025 Fall)/Project Development Studio/meshnet-audio/firmware/idf"
 }

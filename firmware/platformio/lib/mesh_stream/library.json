@@ -1,0 +1,23 @@
+{
+  "name": "mesh_stream",
+  "version": "1.0.0",
+  "description": "Audio streaming over ESP-WIFI-MESH with jitter buffer",
+  "keywords": ["mesh", "audio", "streaming", "esp32"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justinjohnso-itp/meshnet-audio"
+  },
+  "authors": [
+    {
+      "name": "Justin So",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": ["espidf"],
+  "platforms": ["espressif32"],
+  "build": {
+    "flags": ["-Iinclude"],
+    "srcFilter": ["+<*.c>", "+<src/>"]
+  }
+}

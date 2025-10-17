@@ -1,0 +1,23 @@
+{
+  "name": "audio_board",
+  "version": "1.0.0",
+  "description": "Audio board abstraction for XIAO ESP32-S3",
+  "keywords": ["audio", "esp32", "i2c", "gpio"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justinjohnso-itp/meshnet-audio"
+  },
+  "authors": [
+    {
+      "name": "Justin So",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": ["espidf"],
+  "platforms": ["espressif32"],
+  "build": {
+    "flags": ["-Iinclude"],
+    "srcFilter": ["+<*.c>", "+<src/>"]
+  }
+}

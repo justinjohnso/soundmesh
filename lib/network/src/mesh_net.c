@@ -78,6 +78,22 @@ esp_err_t network_init_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_connect());
     
+    ESP_LOGI(TAG, "Waiting for WiFi connection...");
+    wifi_ap_record_t ap_info;
+    int retry = 0;
+    while (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        retry++;
+        if (retry > 100) {
+            ESP_LOGE(TAG, "Failed to connect to AP");
+            return ESP_FAIL;
+        }
+    }
+    ESP_LOGI(TAG, "Connected to AP: %s (RSSI: %d)", MESH_SSID, ap_info.rssi);
+    
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_LOGI(TAG, "WiFi power-save disabled");
+    
     udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (udp_sock < 0) {
         ESP_LOGE(TAG, "Unable to create socket");
@@ -94,7 +110,7 @@ esp_err_t network_init_sta(void) {
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "STA initialized, connecting to %s", MESH_SSID);
+    ESP_LOGI(TAG, "STA initialized and connected");
     return ESP_OK;
 }
 

@@ -15,7 +15,7 @@ static const char *TAG = "rx_main";
 static rx_status_t status = {
     .rssi = -100,
     .latency_ms = 0,
-    .hops = 0,
+    .hops = 1,  // Direct connection
     .receiving_audio = false,
     .bandwidth_kbps = 0
 };

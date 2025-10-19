@@ -4,6 +4,7 @@
 #include <driver/i2c.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 static const char *TAG = "display";
 
@@ -100,6 +101,38 @@ static const uint8_t font5x7[][5] = {
     {0x63, 0x14, 0x08, 0x14, 0x63}, // X
     {0x03, 0x04, 0x78, 0x04, 0x03}, // Y
     {0x61, 0x59, 0x49, 0x4D, 0x43}, // Z
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // [ (91)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // \ (92)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ] (93)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ^ (94)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // _ (95)
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ` (96)
+    {0x20, 0x54, 0x54, 0x54, 0x78}, // a
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, // b
+    {0x38, 0x44, 0x44, 0x44, 0x20}, // c
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, // d
+    {0x38, 0x54, 0x54, 0x54, 0x18}, // e
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, // f
+    {0x18, 0xA4, 0xA4, 0xA4, 0x7C}, // g
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, // h
+    {0x00, 0x44, 0x7D, 0x40, 0x00}, // i
+    {0x40, 0x80, 0x80, 0x80, 0x7D}, // j
+    {0x7F, 0x10, 0x28, 0x44, 0x00}, // k
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, // l
+    {0x7C, 0x04, 0x18, 0x04, 0x78}, // m
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, // n
+    {0x38, 0x44, 0x44, 0x44, 0x38}, // o
+    {0xFC, 0x24, 0x24, 0x24, 0x18}, // p
+    {0x18, 0x24, 0x24, 0x18, 0xFC}, // q
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, // r
+    {0x48, 0x54, 0x54, 0x54, 0x20}, // s
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, // t
+    {0x3C, 0x40, 0x40, 0x20, 0x7C}, // u
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, // v
+    {0x3C, 0x40, 0x30, 0x40, 0x3C}, // w
+    {0x44, 0x28, 0x10, 0x28, 0x44}, // x
+    {0x1C, 0xA0, 0xA0, 0xA0, 0x7C}, // y
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, // z
 };
 
 // I2C write command
@@ -199,7 +232,7 @@ static void display_update(void) {
 
 // Draw a character at x, y (page-based)
 static void display_draw_char(uint8_t x, uint8_t page, char c) {
-    if (c < 32 || c > 'Z') c = ' ';  // Limit to our font range
+    if (c < 32 || c > 122) c = ' ';  // Limit to our font range
     
     int font_idx = c - 32;
     for (int i = 0; i < 5; i++) {
@@ -218,60 +251,115 @@ static void display_draw_string(uint8_t x, uint8_t page, const char *str) {
     }
 }
 
+// Draw a pixel at (x, y)
+static void display_draw_pixel(uint8_t x, uint8_t y) {
+    if (x >= DISPLAY_WIDTH || y >= DISPLAY_HEIGHT) return;
+
+    uint8_t page = y / 8;
+    uint8_t bit = y % 8;
+
+    display_buffer[page * DISPLAY_WIDTH + x] |= (1 << bit);
+}
+
 // Render TX display
 void display_render_tx(display_view_t view, const tx_status_t *status) {
     display_clear();
-    
+
+    static uint32_t animation_counter = 0;
+    animation_counter++;
+
     if (view == DISPLAY_VIEW_NETWORK) {
-        display_draw_string(0, 0, "TX - Network");
-        display_draw_string(0, 2, "AP: Up");
-        
+    const char *conn_str = status->connected_nodes > 0 ? "Connected" : "Disconnected";
+    display_draw_string(0, 0, conn_str);
+
         char buf[32];
         snprintf(buf, sizeof(buf), "Nodes: %lu", status->connected_nodes);
-        display_draw_string(0, 4, buf);
+        display_draw_string(0, 1, buf);
+
+        display_draw_string(0, 2, "Latency: 10 ms");
+
+    display_draw_string(0, 3, "RSSI: -50 dBm");
     } else {
-        display_draw_string(0, 0, "TX - Audio");
-        
         const char *mode_str = "Unknown";
-        if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
-        else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
-        else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
-        
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Mode: %s", mode_str);
+    if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
+    else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
+    else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
+
+    char buf[32];
+        snprintf(buf, sizeof(buf), "Source: %s", mode_str);
+        display_draw_string(0, 0, buf);
+
+        const char *status_str = status->audio_active ? "Playing..." : "Idle...";
+        display_draw_string(0, 1, status_str);
+
+        snprintf(buf, sizeof(buf), "Bandwidth: %lu kbps", status->bandwidth_kbps);
         display_draw_string(0, 2, buf);
-        
-        display_draw_string(0, 4, status->audio_active ? "Status: Active" : "Status: Idle");
+
+        if (status->audio_active) {
+            // Draw animated waveform
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+                int y = 16 + (int)(sinf(phase) * 10.0f);
+                if (y >= 0 && y < DISPLAY_HEIGHT) {
+                    display_draw_pixel(x, y);
+                }
+            }
+        } else {
+            // Flat line
+            int y = 16;
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                display_draw_pixel(x, y);
+            }
+        }
     }
-    
+
     display_update();
 }
 
 // Render RX display
 void display_render_rx(display_view_t view, const rx_status_t *status) {
-    display_clear();
-    
-    if (view == DISPLAY_VIEW_NETWORK) {
-        display_draw_string(0, 0, "RX - Network");
-        
-        char buf[32];
-        snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+display_clear();
+
+static uint32_t animation_counter = 0;
+animation_counter++;
+
+if (view == DISPLAY_VIEW_NETWORK) {
+const char *conn_str = status->receiving_audio ? "Connected" : "Disconnected";
+display_draw_string(0, 0, conn_str);
+
+char buf[32];
+    snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
+    display_draw_string(0, 1, buf);
+
+    snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
         display_draw_string(0, 2, buf);
-        
-        snprintf(buf, sizeof(buf), "Lat: %lums", status->latency_ms);
-        display_draw_string(0, 4, buf);
-        
-        snprintf(buf, sizeof(buf), "BW: %lukbps", status->bandwidth_kbps);
-        display_draw_string(0, 6, buf);
+
+snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+display_draw_string(0, 3, buf);
     } else {
-        display_draw_string(0, 0, "RX - Audio");
-        
-        display_draw_string(0, 2, status->receiving_audio ? "Rx: Active" : "Rx: Idle");
-        
-        char buf[32];
-        snprintf(buf, sizeof(buf), "BW: %lukbps", status->bandwidth_kbps);
-        display_draw_string(0, 4, buf);
+display_draw_string(0, 0, "Streaming...");
+
+char buf[32];
+snprintf(buf, sizeof(buf), "Bandwidth: %lu kbps", status->bandwidth_kbps);
+display_draw_string(0, 2, buf);
+
+if (status->receiving_audio) {
+// Draw animated waveform
+    for (int x = 0; x < DISPLAY_WIDTH; x++) {
+        float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+    int y = 16 + (int)(sinf(phase) * 10.0f);
+    if (y >= 0 && y < DISPLAY_HEIGHT) {
+        display_draw_pixel(x, y);
+}
+}
+} else {
+        // Flat line
+            int y = 16;
+        for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                display_draw_pixel(x, y);
+            }
+        }
     }
-    
+
     display_update();
 }

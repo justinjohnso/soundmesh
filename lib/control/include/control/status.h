@@ -18,6 +18,8 @@ typedef struct {
     input_mode_t input_mode;
     bool audio_active;
     uint32_t connected_nodes;
+    uint32_t latency_ms;
+    uint32_t bandwidth_kbps;
 } tx_status_t;
 
 typedef struct {

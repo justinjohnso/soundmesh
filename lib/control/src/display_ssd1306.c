@@ -7,6 +7,9 @@
 
 static const char *TAG = "display";
 
+// Forward declarations
+static void display_update(void);
+
 // SSD1306 I2C address
 #define SSD1306_I2C_ADDR 0x3C
 
@@ -30,10 +33,8 @@ static const char *TAG = "display";
 #define SSD1306_CMD_SET_COLUMN_ADDR 0x21
 #define SSD1306_CMD_SET_PAGE_ADDR 0x22
 
-// Display dimensions
-#define DISPLAY_WIDTH 128
-#define DISPLAY_HEIGHT 64
-#define DISPLAY_PAGES 8  // 64 pixels / 8
+// Display dimensions (from config/pins.h)
+#define DISPLAY_PAGES (DISPLAY_HEIGHT / 8)
 
 // Display buffer (1 bit per pixel, organized in pages)
 static uint8_t display_buffer[DISPLAY_WIDTH * DISPLAY_PAGES];
@@ -131,17 +132,20 @@ esp_err_t display_init(void) {
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_io_num = I2C_MASTER_SCL_IO,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,  // 400kHz
+        .master.clk_speed = I2C_MASTER_FREQ_HZ,
     };
     ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &i2c_conf));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0));
     
-    // SSD1306 initialization sequence
+    // Power-up delay (SSD1306 datasheet recommendation)
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // SSD1306 initialization sequence for 128x32 display
     ssd1306_write_command(SSD1306_CMD_DISPLAY_OFF);
     ssd1306_write_command(SSD1306_CMD_SET_DISPLAY_CLOCK_DIV);
     ssd1306_write_command(0x80);  // Suggested ratio
     ssd1306_write_command(SSD1306_CMD_SET_MULTIPLEX);
-    ssd1306_write_command(0x3F);  // 1/64 duty
+    ssd1306_write_command(0x1F);  // 1/32 duty (32 rows)
     ssd1306_write_command(SSD1306_CMD_SET_DISPLAY_OFFSET);
     ssd1306_write_command(0x00);  // No offset
     ssd1306_write_command(SSD1306_CMD_SET_START_LINE | 0x00);
@@ -152,9 +156,9 @@ esp_err_t display_init(void) {
     ssd1306_write_command(SSD1306_CMD_SEG_REMAP | 0x01);  // Column 127 mapped to SEG0
     ssd1306_write_command(SSD1306_CMD_COM_SCAN_DEC);  // Scan from COM[N-1] to COM0
     ssd1306_write_command(SSD1306_CMD_SET_COM_PINS);
-    ssd1306_write_command(0x12);
+    ssd1306_write_command(0x02);  // COM pins for 32-row display
     ssd1306_write_command(SSD1306_CMD_SET_CONTRAST);
-    ssd1306_write_command(0xCF);
+    ssd1306_write_command(0x8F);  // Contrast for 32-row
     ssd1306_write_command(SSD1306_CMD_SET_PRECHARGE);
     ssd1306_write_command(0xF1);
     ssd1306_write_command(SSD1306_CMD_SET_VCOM_DETECT);
@@ -164,8 +168,9 @@ esp_err_t display_init(void) {
     ssd1306_write_command(SSD1306_CMD_DISPLAY_ON);
     
     display_clear();
+    display_update();  // Initial clear
     
-    ESP_LOGI(TAG, "SSD1306 display initialized");
+    ESP_LOGI(TAG, "SSD1306 display initialized (128x%d)", DISPLAY_HEIGHT);
     return ESP_OK;
 }
 
@@ -174,20 +179,22 @@ void display_clear(void) {
     memset(display_buffer, 0, sizeof(display_buffer));
 }
 
-// Update display from buffer
+// Update display from buffer (page-by-page to avoid large I2C writes)
 static void display_update(void) {
-    // Set column address range
-    ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
-    ssd1306_write_command(0);  // Start column
-    ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
-    
-    // Set page address range
-    ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
-    ssd1306_write_command(0);  // Start page
-    ssd1306_write_command(DISPLAY_PAGES - 1);  // End page
-    
-    // Write buffer
-    ssd1306_write_data(display_buffer, sizeof(display_buffer));
+    for (uint8_t page = 0; page < DISPLAY_PAGES; page++) {
+        // Set column address range
+        ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
+        ssd1306_write_command(0);  // Start column
+        ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
+        
+        // Set page address range
+        ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
+        ssd1306_write_command(page);  // Start page
+        ssd1306_write_command(page);  // End page (same)
+        
+        // Write one page (128 bytes)
+        ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
+    }
 }
 
 // Draw a character at x, y (page-based)

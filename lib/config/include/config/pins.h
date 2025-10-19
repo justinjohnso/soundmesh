@@ -6,13 +6,13 @@
 #define I2C_MASTER_FREQ_HZ     400000
 #define I2C_MASTER_NUM         I2C_NUM_0
 
-// SSD1306 OLED
+// SSD1306 OLED (128x32 display)
 #define DISPLAY_I2C_ADDR       0x3C
 #define DISPLAY_WIDTH          128
-#define DISPLAY_HEIGHT         64
+#define DISPLAY_HEIGHT         32
 
-// Button GPIO
-#define BUTTON_GPIO            GPIO_NUM_1
+// Button GPIO (avoid GPIO 1 = UART TX)
+#define BUTTON_GPIO            GPIO_NUM_4
 
 // I2S pins for UDA1334 DAC (RX only)
 #define I2S_BCK_IO             GPIO_NUM_7

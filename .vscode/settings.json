@@ -1,38 +1,14 @@
 {
-  "idf.pythonInstallPath": "python3",
-  "idf.openOcdConfigs": [
-    "board/esp32s3-builtin.cfg"
-  ],
-  "idf.port": "/dev/ttyUSB0",
-  "idf.flashType": "JTAG",
-  "idf.espIdfPath": "/opt/esp/idf",
-  "idf.toolsPath": "/opt/esp",
-  "idf.cmakeCompilerArgs": [],
-  "idf.customExtraPaths": "",
-  "idf.customExtraVars": {},
-  "idf.useIDFKconfigStyle": false,
-  "idf.projectPath": "${workspaceFolder}/firmware/idf/apps/tx",
-  "idf.buildPath": "${workspaceFolder}/firmware/idf/apps/tx/build",
   "files.exclude": {
+    "**/.pio": true,
     "**/build": true,
     "**/managed_components": true
   },
   "search.exclude": {
+    "**/.pio": true,
     "**/build": true,
-    "**/managed_components": true,
-    "/tmp/tx_build": true,
-    "/tmp/rx_build": true
+    "**/managed_components": true
   },
-  "clangd.path": "clangd",
-  "clangd.arguments": [
-    "--background-index",
-    "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/tx/build",
-    "--header-insertion=never"
-  ],
-  "clangd.arguments.rx": [
-    "--background-index",
-    "--compile-commands-dir=${workspaceFolder}/firmware/idf/apps/rx/build",
-    "--header-insertion=never"
-  ],
-  "cmake.sourceDirectory": "/Users/justin/Library/CloudStorage/Dropbox/NYU/Semester 3 (2025 Fall)/Project Development Studio/meshnet-audio/firmware/idf"
+  "stylelint.enable": false,
+  "C_Cpp.intelliSenseEngine": "disabled"
 }

@@ -1,6 +1,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <string.h>
 #include "config/build.h"
 #include "config/pins.h"
 #include "control/display.h"

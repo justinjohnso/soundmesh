@@ -1,18 +1,6 @@
 {
 	"folders": [
 		{
-			"name": "tx",
-			"path": "firmware/platformio/tx"
-		},
-		{
-			"name": "rx",
-			"path": "firmware/platformio/rx"
-		},
-		{
-			"name": "shared-lib",
-			"path": "firmware/platformio/lib"
-		},
-		{
 			"name": "meshnet-audio",
 			"path": "."
 		}

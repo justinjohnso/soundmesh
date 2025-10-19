@@ -74,7 +74,7 @@ void app_main(void) {
                     usb_audio_read_frames(audio_frame, AUDIO_FRAME_SAMPLES);
                     status.audio_active = true;
                 }
-                break;
+               break;
             case INPUT_MODE_AUX:
                 // TODO: Read from ADC
                 break;

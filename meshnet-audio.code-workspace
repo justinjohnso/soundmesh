@@ -13,7 +13,8 @@
 		"C_Cpp.default.configurationProvider": "platformio.platformio-ide",
 		"terminal.integrated.env.osx": {
 			"PATH": "/Users/justin/.platformio/penv/bin:/Users/justin/.platformio/penv:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-		}
+		},
+		"stylelint.enable": false
 	},
 	"extensions": {
 		"recommendations": [

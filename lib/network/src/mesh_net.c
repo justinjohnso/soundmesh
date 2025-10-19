@@ -162,3 +162,11 @@ uint32_t network_get_latency_ms(void) {
     // TODO: Implement ping-based latency measurement
     return 10;
 }
+
+uint32_t network_get_connected_nodes(void) {
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
+        return sta_list.num;
+    }
+    return 0;
+}

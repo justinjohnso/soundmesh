@@ -10,3 +10,4 @@ esp_err_t network_udp_send(const uint8_t *data, size_t len);
 esp_err_t network_udp_recv(uint8_t *data, size_t max_len, size_t *actual_len, uint32_t timeout_ms);
 int network_get_rssi(void);
 uint32_t network_get_latency_ms(void);
+uint32_t network_get_connected_nodes(void);

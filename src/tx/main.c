@@ -17,7 +17,9 @@ static const char *TAG = "tx_main";
 static tx_status_t status = {
     .input_mode = INPUT_MODE_TONE,
     .audio_active = false,
-    .connected_nodes = 0
+    .connected_nodes = 0,
+    .latency_ms = 10,
+    .bandwidth_kbps = 0
 };
 
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
@@ -48,6 +50,8 @@ void app_main(void) {
     
     int16_t audio_frame[AUDIO_FRAME_SAMPLES];
     uint8_t packet_buffer[AUDIO_FRAME_BYTES];
+    uint32_t bytes_sent = 0;
+    uint32_t last_stats_update = xTaskGetTickCount();
     
     while (1) {
         // Handle button events
@@ -84,8 +88,22 @@ void app_main(void) {
         if (status.audio_active) {
             memcpy(packet_buffer, audio_frame, AUDIO_FRAME_BYTES);
             network_udp_send(packet_buffer, AUDIO_FRAME_BYTES);
+            bytes_sent += AUDIO_FRAME_BYTES;
         }
-        
+
+        // Update network stats every second
+        uint32_t now = xTaskGetTickCount();
+        if ((now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
+            uint32_t elapsed_ticks = now - last_stats_update;
+            uint32_t elapsed_ms = elapsed_ticks * portTICK_PERIOD_MS;
+            if (elapsed_ms > 0 && bytes_sent > 0) {
+                status.bandwidth_kbps = (bytes_sent * 8) / elapsed_ms;
+            }
+            status.connected_nodes = network_get_connected_nodes();
+            last_stats_update = now;
+            bytes_sent = 0;  // Reset for next interval
+        }
+
         // Update display
         display_render_tx(current_view, &status);
         

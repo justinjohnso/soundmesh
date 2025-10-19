@@ -2,6 +2,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/ringbuf.h>
 #include <esp_log.h>
+#include <string.h>
 
 static const char *TAG = "ring_buffer";
 

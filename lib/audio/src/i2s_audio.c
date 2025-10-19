@@ -3,6 +3,7 @@
 #include "config/build.h"
 #include <driver/i2s_std.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
 
 static const char *TAG = "i2s_audio";
 static i2s_chan_handle_t tx_handle = NULL;

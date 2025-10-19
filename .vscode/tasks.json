@@ -1,312 +1,137 @@
 {
-  "version": "2.0.0",
-  "inputs": [
-    {
-      "id": "serialPort",
-      "type": "promptString",
-      "description": "Enter serial port (e.g., /dev/cu.usbmodem1101)",
-      "default": "/dev/cu.usbmodem1101"
-    }
-  ],
-  "tasks": [
+    "version": "2.0.0",
+    "tasks": [
+        // TX Tasks
         {
-          "label": "idf: full tx workflow (101)",
-          "dependsOn": [
-            "idf: copy-to-tmp tx",
-            "idf: build tmp tx",
-            "idf: flash tmp tx (101)"
-          ],
-          "type": "shell",
-          "group": "build",
-          "presentation": {
-            "reveal": "always"
-          }
+            "label": "TX: Build",
+            "type": "shell",
+            "command": "pio run -e tx",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
         },
         {
-          "label": "idf: full rx workflow (2101)",
-          "dependsOn": [
-            "idf: copy-to-tmp rx",
-            "idf: build tmp rx",
-            "idf: flash tmp rx (2101)"
-          ],
-          "type": "shell",
-          "group": "build",
-          "presentation": {
-            "reveal": "always"
-          }
+            "label": "TX: Upload",
+            "type": "shell",
+            "command": "pio run -e tx -t upload --upload-port /dev/cu.usbmodem101",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "TX: Monitor",
+            "type": "shell",
+            "command": "pio device monitor -b 115200 --port /dev/cu.usbmodem101",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "TX: Build + Upload + Monitor",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "TX: Build",
+                "TX: Upload",
+                "TX: Monitor"
+            ],
+            "problemMatcher": []
+        },
+        
+        // RX Tasks
+        {
+            "label": "RX: Build",
+            "type": "shell",
+            "command": "pio run -e rx",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "RX: Upload",
+            "type": "shell",
+            "command": "pio run -e rx -t upload --upload-port /dev/cu.usbmodem2101",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "RX: Monitor",
+            "type": "shell",
+            "command": "pio device monitor -b 115200 --port /dev/cu.usbmodem2101",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "RX: Build + Upload + Monitor",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "RX: Build",
+                "RX: Upload",
+                "RX: Monitor"
+            ],
+            "problemMatcher": []
+        },
+
+        // Both devices
+        {
+            "label": "Build Both (TX + RX)",
+            "type": "shell",
+            "command": "pio run -e tx -e rx",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Clean Build",
+            "type": "shell",
+            "command": "rm -rf .pio/build && pio run -e tx -e rx",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
         }
-    {
-      "label": "idf: build tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 build'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" },
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "idf: build rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 build'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" },
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "idf: reconfigure tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 reconfigure'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" }
-    },
-    {
-      "label": "idf: reconfigure rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py -B build -DIDF_TARGET=esp32s3 reconfigure'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" }
-    }
-    ,
-    {
-      "label": "idf: fullclean tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py fullclean'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/tx" },
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: fullclean rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && idf.py fullclean'",
-      "options": { "cwd": "${workspaceFolder}/firmware/idf/apps/rx" },
-      "problemMatcher": []
-    }
-    ,
-    {
-    "label": "idf: copy-to-tmp tx",
-    "type": "shell",
-  "command": "rm -rf /tmp/meshnet_tx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/tx\" /tmp/meshnet_tx && cp -R \"${workspaceFolder}/firmware/idf/components\" /tmp/meshnet_tx/components && \"${workspaceFolder}/firmware/idf/copy-adf-deps.sh\" \"${workspaceFolder}/firmware/idf/esp-adf/components\" /tmp/meshnet_tx/components audio_pipeline && cp \"${workspaceFolder}/firmware/idf/idf_component.yml\" /tmp/meshnet_tx/main/idf_component.yml && rm -rf /tmp/meshnet_tx/build /tmp/meshnet_tx/managed_components",
-      "problemMatcher": []
-    },
-    {
-    "label": "idf: copy-to-tmp rx",
-    "type": "shell",
-  "command": "rm -rf /tmp/meshnet_rx && mkdir -p /tmp && cp -R \"${workspaceFolder}/firmware/idf/apps/rx\" /tmp/meshnet_rx && cp -R \"${workspaceFolder}/firmware/idf/components\" /tmp/meshnet_rx/components && \"${workspaceFolder}/firmware/idf/copy-adf-deps.sh\" \"${workspaceFolder}/firmware/idf/esp-adf/components\" /tmp/meshnet_rx/components audio_pipeline && cp \"${workspaceFolder}/firmware/idf/idf_component.yml\" /tmp/meshnet_rx/main/idf_component.yml && rm -rf /tmp/meshnet_rx/build /tmp/meshnet_rx/managed_components",
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: build tmp tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -B build -DIDF_TARGET=esp32s3 build'",
-      "dependsOn": ["idf: copy-to-tmp tx"],
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "idf: build tmp rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && rm -rf build && idf.py -B build -DIDF_TARGET=esp32s3 build'",
-      "dependsOn": ["idf: copy-to-tmp rx"],
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "idf: flash tmp tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash && idf.py -p \"$PORT\" monitor'",
-      "dependsOn": ["idf: build tmp tx"],
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: flash tmp rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" flash && idf.py -p \"$PORT\" monitor'",
-      "dependsOn": ["idf: build tmp rx"],
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: monitor tmp tx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" monitor'",
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: monitor tmp rx",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && PORT=\"${input:serialPort}\" idf.py -p \"$PORT\" monitor'",
-      "problemMatcher": []
-    }
-    ,
-    {
-      "label": "idf: flash tmp tx (101)",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem101 flash && idf.py -p /dev/cu.usbmodem101 monitor'",
-      "dependsOn": ["idf: build tmp tx"],
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: flash tmp rx (2101)",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem2101 flash && idf.py -p /dev/cu.usbmodem2101 monitor'",
-      "dependsOn": ["idf: build tmp rx"],
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: monitor tmp tx (101)",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_tx && idf.py -p /dev/cu.usbmodem101 monitor'",
-      "problemMatcher": []
-    },
-    {
-      "label": "idf: monitor tmp rx (2101)",
-      "type": "shell",
-      "command": "zsh -lc 'source /Users/justin/esp/esp-idf/export.sh && cd /tmp/meshnet_rx && idf.py -p /dev/cu.usbmodem2101 monitor'",
-      "problemMatcher": []
-    },
-    {
-      "label": "pio: copy to tmp tx",
-      "type": "shell",
-      "command": "rm -rf /private/tmp/meshnet_audio_pio/tx && mkdir -p /private/tmp/meshnet_audio_pio && cp -R \"${workspaceFolder}/firmware/platformio/tx\" /private/tmp/meshnet_audio_pio/ && cp -R \"${workspaceFolder}/firmware/platformio/lib\" /private/tmp/meshnet_audio_pio/",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "silent"
-      }
-    },
-    {
-      "label": "pio: copy to tmp rx",
-      "type": "shell",
-      "command": "rm -rf /private/tmp/meshnet_audio_pio/rx && mkdir -p /private/tmp/meshnet_audio_pio && cp -R \"${workspaceFolder}/firmware/platformio/rx\" /private/tmp/meshnet_audio_pio/ && cp -R \"${workspaceFolder}/firmware/platformio/lib\" /private/tmp/meshnet_audio_pio/",
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "silent"
-      }
-    },
-    {
-      "label": "pio: build tx",
-      "type": "shell",
-      "command": "pio run",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/tx" },
-      "dependsOn": ["pio: copy to tmp tx"],
-      "group": "build",
-      "problemMatcher": ["$gcc"],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: build rx",
-      "type": "shell",
-      "command": "pio run",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/rx" },
-      "dependsOn": ["pio: copy to tmp rx"],
-      "group": "build",
-      "problemMatcher": ["$gcc"],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: clean tx",
-      "type": "shell",
-      "command": "pio run --target clean",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/tx" },
-      "problemMatcher": []
-    },
-    {
-      "label": "pio: clean rx",
-      "type": "shell",
-      "command": "pio run --target clean",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/rx" },
-      "problemMatcher": []
-    },
-    {
-      "label": "pio: upload tx (101)",
-      "type": "shell",
-      "command": "pio run --target upload",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/tx" },
-      "dependsOn": ["pio: build tx"],
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: upload rx (2101)",
-      "type": "shell",
-      "command": "pio run --target upload",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/rx" },
-      "dependsOn": ["pio: build rx"],
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: monitor tx (101)",
-      "type": "shell",
-      "command": "pio device monitor --port /dev/cu.usbmodem101 --baud 115200 --filter esp32_exception_decoder",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/tx" },
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: monitor rx (2101)",
-      "type": "shell",
-      "command": "pio device monitor --port /dev/cu.usbmodem2101 --baud 115200 --filter esp32_exception_decoder",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/rx" },
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: upload and monitor tx (101)",
-      "type": "shell",
-      "command": "pio run --target upload --target monitor",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/tx" },
-      "dependsOn": ["pio: build tx"],
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: upload and monitor rx (2101)",
-      "type": "shell",
-      "command": "pio run --target upload --target monitor",
-      "options": { "cwd": "/private/tmp/meshnet_audio_pio/rx" },
-      "dependsOn": ["pio: build rx"],
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always"
-      }
-    },
-    {
-      "label": "pio: full tx workflow (101)",
-      "dependsOn": [
-        "pio: clean tx",
-        "pio: build tx",
-        "pio: upload and monitor tx (101)"
-      ],
-      "type": "shell",
-      "group": "build",
-      "presentation": {
-        "reveal": "always"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "pio: full rx workflow (2101)",
-      "dependsOn": [
-        "pio: clean rx",
-        "pio: build rx",
-        "pio: upload and monitor rx (2101)"
-      ],
-      "type": "shell",
-      "group": "build",
-      "presentation": {
-        "reveal": "always"
-      },
-      "problemMatcher": []
-    }
-  ]
+    ]
 }

@@ -1,2 +1,5 @@
-
-idf_component_register(SRCS "rx/main.c")
+if(CONFIG_TX_BUILD)
+   idf_component_register(SRCS "tx/main.c")
+elseif(CONFIG_RX_BUILD)
+    idf_component_register(SRCS "rx/main.c")
+endif()

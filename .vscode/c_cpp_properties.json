@@ -19,7 +19,7 @@
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/esp32s3/include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/deprecated_include",
-                "/Users/justin/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/.pio/build/tx/config",
+                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/.pio/build/tx/config",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/newlib/platform_include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/freertos/config/include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/freertos/config/include/freertos",
@@ -158,7 +158,6 @@
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/touch_element/include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/usb/include",
                 "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/wifi_provisioning/include",
-                "/Users/justin/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/components/esp-libopus/include",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/lib/audio/include",
                 ""
             ],
@@ -176,7 +175,7 @@
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/esp32s3/include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/xtensa/deprecated_include",
-                    "/Users/justin/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/.pio/build/tx/config",
+                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/.pio/build/tx/config",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/newlib/platform_include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/freertos/config/include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/freertos/config/include/freertos",
@@ -315,7 +314,6 @@
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/touch_element/include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/usb/include",
                     "/Users/justin/.platformio/packages/framework-espidf@3.50201.240515/components/wifi_provisioning/include",
-                    "/Users/justin/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/components/esp-libopus/include",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-fall-2025/project-development-studio/meshnet-audio/lib/audio/include",
                     ""
                 ]

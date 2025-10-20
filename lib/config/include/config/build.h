@@ -1,7 +1,7 @@
 #pragma once
 
 // Audio configuration
-#define AUDIO_SAMPLE_RATE      16000
+#define AUDIO_SAMPLE_RATE      44100
 #define AUDIO_BITS_PER_SAMPLE  16
 #define AUDIO_CHANNELS         1
 #define AUDIO_FRAME_MS         10
@@ -12,7 +12,7 @@
 #define MESH_SSID              "MeshNet-Audio"
 #define MESH_PASSWORD          "meshnet123"
 #define UDP_PORT               3333
-#define MAX_PACKET_SIZE        512
+#define MAX_PACKET_SIZE        1024
 
 // Buffer configuration
 #define RING_BUFFER_SIZE       (AUDIO_FRAME_BYTES * 10)

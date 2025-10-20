@@ -30,7 +30,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "MeshNet Audio RX starting...");
     
     // Initialize control layer
-    ESP_ERROR_CHECK(display_init());
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display init failed, continuing without display");
+    }
     ESP_ERROR_CHECK(buttons_init());
     
     // Initialize network layer (STA mode)
@@ -71,8 +73,8 @@ void app_main(void) {
         
         // Receive audio packets into jitter buffer
         size_t received_len;
-        esp_err_t ret = network_udp_recv(packet_buffer, MAX_PACKET_SIZE, 
-                                        &received_len, 1);
+        esp_err_t ret = network_udp_recv(packet_buffer, MAX_PACKET_SIZE,
+        &received_len, AUDIO_FRAME_MS);
         
         if (ret == ESP_OK && received_len == AUDIO_FRAME_BYTES) {
             ring_buffer_write(jitter_buffer, packet_buffer, AUDIO_FRAME_BYTES);
@@ -131,6 +133,6 @@ void app_main(void) {
         // Update display
         display_render_rx(current_view, &status);
         
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // No delay - let I2S write timing control the loop
     }
 }

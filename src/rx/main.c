@@ -7,8 +7,11 @@
 #include "control/buttons.h"
 #include "control/status.h"
 #include "network/mesh_net.h"
+#include <string.h>
 #include "audio/i2s_audio.h"
+// #include "audio/opus_codec.h"  // Removed for now
 #include "audio/ring_buffer.h"
+#include <netinet/in.h>
 
 static const char *TAG = "rx_main";
 
@@ -27,33 +30,34 @@ static ring_buffer_t *jitter_buffer = NULL;
 #define PREFILL_FRAMES 3
 
 void app_main(void) {
-    ESP_LOGI(TAG, "MeshNet Audio RX starting...");
-    
-    // Initialize control layer
-    if (display_init() != ESP_OK) {
-        ESP_LOGW(TAG, "Display init failed, continuing without display");
-    }
-    ESP_ERROR_CHECK(buttons_init());
-    
-    // Initialize network layer (STA mode)
-    ESP_ERROR_CHECK(network_init_sta());
-    ESP_ERROR_CHECK(network_start_latency_measurement());
+ESP_LOGI(TAG, "MeshNet Audio RX starting...");
 
-    // Initialize audio output
-    ESP_ERROR_CHECK(i2s_audio_init());
-    
-    // Create jitter buffer
-    jitter_buffer = ring_buffer_create(JITTER_BUFFER_FRAMES * AUDIO_FRAME_BYTES);
-    if (!jitter_buffer) {
-        ESP_LOGE(TAG, "Failed to create jitter buffer");
-        return;
-    }
-    
-    ESP_LOGI(TAG, "RX initialized, starting main loop");
-    
-    uint8_t packet_buffer[MAX_PACKET_SIZE];
-    int16_t audio_frame[AUDIO_FRAME_SAMPLES];
-    int16_t silence_frame[AUDIO_FRAME_SAMPLES] = {0};
+// Initialize control layer
+if (display_init() != ESP_OK) {
+ESP_LOGW(TAG, "Display init failed, continuing without display");
+}
+ESP_ERROR_CHECK(buttons_init());
+
+// Initialize network layer (STA mode)
+ESP_ERROR_CHECK(network_init_sta());
+ESP_ERROR_CHECK(network_start_latency_measurement());
+
+// Initialize audio output
+ESP_ERROR_CHECK(i2s_audio_init());
+// ESP_ERROR_CHECK(opus_codec_init());  // Removed for now
+
+// Create jitter buffer
+jitter_buffer = ring_buffer_create(JITTER_BUFFER_FRAMES * AUDIO_FRAME_BYTES);
+if (!jitter_buffer) {
+ESP_LOGE(TAG, "Failed to create jitter buffer");
+return;
+}
+
+ESP_LOGI(TAG, "RX initialized, starting main loop");
+
+uint8_t packet_buffer[MAX_PACKET_SIZE];
+int16_t audio_frame[AUDIO_FRAME_SAMPLES * 2];
+int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
     uint32_t last_packet_time = 0;
     uint32_t packets_received = 0;
     uint32_t bytes_received = 0;
@@ -71,18 +75,65 @@ void app_main(void) {
                     current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
         }
         
-        // Receive audio packets into jitter buffer
+        // Receive raw PCM audio packets
         size_t received_len;
         esp_err_t ret = network_udp_recv(packet_buffer, MAX_PACKET_SIZE,
         &received_len, AUDIO_FRAME_MS);
-        
-        if (ret == ESP_OK && received_len == AUDIO_FRAME_BYTES) {
-            ring_buffer_write(jitter_buffer, packet_buffer, AUDIO_FRAME_BYTES);
-            status.receiving_audio = true;
-            packets_received++;
-            bytes_received += received_len;
-            last_packet_time = xTaskGetTickCount();
+
+        if (ret == ESP_OK) {
+            // Parse minimal frame header
+                if (received_len >= NET_FRAME_HEADER_SIZE) {
+                    net_frame_header_t hdr;
+                    memcpy(&hdr, packet_buffer, NET_FRAME_HEADER_SIZE);
+                    if (hdr.magic == NET_FRAME_MAGIC && hdr.version == NET_FRAME_VERSION && hdr.type == NET_PKT_TYPE_AUDIO_RAW) {
+                        uint16_t payload_len = ntohs(hdr.payload_len);
+                        uint16_t seq = ntohs(hdr.seq);
+                        if (payload_len == AUDIO_FRAME_BYTES && received_len == (NET_FRAME_HEADER_SIZE + payload_len)) {
+                            ESP_LOGD(TAG, "Received framed audio packet seq=%u payload=%u bytes", seq, payload_len);
+                            uint8_t *payload = packet_buffer + NET_FRAME_HEADER_SIZE;
+                            esp_err_t write_ret = ring_buffer_write(jitter_buffer, payload, AUDIO_FRAME_BYTES);
+                            if (write_ret == ESP_OK) {
+                                status.receiving_audio = true;
+                                packets_received++;
+                                bytes_received += payload_len;
+                                last_packet_time = xTaskGetTickCount();
+                                ESP_LOGI(TAG, "Received and buffered audio packet (%d bytes)", payload_len);
+                            } else {
+                                ESP_LOGW(TAG, "Failed to write to jitter buffer: %s", esp_err_to_name(write_ret));
+                            }
+                        } else {
+                            // Dump first 16 bytes for debugging header/payload alignment
+                            char hexbuf[3 * 16 + 1];
+                            int to_print = (received_len < 16) ? received_len : 16;
+                            for (int i = 0; i < to_print; ++i) {
+                                sprintf(&hexbuf[i * 3], "%02X ", (unsigned char)packet_buffer[i]);
+                            }
+                            hexbuf[to_print * 3] = '\0';
+                            ESP_LOGW(TAG, "Audio frame size mismatch: payload_len=%d received_len=%d seq=%u head=%s", payload_len, received_len, seq, hexbuf);
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "Invalid frame header: magic=0x%02x version=%d type=%d", hdr.magic, hdr.version, hdr.type);
+                    }
+            } else if (received_len == AUDIO_FRAME_BYTES) {
+                // Legacy payload-only frame (no header). Accept for backward compatibility.
+                    ESP_LOGD(TAG, "Received legacy raw audio packet (no header), payload=%d bytes", received_len);
+                esp_err_t write_ret = ring_buffer_write(jitter_buffer, packet_buffer, AUDIO_FRAME_BYTES);
+                if (write_ret == ESP_OK) {
+                    status.receiving_audio = true;
+                    packets_received++;
+                    bytes_received += received_len;
+                    last_packet_time = xTaskGetTickCount();
+                    ESP_LOGI(TAG, "Received and buffered legacy audio packet (%d bytes)", received_len);
+                } else {
+                    ESP_LOGW(TAG, "Failed to write legacy audio to jitter buffer: %s", esp_err_to_name(write_ret));
+                }
+            } else {
+                ESP_LOGW(TAG, "Received too-small packet without header: len=%d", received_len);
+            }
+        } else if (ret == ESP_ERR_TIMEOUT) {
+            // Normal timeout, no packet
         } else {
+            ESP_LOGW(TAG, "Network receive error: %s", esp_err_to_name(ret));
             // No packet received - check timeout
             if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(100)) {
                 status.receiving_audio = false;
@@ -100,20 +151,20 @@ void app_main(void) {
         }
         
         if (prefilled) {
-            if (ring_buffer_read(jitter_buffer, (uint8_t*)audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
-                ESP_LOGI(TAG, "Playing audio frame");
-                i2s_audio_write_mono_as_stereo(audio_frame, AUDIO_FRAME_SAMPLES);
-            } else {
-                // Buffer underrun - play silence
-                i2s_audio_write_mono_as_stereo(silence_frame, AUDIO_FRAME_SAMPLES);
-                underrun_count++;
-                if (underrun_count % 10 == 0) {
-                    ESP_LOGW(TAG, "Buffer underrun count: %lu", underrun_count);
-                }
-            }
+        if (ring_buffer_read(jitter_buffer, (uint8_t*)audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
+        ESP_LOGI(TAG, "Playing audio frame");
+        i2s_audio_write_samples(audio_frame, AUDIO_FRAME_SAMPLES * 2);
         } else {
-            // No audio stream - play silence to mute
-            i2s_audio_write_mono_as_stereo(silence_frame, AUDIO_FRAME_SAMPLES);
+        // Buffer underrun - play silence
+        i2s_audio_write_samples(silence_frame, AUDIO_FRAME_SAMPLES * 2);
+        underrun_count++;
+        if (underrun_count % 10 == 0) {
+        ESP_LOGW(TAG, "Buffer underrun count: %lu", underrun_count);
+        }
+        }
+        } else {
+        // No audio stream - play silence to mute
+        i2s_audio_write_samples(silence_frame, AUDIO_FRAME_SAMPLES * 2);
         }
         
         // Update network stats every second

@@ -19,13 +19,13 @@
 static const char *TAG = "tx_main";
 
 static tx_status_t status = {
-.input_mode = INPUT_MODE_TONE,
+.input_mode = INPUT_MODE_USB,
 .audio_active = false,
 .connected_nodes = 0,
 .latency_ms = 10,
 .bandwidth_kbps = 0,
 .rssi = 0,
-    .tone_freq_hz = 110
+.tone_freq_hz = 110
 };
 
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;

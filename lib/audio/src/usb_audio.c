@@ -7,6 +7,7 @@
 #ifdef CONFIG_TX_BUILD
 #include "usb_device_uac.h"
 #include "ring_buffer.h"
+#include "esp_private/usb_phy.h"
 #endif
 
 static const char *TAG = "usb_audio";
@@ -15,6 +16,7 @@ static const char *TAG = "usb_audio";
 // USB audio speaker implementation
 #define USB_AUDIO_BUFFER_SIZE (AUDIO_FRAME_SAMPLES * 4 * 2)  // Buffer for 4 frames (bytes)
 static ring_buffer_t *usb_audio_buffer = NULL;
+static bool usb_initialized = false;
 static bool usb_audio_active = false;
 
 // Audio format: 44.1kHz, 16-bit, mono (we'll convert to stereo later)
@@ -42,26 +44,36 @@ esp_err_t usb_audio_init(void) {
 #ifdef CONFIG_TX_BUILD
 ESP_LOGI(TAG, "USB audio speaker init");
 
+// Initialize USB PHY
+usb_phy_handle_t phy_hdl;
+usb_phy_config_t phy_conf = {
+.controller = USB_PHY_CTRL_OTG,
+.otg_mode = USB_OTG_MODE_DEVICE,
+};
+    ESP_ERROR_CHECK(usb_new_phy(&phy_conf, &phy_hdl));
+
 // Create ring buffer for USB audio data
 usb_audio_buffer = ring_buffer_create(USB_AUDIO_BUFFER_SIZE);
 if (!usb_audio_buffer) {
-ESP_LOGE(TAG, "Failed to create USB audio buffer");
-return ESP_FAIL;
-}
+    ESP_LOGE(TAG, "Failed to create USB audio buffer");
+        return ESP_FAIL;
+    }
 
-// Initialize USB UAC device
-uac_device_config_t config = {
-    .output_cb = usb_audio_output_cb,
+    // Initialize USB UAC device
+    uac_device_config_t config = {
+        .output_cb = usb_audio_output_cb,
         .cb_ctx = NULL,
-};
+    };
 
     esp_err_t ret = uac_device_init(&config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize USB UAC device: %s", esp_err_to_name(ret));
-        return ret;
+    ESP_LOGE(TAG, "Failed to initialize USB UAC device: %s", esp_err_to_name(ret));
+    return ret;
     }
 
-    ESP_LOGI(TAG, "USB audio initialized");
+    usb_initialized = true;
+    ESP_LOGI(TAG, "USB UAC device initialized - device should appear as audio input on host");
+    ESP_LOGI(TAG, "If not visible, try disconnecting and reconnecting USB cable");
     return ESP_OK;
 #else
     ESP_LOGI(TAG, "USB audio not supported on RX");
@@ -95,7 +107,7 @@ return ESP_OK;
 
 bool usb_audio_is_active(void) {
 #ifdef CONFIG_TX_BUILD
-    return usb_audio_active;
+    return usb_initialized || usb_audio_active;
 #else
     return false;
 #endif

@@ -20,3 +20,5 @@ idf_component_register(SRCS "{app_sources}")
 
 with open("src/CMakeLists.txt", "w") as f:
     f.write(cmake_content)
+
+# Config files are used individually for now

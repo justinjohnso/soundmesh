@@ -161,15 +161,24 @@ esp_err_t display_init(void) {
     
     // Initialize I2C
     i2c_config_t i2c_conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+    .mode = I2C_MODE_MASTER,
+    .sda_io_num = I2C_MASTER_SDA_IO,
+    .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    .scl_io_num = I2C_MASTER_SCL_IO,
+    .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    .master.clk_speed = I2C_MASTER_FREQ_HZ,
     };
-    ESP_ERROR_CHECK(i2c_param_config(I2C_MASTER_NUM, &i2c_conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0));
+    esp_err_t err;
+    err = i2c_param_config(I2C_MASTER_NUM, &i2c_conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+    err = i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
     
     // Power-up delay (SSD1306 datasheet recommendation)
     vTaskDelay(pdMS_TO_TICKS(100));

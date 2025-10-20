@@ -11,7 +11,6 @@ static i2s_chan_handle_t tx_handle = NULL;
 esp_err_t i2s_audio_init(void) {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
-    
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
@@ -68,9 +67,9 @@ esp_err_t i2s_audio_write_mono_as_stereo(const int16_t *mono_samples, size_t num
                                      &bytes_written, portMAX_DELAY);
     
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2S stereo write failed");
-        return ret;
+    ESP_LOGE(TAG, "I2S stereo write failed");
+    return ret;
     }
-    
+
     return ESP_OK;
 }

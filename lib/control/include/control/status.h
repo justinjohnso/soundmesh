@@ -20,6 +20,8 @@ typedef struct {
     uint32_t connected_nodes;
     uint32_t latency_ms;
     uint32_t bandwidth_kbps;
+    int rssi;
+    uint32_t tone_freq_hz;
 } tx_status_t;
 
 typedef struct {

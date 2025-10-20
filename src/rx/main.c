@@ -35,7 +35,8 @@ void app_main(void) {
     
     // Initialize network layer (STA mode)
     ESP_ERROR_CHECK(network_init_sta());
-    
+    ESP_ERROR_CHECK(network_start_latency_measurement());
+
     // Initialize audio output
     ESP_ERROR_CHECK(i2s_audio_init());
     
@@ -98,6 +99,7 @@ void app_main(void) {
         
         if (prefilled) {
             if (ring_buffer_read(jitter_buffer, (uint8_t*)audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
+                ESP_LOGI(TAG, "Playing audio frame");
                 i2s_audio_write_mono_as_stereo(audio_frame, AUDIO_FRAME_SAMPLES);
             } else {
                 // Buffer underrun - play silence
@@ -107,6 +109,9 @@ void app_main(void) {
                     ESP_LOGW(TAG, "Buffer underrun count: %lu", underrun_count);
                 }
             }
+        } else {
+            // No audio stream - play silence to mute
+            i2s_audio_write_mono_as_stereo(silence_frame, AUDIO_FRAME_SAMPLES);
         }
         
         // Update network stats every second

@@ -27,6 +27,7 @@ static void display_update(void);
 #define SSD1306_CMD_MEMORY_MODE 0x20
 #define SSD1306_CMD_SEG_REMAP 0xA1
 #define SSD1306_CMD_COM_SCAN_DEC 0xC8
+#define SSD1306_CMD_COM_SCAN_INC 0xC0
 #define SSD1306_CMD_SET_COM_PINS 0xDA
 #define SSD1306_CMD_SET_PRECHARGE 0xD9
 #define SSD1306_CMD_SET_VCOM_DETECT 0xDB
@@ -187,7 +188,7 @@ esp_err_t display_init(void) {
     ssd1306_write_command(SSD1306_CMD_MEMORY_MODE);
     ssd1306_write_command(0x00);  // Horizontal addressing mode
     ssd1306_write_command(SSD1306_CMD_SEG_REMAP | 0x01);  // Column 127 mapped to SEG0
-    ssd1306_write_command(SSD1306_CMD_COM_SCAN_DEC);  // Scan from COM[N-1] to COM0
+    ssd1306_write_command(SSD1306_CMD_COM_SCAN_DEC);  // Scan from COM[N-1] to COM0 (flip upside down)
     ssd1306_write_command(SSD1306_CMD_SET_COM_PINS);
     ssd1306_write_command(0x02);  // COM pins for 32-row display
     ssd1306_write_command(SSD1306_CMD_SET_CONTRAST);
@@ -269,28 +270,40 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
     animation_counter++;
 
     if (view == DISPLAY_VIEW_NETWORK) {
-    const char *conn_str = status->connected_nodes > 0 ? "Connected" : "Disconnected";
-    display_draw_string(0, 0, conn_str);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Nodes: %lu", status->connected_nodes);
+        display_draw_string(0, 0, buf);
 
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Nodes: %lu", status->connected_nodes);
+        snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
         display_draw_string(0, 1, buf);
 
-        display_draw_string(0, 2, "Latency: 10 ms");
-
-    display_draw_string(0, 3, "RSSI: -50 dBm");
+        if (status->rssi == -100) {
+            display_draw_string(0, 2, "RSSI: -- dBm");
+        } else {
+            if (status->rssi == -100) {
+    display_draw_string(0, 2, "RSSI: -- dBm");
+} else {
+    snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+    display_draw_string(0, 2, buf);
+}
+        }
     } else {
-        const char *mode_str = "Unknown";
+    const char *mode_str = "Unknown";
     if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
     else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
     else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
 
     char buf[32];
-        snprintf(buf, sizeof(buf), "Source: %s", mode_str);
-        display_draw_string(0, 0, buf);
+    snprintf(buf, sizeof(buf), "Source: %s", mode_str);
+    display_draw_string(0, 0, buf);
 
+    if (status->input_mode == INPUT_MODE_TONE) {
+        snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
+            display_draw_string(0, 1, buf);
+    } else {
         const char *status_str = status->audio_active ? "Playing..." : "Idle...";
-        display_draw_string(0, 1, status_str);
+            display_draw_string(0, 1, status_str);
+        }
 
         snprintf(buf, sizeof(buf), "Bandwidth: %lu kbps", status->bandwidth_kbps);
         display_draw_string(0, 2, buf);
@@ -324,19 +337,20 @@ static uint32_t animation_counter = 0;
 animation_counter++;
 
 if (view == DISPLAY_VIEW_NETWORK) {
-const char *conn_str = status->receiving_audio ? "Connected" : "Disconnected";
-display_draw_string(0, 0, conn_str);
-
 char buf[32];
     snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
-    display_draw_string(0, 1, buf);
+    display_draw_string(0, 0, buf);
 
-    snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
-        display_draw_string(0, 2, buf);
+snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
+display_draw_string(0, 1, buf);
 
-snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-display_draw_string(0, 3, buf);
+    if (status->rssi == -100) {
+    display_draw_string(0, 2, "RSSI: -- dBm");
     } else {
+    snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+    display_draw_string(0, 2, buf);
+    }
+} else {
 display_draw_string(0, 0, "Streaming...");
 
 char buf[32];

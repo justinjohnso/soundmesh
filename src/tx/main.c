@@ -1,6 +1,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_adc/adc_oneshot.h>
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
 #include <string.h>
 #include "config/build.h"
 #include "config/pins.h"
@@ -15,15 +18,19 @@
 static const char *TAG = "tx_main";
 
 static tx_status_t status = {
-    .input_mode = INPUT_MODE_TONE,
-    .audio_active = false,
-    .connected_nodes = 0,
-    .latency_ms = 10,
-    .bandwidth_kbps = 0
+.input_mode = INPUT_MODE_TONE,
+.audio_active = false,
+.connected_nodes = 0,
+.latency_ms = 10,
+.bandwidth_kbps = 0,
+.rssi = 0,
+    .tone_freq_hz = 110
 };
 
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
 static ring_buffer_t *audio_buffer = NULL;
+static adc_oneshot_unit_handle_t adc1_handle;
+static adc_cali_handle_t adc1_cali_handle = NULL;
 
 void app_main(void) {
     ESP_LOGI(TAG, "MeshNet Audio TX starting...");
@@ -34,11 +41,34 @@ void app_main(void) {
     
     // Initialize network layer (AP mode)
     ESP_ERROR_CHECK(network_init_ap());
-    
+    ESP_ERROR_CHECK(network_start_latency_measurement());
+
+    // Initialize ADC for pitch control (GPIO 2 - ADC1_CHANNEL_2)
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN_DB_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_2, &config));
+
+    // Initialize ADC calibration
+    adc_cali_curve_fitting_config_t cali_config = {
+        .unit_id = ADC_UNIT_1,
+        .chan = ADC_CHANNEL_2,
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle));
+
     // Initialize audio layer
-    ESP_ERROR_CHECK(tone_gen_init(440));
+    ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
     ESP_ERROR_CHECK(usb_audio_init());
-    
+
     // Create ring buffer
     audio_buffer = ring_buffer_create(RING_BUFFER_SIZE);
     if (!audio_buffer) {
@@ -70,6 +100,21 @@ void app_main(void) {
         status.audio_active = false;
         switch (status.input_mode) {
             case INPUT_MODE_TONE:
+                // Read ADC for pitch control
+                int adc_raw;
+                ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_2, &adc_raw));
+
+                int voltage_mv;
+                ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw, &voltage_mv));
+
+                // Map voltage (0-3300mV) to frequency (200-2000Hz)
+                uint32_t new_freq = 200 + ((voltage_mv * 1800) / 3300);
+                if (new_freq != status.tone_freq_hz) {
+                status.tone_freq_hz = new_freq;
+                tone_gen_set_frequency(status.tone_freq_hz);
+                ESP_LOGI(TAG, "Tone frequency updated to %lu Hz", status.tone_freq_hz);
+                }
+
                 tone_gen_fill_buffer(audio_frame, AUDIO_FRAME_SAMPLES);
                 status.audio_active = true;
                 break;
@@ -78,9 +123,12 @@ void app_main(void) {
                     usb_audio_read_frames(audio_frame, AUDIO_FRAME_SAMPLES);
                     status.audio_active = true;
                 }
-               break;
+                break;
             case INPUT_MODE_AUX:
                 // TODO: Read from ADC
+                break;
+            default:
+                // Handle any unhandled cases
                 break;
         }
         
@@ -100,6 +148,8 @@ void app_main(void) {
                 status.bandwidth_kbps = (bytes_sent * 8) / elapsed_ms;
             }
             status.connected_nodes = network_get_connected_nodes();
+            status.rssi = network_get_rssi();
+            status.latency_ms = network_get_latency_ms();
             last_stats_update = now;
             bytes_sent = 0;  // Reset for next interval
         }

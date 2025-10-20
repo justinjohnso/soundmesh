@@ -13,6 +13,10 @@ esp_err_t tone_gen_init(uint32_t freq_hz) {
     return ESP_OK;
 }
 
+void tone_gen_set_frequency(uint32_t freq_hz) {
+phase_increment = 2.0f * M_PI * freq_hz / AUDIO_SAMPLE_RATE;
+}
+
 void tone_gen_fill_buffer(int16_t *buffer, size_t num_samples) {
     for (size_t i = 0; i < num_samples; i++) {
         buffer[i] = (int16_t)(sinf(phase) * 16000.0f);

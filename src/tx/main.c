@@ -7,6 +7,7 @@
 #include <esp_adc/adc_cali_scheme.h>
 #include <string.h>
 #include <arpa/inet.h>
+#include <math.h>
 #include "config/build.h"
 #include "config/pins.h"
 #include "control/display.h"
@@ -106,6 +107,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
     ESP_ERROR_CHECK(usb_audio_init());
     ESP_ERROR_CHECK(adc_audio_init());
+    ESP_ERROR_CHECK(adc_audio_start());
     // ESP_ERROR_CHECK(opus_codec_init());  // Removed for now
 
     // Create ring buffer
@@ -170,36 +172,61 @@ void app_main(void) {
             break;
         case INPUT_MODE_AUX:
             {
-                uint8_t left_val, right_val;
-                if (adc_audio_read(&left_val, &right_val) == ESP_OK) {
-                    // Monitor ADC values for debugging
-                    ESP_LOGI(TAG, "ADC L: %d, R: %d", left_val, right_val);
-
-                    // Check for audio signal - transmit any non-zero ADC values for maximum sensitivity
-                    const uint8_t AUDIO_THRESHOLD = 0; // Minimum ADC value to detect audio (any signal above silence)
-
-                    if (left_val > AUDIO_THRESHOLD || right_val > AUDIO_THRESHOLD) {
-                    // Convert 8-bit ADC to 16-bit PCM
-                    // Note: Your signal range is very limited (0-30). For better audio quality, consider:
-                    // 1. Adding DC bias around 1.65V (VCC/2) so signal can swing +/- from center
-                    // 2. AC coupling capacitor to remove DC offset
-                    // 3. Audio preamplifier for higher signal level
-
-                    // Current scaling: map 0-30 range to full 16-bit range
-                    const float ADC_MAX_OBSERVED = 30.0f;  // Your observed max value
-                    const float SCALE_FACTOR = 65535.0f / ADC_MAX_OBSERVED;  // Scale to full 16-bit range
-
-                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        stereo_frame[i * 2] = (int16_t)(left_val * SCALE_FACTOR);
-                    stereo_frame[i * 2 + 1] = (int16_t)(right_val * SCALE_FACTOR);
+                size_t samples_read = 0;
+                esp_err_t ret = adc_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
+                
+                if (ret == ESP_OK && samples_read > 0) {
+                    // Fill remaining samples with last value if needed
+                    if (samples_read < AUDIO_FRAME_SAMPLES) {
+                        int16_t last_left = stereo_frame[(samples_read - 1) * 2];
+                        int16_t last_right = stereo_frame[(samples_read - 1) * 2 + 1];
+                        for (size_t i = samples_read; i < AUDIO_FRAME_SAMPLES; i++) {
+                            stereo_frame[i * 2] = last_left;
+                            stereo_frame[i * 2 + 1] = last_right;
                         }
+                    }
+                    
+                    // Detect actual audio by measuring AC variance (not DC offset)
+                    // Calculate mean
+                    int64_t sum_left = 0, sum_right = 0;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        sum_left += stereo_frame[i * 2];
+                        sum_right += stereo_frame[i * 2 + 1];
+                    }
+                    int32_t mean_left = (int32_t)(sum_left / AUDIO_FRAME_SAMPLES);
+                    int32_t mean_right = (int32_t)(sum_right / AUDIO_FRAME_SAMPLES);
+                    
+                    // Calculate variance (AC component)
+                    int64_t var_left = 0, var_right = 0;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        int32_t diff_l = stereo_frame[i * 2] - mean_left;
+                        int32_t diff_r = stereo_frame[i * 2 + 1] - mean_right;
+                        var_left += (int64_t)diff_l * diff_l;
+                        var_right += (int64_t)diff_r * diff_r;
+                    }
+                    int32_t std_left = (int32_t)sqrt(var_left / AUDIO_FRAME_SAMPLES);
+                    int32_t std_right = (int32_t)sqrt(var_right / AUDIO_FRAME_SAMPLES);
+                    int32_t std_avg = (std_left + std_right) / 2;
+                    
+                    // Threshold: look for AC variation, not DC offset
+                    const int32_t SIGNAL_THRESHOLD = 500;  // ~1.5% of full scale
+                    
+                    if (std_avg > SIGNAL_THRESHOLD) {
                         status.audio_active = true;
-                        ESP_LOGI(TAG, "Stereo audio detected (L: %d->%d, R: %d->%d)",
-                                left_val, stereo_frame[0], right_val, stereo_frame[1]);
+                        ESP_LOGI(TAG, "AUX: %zu samples, STD=%ld, DC_L=%ld, DC_R=%ld (ACTIVE)", 
+                                 samples_read, std_avg, mean_left, mean_right);
                     } else {
-                        // No audio detected, fill with silence
-                        memset(stereo_frame, 0, sizeof(stereo_frame));
                         status.audio_active = false;
+                        memset(stereo_frame, 0, sizeof(stereo_frame));
+                        ESP_LOGD(TAG, "AUX: %zu samples, STD=%ld (no signal, silenced)", 
+                                 samples_read, std_avg);
+                    }
+                } else {
+                    // No data or error - fill with silence
+                    memset(stereo_frame, 0, sizeof(stereo_frame));
+                    status.audio_active = false;
+                    if (ret != ESP_OK) {
+                        ESP_LOGW(TAG, "AUX: ADC read error: %s", esp_err_to_name(ret));
                     }
                 }
             }

@@ -1,64 +1,200 @@
 #include "audio/adc_audio.h"
 
 #include <esp_log.h>
-#include <driver/i2c.h>
+#include <esp_adc/adc_continuous.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <string.h>
 #include "config/pins.h"
-
-#define PCF8591_ADDR 0x48
+#include "config/build.h"
 
 static const char *TAG = "adc_audio";
 
+// DMA buffer size - enough for multiple frames
+#define ADC_READ_LEN           2048
+#define ADC_CONV_FRAME_SIZE    2048
+
+// ADC continuous handle
+static adc_continuous_handle_t adc_handle = NULL;
+
+// Static buffers to avoid stack overflow
+static int16_t left_samples[ADC_READ_LEN / 4];
+static int16_t right_samples[ADC_READ_LEN / 4];
+
+// DC bias removal (12-bit ADC mid-point)
+#define ADC_MID_CODE           2048
+
 esp_err_t adc_audio_init(void) {
-    // I2C is already initialized by display_init(), so we just log success
-    ESP_LOGI(TAG, "ADC audio init success (I2C shared with display)");
+    if (adc_handle != NULL) {
+        ESP_LOGW(TAG, "ADC already initialized");
+        return ESP_OK;
+    }
+
+    // Configure ADC continuous mode for stereo capture
+    adc_continuous_handle_cfg_t adc_config = {
+        .max_store_buf_size = ADC_CONV_FRAME_SIZE * 2,
+        .conv_frame_size = ADC_CONV_FRAME_SIZE,
+    };
+
+    esp_err_t ret = adc_continuous_new_handle(&adc_config, &adc_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create ADC handle: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Configure two-channel pattern (L and R interleaved)
+    adc_digi_pattern_config_t adc_pattern[2] = {
+        {
+            .atten = ADC_ATTEN_DB_12,
+            .channel = ADC_LEFT_CHANNEL,
+            .unit = ADC_UNIT_1,
+            .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
+        },
+        {
+            .atten = ADC_ATTEN_DB_12,
+            .channel = ADC_RIGHT_CHANNEL,
+            .unit = ADC_UNIT_1,
+            .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
+        }
+    };
+
+    // ESP32-S3 ADC max is ~83 kHz total. Use 16 kHz per channel = 32 kHz total for reliable operation
+    adc_continuous_config_t dig_cfg = {
+        .pattern_num = 2,
+        .adc_pattern = adc_pattern,
+        .sample_freq_hz = 32000,  // 16 kHz per channel (2 channels interleaved)
+        .conv_mode = ADC_CONV_SINGLE_UNIT_1,
+        .format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
+    };
+
+    ret = adc_continuous_config(adc_handle, &dig_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to config ADC: %s", esp_err_to_name(ret));
+        adc_continuous_deinit(adc_handle);
+        adc_handle = NULL;
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "ADC continuous mode initialized (stereo, 16 kHz per channel)");
     return ESP_OK;
 }
 
-esp_err_t adc_audio_read(uint8_t *left_value, uint8_t *right_value) {
-    if (!left_value || !right_value) {
+esp_err_t adc_audio_deinit(void) {
+    if (adc_handle == NULL) {
+        return ESP_OK;
+    }
+
+    adc_audio_stop();
+    esp_err_t ret = adc_continuous_deinit(adc_handle);
+    adc_handle = NULL;
+    
+    ESP_LOGI(TAG, "ADC deinitialized");
+    return ret;
+}
+
+esp_err_t adc_audio_start(void) {
+    if (adc_handle == NULL) {
+        ESP_LOGE(TAG, "ADC not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t ret = adc_continuous_start(adc_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start ADC: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "ADC started");
+    return ESP_OK;
+}
+
+esp_err_t adc_audio_stop(void) {
+    if (adc_handle == NULL) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = adc_continuous_stop(adc_handle);
+    ESP_LOGI(TAG, "ADC stopped");
+    return ret;
+}
+
+esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size_t *samples_read) {
+    if (adc_handle == NULL) {
+        ESP_LOGE(TAG, "ADC not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!stereo_buffer || !samples_read) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // Configure PCF8591 to read from channel 0, single ended
-    uint8_t control_byte = 0x40; // channel 0, single ended
+    *samples_read = 0;
 
-    // Write control byte for left channel (AIN0)
-    esp_err_t ret = i2c_master_write_to_device(I2C_MASTER_NUM, PCF8591_ADDR, &control_byte, 1, pdMS_TO_TICKS(100));
+    // Read raw ADC data
+    uint8_t adc_raw_data[ADC_READ_LEN];
+    uint32_t bytes_read = 0;
+    
+    esp_err_t ret = adc_continuous_read(adc_handle, adc_raw_data, ADC_READ_LEN, &bytes_read, 100);
+    
+    if (ret == ESP_ERR_TIMEOUT) {
+        // No data available yet
+        return ESP_OK;
+    }
+    
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C write failed for left channel: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // Small delay for ADC conversion
-    vTaskDelay(pdMS_TO_TICKS(1));
+    // Parse ADC data and demultiplex channels
+    size_t left_count = 0;
+    size_t right_count = 0;
 
-    // Read left channel value
-    ret = i2c_master_read_from_device(I2C_MASTER_NUM, PCF8591_ADDR, left_value, 1, pdMS_TO_TICKS(100));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C read failed for left channel: %s", esp_err_to_name(ret));
-        return ret;
+    for (uint32_t i = 0; i < bytes_read; i += SOC_ADC_DIGI_RESULT_BYTES) {
+        adc_digi_output_data_t *p = (adc_digi_output_data_t *)&adc_raw_data[i];
+        
+        // Check if valid data (TYPE2 format for ESP32-S3)
+        uint32_t chan_num = p->type2.channel;
+        uint32_t data = p->type2.data;
+
+        // Remove DC bias and scale 12-bit to 16-bit
+        int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
+
+        if (chan_num == ADC_LEFT_CHANNEL) {
+            left_samples[left_count++] = sample;
+        } else if (chan_num == ADC_RIGHT_CHANNEL) {
+            right_samples[right_count++] = sample;
+        }
     }
 
-    // Configure PCF8591 to read from channel 1, single ended
-    control_byte = 0x41; // channel 1, single ended
-
-    // Write control byte for right channel (AIN1)
-    ret = i2c_master_write_to_device(I2C_MASTER_NUM, PCF8591_ADDR, &control_byte, 1, pdMS_TO_TICKS(100));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C write failed for right channel: %s", esp_err_to_name(ret));
-        return ret;
+    // Interleave L/R into stereo buffer and upsample from 16kHz to 44.1kHz
+    // Ratio is ~2.756 (44100/16000). We'll use simple linear interpolation.
+    size_t min_count = (left_count < right_count) ? left_count : right_count;
+    
+    if (min_count == 0) {
+        *samples_read = 0;
+        return ESP_OK;
+    }
+    
+    // Simple upsampling: repeat samples to fill the output buffer
+    // For better quality, could use linear interpolation, but this is simpler
+    const float upsample_ratio = 44100.0f / 16000.0f;  // ~2.756
+    size_t out_samples = 0;
+    
+    for (size_t i = 0; i < min_count && out_samples < num_samples; i++) {
+        size_t repeat_count = (size_t)(upsample_ratio + 0.5f);
+        for (size_t r = 0; r < repeat_count && out_samples < num_samples; r++) {
+            stereo_buffer[out_samples * 2] = left_samples[i];
+            stereo_buffer[out_samples * 2 + 1] = right_samples[i];
+            out_samples++;
+        }
     }
 
-    // Small delay for ADC conversion
-    vTaskDelay(pdMS_TO_TICKS(1));
+    *samples_read = out_samples;
 
-    // Read right channel value
-    ret = i2c_master_read_from_device(I2C_MASTER_NUM, PCF8591_ADDR, right_value, 1, pdMS_TO_TICKS(100));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C read failed for right channel: %s", esp_err_to_name(ret));
-        return ret;
+    if (min_count > 0) {
+        ESP_LOGD(TAG, "Read %zu stereo samples (L=%zu, R=%zu from %lu bytes)", 
+                 min_count, left_count, right_count, bytes_read);
     }
 
     return ESP_OK;

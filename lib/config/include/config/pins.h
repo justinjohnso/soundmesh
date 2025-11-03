@@ -19,3 +19,10 @@
 #define I2S_WS_IO              GPIO_NUM_8
 #define I2S_DO_IO              GPIO_NUM_9
 #define I2S_PORT               I2S_NUM_0
+
+// ADC pins for stereo AUX input (TX only)
+// A0 = GPIO1, A1 = GPIO2 on XIAO ESP32-S3
+#define ADC_LEFT_GPIO          GPIO_NUM_1
+#define ADC_RIGHT_GPIO         GPIO_NUM_2
+#define ADC_LEFT_CHANNEL       ADC_CHANNEL_0  // GPIO1 = ADC1_CH0
+#define ADC_RIGHT_CHANNEL      ADC_CHANNEL_1  // GPIO2 = ADC1_CH1

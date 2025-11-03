@@ -11,8 +11,8 @@
 static const char *TAG = "adc_audio";
 
 // DMA buffer size - enough for multiple frames
-#define ADC_READ_LEN           2048
-#define ADC_CONV_FRAME_SIZE    2048
+#define ADC_READ_LEN           1024
+#define ADC_CONV_FRAME_SIZE    1024
 
 // ADC continuous handle
 static adc_continuous_handle_t adc_handle = NULL;
@@ -58,11 +58,12 @@ esp_err_t adc_audio_init(void) {
         }
     };
 
-    // ESP32-S3 ADC max is ~83 kHz total. Use 16 kHz per channel = 32 kHz total for reliable operation
+    // ESP32-S3 ADC max is ~83 kHz total, but we can't hit exactly 96 kHz (48*2)
+    // Use maximum safe rate for best quality
     adc_continuous_config_t dig_cfg = {
         .pattern_num = 2,
         .adc_pattern = adc_pattern,
-        .sample_freq_hz = 32000,  // 16 kHz per channel (2 channels interleaved)
+        .sample_freq_hz = 83000,  // 41.5 kHz per channel (best we can do, will upsample slightly)
         .conv_mode = ADC_CONV_SINGLE_UNIT_1,
         .format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
     };
@@ -75,7 +76,7 @@ esp_err_t adc_audio_init(void) {
         return ret;
     }
 
-    ESP_LOGI(TAG, "ADC continuous mode initialized (stereo, 16 kHz per channel)");
+    ESP_LOGI(TAG, "ADC continuous mode initialized (stereo, 41.5 kHz per channel, upsampling to 192 kHz)");
     return ESP_OK;
 }
 
@@ -134,7 +135,7 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
     uint8_t adc_raw_data[ADC_READ_LEN];
     uint32_t bytes_read = 0;
     
-    esp_err_t ret = adc_continuous_read(adc_handle, adc_raw_data, ADC_READ_LEN, &bytes_read, 100);
+    esp_err_t ret = adc_continuous_read(adc_handle, adc_raw_data, ADC_READ_LEN, &bytes_read, 0);
     
     if (ret == ESP_ERR_TIMEOUT) {
         // No data available yet
@@ -167,8 +168,7 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
         }
     }
 
-    // Interleave L/R into stereo buffer and upsample from 16kHz to 44.1kHz
-    // Ratio is ~2.756 (44100/16000). We'll use simple linear interpolation.
+    // Interleave L/R and upsample from 41.5 kHz to 192 kHz (ratio ~4.63)
     size_t min_count = (left_count < right_count) ? left_count : right_count;
     
     if (min_count == 0) {
@@ -176,18 +176,26 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
         return ESP_OK;
     }
     
-    // Simple upsampling: repeat samples to fill the output buffer
-    // For better quality, could use linear interpolation, but this is simpler
-    const float upsample_ratio = 44100.0f / 16000.0f;  // ~2.756
+    // Linear interpolation upsampling
+    const float ratio = 192000.0f / 41500.0f;  // ~4.63
     size_t out_samples = 0;
     
-    for (size_t i = 0; i < min_count && out_samples < num_samples; i++) {
-        size_t repeat_count = (size_t)(upsample_ratio + 0.5f);
-        for (size_t r = 0; r < repeat_count && out_samples < num_samples; r++) {
-            stereo_buffer[out_samples * 2] = left_samples[i];
-            stereo_buffer[out_samples * 2 + 1] = right_samples[i];
-            out_samples++;
-        }
+    for (out_samples = 0; out_samples < num_samples; out_samples++) {
+        float src_pos = (float)out_samples / ratio;
+        size_t src_idx = (size_t)src_pos;
+        
+        if (src_idx >= min_count - 1) break;
+        
+        float frac = src_pos - (float)src_idx;
+        
+        // Linear interpolation for both channels
+        int32_t left_interp = (int32_t)(left_samples[src_idx] * (1.0f - frac) + 
+                                         left_samples[src_idx + 1] * frac);
+        int32_t right_interp = (int32_t)(right_samples[src_idx] * (1.0f - frac) + 
+                                          right_samples[src_idx + 1] * frac);
+        
+        stereo_buffer[out_samples * 2] = (int16_t)left_interp;
+        stereo_buffer[out_samples * 2 + 1] = (int16_t)right_interp;
     }
 
     *samples_read = out_samples;

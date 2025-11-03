@@ -26,8 +26,13 @@ static rx_status_t status = {
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
 static ring_buffer_t *jitter_buffer = NULL;
 
-#define JITTER_BUFFER_FRAMES 64
-#define PREFILL_FRAMES 32
+#define JITTER_BUFFER_FRAMES 10  // 10 frames * 10ms = 100ms buffer
+#define PREFILL_FRAMES 5         // Prefill 5 frames = 50ms latency
+
+// Move large buffers to static storage to avoid stack overflow
+static uint8_t rx_packet_buffer[MAX_PACKET_SIZE];
+static int16_t rx_audio_frame[AUDIO_FRAME_SAMPLES * 2];
+static int16_t rx_silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
 
 void app_main(void) {
 ESP_LOGI(TAG, "MeshNet Audio RX starting...");
@@ -38,9 +43,13 @@ ESP_LOGW(TAG, "Display init failed, continuing without display");
 }
 ESP_ERROR_CHECK(buttons_init());
 
-// Initialize network layer (STA mode)
-ESP_ERROR_CHECK(network_init_sta());
-ESP_ERROR_CHECK(network_start_latency_measurement());
+// Initialize network layer (STA mode) - don't abort if connection fails
+esp_err_t net_ret = network_init_sta();
+if (net_ret != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to connect to TX AP, will retry in background");
+    }
+    // DISABLED: Latency task steals packets from audio socket
+    // ESP_ERROR_CHECK(network_start_latency_measurement());
 
 // Initialize audio output
 ESP_ERROR_CHECK(i2s_audio_init());
@@ -54,16 +63,20 @@ return;
 }
 
 ESP_LOGI(TAG, "RX initialized, starting main loop");
+    
+// Log initial stack/heap status
+ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
+ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-uint8_t packet_buffer[MAX_PACKET_SIZE];
-int16_t audio_frame[AUDIO_FRAME_SAMPLES * 2];
-int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
     uint32_t last_packet_time = 0;
     uint32_t packets_received = 0;
     uint32_t bytes_received = 0;
     uint32_t last_stats_update = xTaskGetTickCount();
     uint32_t underrun_count = 0;
     bool prefilled = false;
+    uint16_t last_seq = 0;
+    uint32_t dropped_packets = 0;
+    bool first_packet = true;
     
     while (1) {
         // Handle button events
@@ -75,22 +88,36 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
                     current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
         }
         
-        // Receive raw PCM audio packets
+        // Receive raw PCM audio packets (10ms timeout matches frame period)
         size_t received_len;
-        esp_err_t ret = network_udp_recv(packet_buffer, MAX_PACKET_SIZE,
+        esp_err_t ret = network_udp_recv(rx_packet_buffer, MAX_PACKET_SIZE,
         &received_len, AUDIO_FRAME_MS);
 
         if (ret == ESP_OK) {
             // Parse minimal frame header
                 if (received_len >= NET_FRAME_HEADER_SIZE) {
                     net_frame_header_t hdr;
-                    memcpy(&hdr, packet_buffer, NET_FRAME_HEADER_SIZE);
+                    memcpy(&hdr, rx_packet_buffer, NET_FRAME_HEADER_SIZE);
                     if (hdr.magic == NET_FRAME_MAGIC && hdr.version == NET_FRAME_VERSION && hdr.type == NET_PKT_TYPE_AUDIO_RAW) {
                         uint16_t payload_len = ntohs(hdr.payload_len);
                         uint16_t seq = ntohs(hdr.seq);
                         if (payload_len == AUDIO_FRAME_BYTES && received_len == (NET_FRAME_HEADER_SIZE + payload_len)) {
                             ESP_LOGD(TAG, "Received framed audio packet seq=%u payload=%u bytes", seq, payload_len);
-                            uint8_t *payload = packet_buffer + NET_FRAME_HEADER_SIZE;
+                            
+                            // Track sequence gaps to measure packet loss
+                            if (!first_packet) {
+                                uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
+                                if (seq != expected_seq) {
+                                    int16_t gap = (int16_t)(seq - expected_seq);
+                                    if (gap > 0) {
+                                        dropped_packets += gap;
+                                    }
+                                }
+                            }
+                            first_packet = false;
+                            last_seq = seq;
+                            
+                            uint8_t *payload = rx_packet_buffer + NET_FRAME_HEADER_SIZE;
                             esp_err_t write_ret = ring_buffer_write(jitter_buffer, payload, AUDIO_FRAME_BYTES);
                             if (write_ret == ESP_OK) {
                                 status.receiving_audio = true;
@@ -108,7 +135,7 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
                             char hexbuf[3 * 16 + 1];
                             int to_print = (received_len < 16) ? received_len : 16;
                             for (int i = 0; i < to_print; ++i) {
-                                sprintf(&hexbuf[i * 3], "%02X ", (unsigned char)packet_buffer[i]);
+                                sprintf(&hexbuf[i * 3], "%02X ", (unsigned char)rx_packet_buffer[i]);
                             }
                             hexbuf[to_print * 3] = '\0';
                             ESP_LOGW(TAG, "Audio frame size mismatch: payload_len=%d received_len=%d seq=%u head=%s", payload_len, received_len, seq, hexbuf);
@@ -119,7 +146,7 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
             } else if (received_len == AUDIO_FRAME_BYTES) {
                 // Legacy payload-only frame (no header). Accept for backward compatibility.
                     ESP_LOGD(TAG, "Received legacy raw audio packet (no header), payload=%d bytes", received_len);
-                esp_err_t write_ret = ring_buffer_write(jitter_buffer, packet_buffer, AUDIO_FRAME_BYTES);
+                esp_err_t write_ret = ring_buffer_write(jitter_buffer, rx_packet_buffer, AUDIO_FRAME_BYTES);
                 if (write_ret == ESP_OK) {
                     status.receiving_audio = true;
                     packets_received++;
@@ -154,11 +181,12 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
         }
         
         if (prefilled) {
-        if (ring_buffer_read(jitter_buffer, (uint8_t*)audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
-        i2s_audio_write_samples(audio_frame, AUDIO_FRAME_SAMPLES * 2);
+        if (ring_buffer_read(jitter_buffer, (uint8_t*)rx_audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
+        // Write 10ms frame in one go (I2S will buffer it)
+        i2s_audio_write_samples(rx_audio_frame, AUDIO_FRAME_SAMPLES * 2);
         } else {
-        // Buffer underrun - play silence
-        i2s_audio_write_samples(silence_frame, AUDIO_FRAME_SAMPLES * 2);
+        // Buffer underrun - play silence (10ms worth)
+        i2s_audio_write_samples(rx_silence_frame, AUDIO_FRAME_SAMPLES * 2);
         underrun_count++;
         if (underrun_count % 100 == 0) {
         ESP_LOGW(TAG, "Buffer underrun count: %lu", underrun_count);
@@ -166,7 +194,7 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
         }
         } else {
         // No audio stream - play silence to mute
-        i2s_audio_write_samples(silence_frame, AUDIO_FRAME_SAMPLES * 2);
+        i2s_audio_write_samples(rx_silence_frame, AUDIO_FRAME_SAMPLES * 2);
         }
         
         // Update network stats every second
@@ -179,13 +207,28 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
             }
             status.rssi = network_get_rssi();
             status.latency_ms = network_get_latency_ms();
+            
+            // Log packet loss statistics
+            float loss_pct = 0.0f;
+            if (packets_received + dropped_packets > 0) {
+                loss_pct = (100.0f * dropped_packets) / (packets_received + dropped_packets);
+            }
+            ESP_LOGI(TAG, "Stats: RX=%lu pkts, DROP=%lu pkts, LOSS=%.1f%%, BW=%lu kbps", 
+                     packets_received, dropped_packets, loss_pct, status.bandwidth_kbps);
+            
             last_stats_update = now;
             bytes_received = 0;  // Reset for next interval
+            // Don't reset packets_received/dropped_packets - keep cumulative for accurate loss %
         }
         
-        // Update display
-        display_render_rx(current_view, &status);
+        // Update display at 10 Hz (every 100ms) to reduce I2C overhead
+        static uint32_t last_display_update = 0;
+        uint32_t now_display = xTaskGetTickCount();
+        if ((now_display - last_display_update) >= pdMS_TO_TICKS(100)) {
+            display_render_rx(current_view, &status);
+            last_display_update = now_display;
+        }
         
-        // No delay - let I2S write timing control the loop
+        // No delay - let I2S write timing control the loop (10ms per frame now)
     }
 }

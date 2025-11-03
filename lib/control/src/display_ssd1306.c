@@ -142,17 +142,16 @@ static esp_err_t ssd1306_write_command(uint8_t cmd) {
     return i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, data, 2, pdMS_TO_TICKS(100));
 }
 
-// I2C write data
+// I2C write data (static buffer to avoid malloc/free on every update)
+static uint8_t i2c_tx_buffer[1 + DISPLAY_WIDTH];  // Max size: 1 byte header + 128 bytes data
+
 static esp_err_t ssd1306_write_data(const uint8_t *data, size_t len) {
-    uint8_t *buf = malloc(len + 1);
-    if (!buf) return ESP_ERR_NO_MEM;
+    if (len > DISPLAY_WIDTH) return ESP_ERR_INVALID_SIZE;
     
-    buf[0] = 0x40;  // 0x40 = data mode
-    memcpy(&buf[1], data, len);
+    i2c_tx_buffer[0] = 0x40;  // 0x40 = data mode
+    memcpy(&i2c_tx_buffer[1], data, len);
     
-    esp_err_t ret = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, buf, len + 1, pdMS_TO_TICKS(100));
-    free(buf);
-    return ret;
+    return i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, i2c_tx_buffer, len + 1, pdMS_TO_TICKS(100));
 }
 
 // Initialize SSD1306

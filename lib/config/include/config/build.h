@@ -1,10 +1,10 @@
 #pragma once
 
-// Audio configuration - temporarily 48 kHz to test I2S/DAC
+// Audio configuration - 48 kHz with 10ms frames to reduce packet rate
 #define AUDIO_SAMPLE_RATE      48000
 #define AUDIO_BITS_PER_SAMPLE  16
 #define AUDIO_CHANNELS         2  // Stereo
-#define AUDIO_FRAME_MS         1  // 1ms = 192 samples = 768 bytes (under UDP MTU)
+#define AUDIO_FRAME_MS         10  // 10ms = 480 samples = 1920 bytes (10x reduction in packet rate)
 #define AUDIO_FRAME_SAMPLES    (AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS / 1000)
 #define AUDIO_FRAME_BYTES      (AUDIO_FRAME_SAMPLES * (AUDIO_BITS_PER_SAMPLE / 8) * AUDIO_CHANNELS)
 

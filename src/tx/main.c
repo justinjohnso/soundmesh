@@ -33,7 +33,7 @@ static void tx_timer_callback(void* arg) {
 }
 
 static tx_status_t status = {
-.input_mode = INPUT_MODE_AUX,
+.input_mode = INPUT_MODE_TONE,  // Start in TONE mode so ADC continuous doesn't block knob
 .audio_active = false,
 .connected_nodes = 0,
 .latency_ms = 10,
@@ -89,10 +89,11 @@ void update_tone_from_adc(void) {
         last_log = now;
     }
     
-    if (new_freq != status.tone_freq_hz) {
+    // Only update if frequency changed significantly (reduce log spam)
+    if (abs((int)new_freq - (int)status.tone_freq_hz) > 5) {
         status.tone_freq_hz = new_freq;
         tone_gen_set_frequency(status.tone_freq_hz);
-        ESP_LOGI(TAG, "Tone frequency updated to %lu Hz (raw=%d, mv=%d)", status.tone_freq_hz, adc_raw, voltage_mv);
+        ESP_LOGI(TAG, "Tone frequency updated to %lu Hz", status.tone_freq_hz);
     }
     
     read_count++;
@@ -135,7 +136,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
     ESP_ERROR_CHECK(usb_audio_init());
     ESP_ERROR_CHECK(adc_audio_init());
-    ESP_ERROR_CHECK(adc_audio_start());
+    // Don't start ADC yet - will start when switching to AUX mode
     // ESP_ERROR_CHECK(opus_codec_init());  // Removed for now
 
     // Create ring buffer
@@ -184,7 +185,7 @@ void app_main(void) {
     uint32_t last_stats_update = xTaskGetTickCount();
     
     while (1) {
-        // Wait for 1ms timer tick
+        // Wait for 1ms timer tick (but only send every 10ms)
         xSemaphoreTake(tx_timer_sem, portMAX_DELAY);
         ms_tick++;
         
@@ -197,16 +198,36 @@ void app_main(void) {
                 ESP_LOGI(TAG, "View changed to %s", 
                         current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
+                input_mode_t old_mode = status.input_mode;
                 status.input_mode = (status.input_mode + 1) % 3;
-                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+                
+                // Manage ADC continuous mode based on input mode
+                if (old_mode == INPUT_MODE_AUX && status.input_mode != INPUT_MODE_AUX) {
+                    // Leaving AUX mode - stop continuous ADC
+                    adc_audio_stop();
+                    ESP_LOGI(TAG, "Input mode changed to %d (ADC stopped)", status.input_mode);
+                } else if (old_mode != INPUT_MODE_AUX && status.input_mode == INPUT_MODE_AUX) {
+                    // Entering AUX mode - start continuous ADC
+                    adc_audio_start();
+                    ESP_LOGI(TAG, "Input mode changed to %d (ADC started)", status.input_mode);
+                } else {
+                    ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+                }
             }
         }
         
-        // Generate/capture audio based on mode
+        // Generate/capture audio based on mode (every 10ms to match frame size)
+        if ((ms_tick % AUDIO_FRAME_MS) != 0) {
+            // Update knob every 1ms for responsiveness, but don't generate audio
+            if (status.input_mode == INPUT_MODE_TONE) {
+                update_tone_from_adc();
+            }
+            continue; // Skip non-frame ticks for audio generation
+        }
+        
         status.audio_active = false;
         switch (status.input_mode) {
         case INPUT_MODE_TONE:
-            update_tone_from_adc();
             tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
             // Convert mono to stereo (duplicate channels)
             for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
@@ -286,8 +307,8 @@ void app_main(void) {
             break;
         }
         
-        // If we have audio, send raw PCM
-        if (status.audio_active) {
+        // If we have audio and network is ready (STA has IP), send raw PCM
+        if (status.audio_active && network_is_stream_ready()) {
         memcpy(packet_buffer, stereo_frame, AUDIO_FRAME_BYTES);
 
         // Build frame header
@@ -304,7 +325,7 @@ void app_main(void) {
         memcpy(framed_buffer, &hdr, sizeof(hdr));
         memcpy(framed_buffer + sizeof(hdr), packet_buffer, AUDIO_FRAME_BYTES);
 
-        esp_err_t send_ret = network_udp_send(framed_buffer, sizeof(hdr) + AUDIO_FRAME_BYTES);
+        esp_err_t send_ret = network_udp_send_audio(framed_buffer, sizeof(hdr) + AUDIO_FRAME_BYTES);
         if (send_ret == ESP_OK) {
         bytes_sent += (NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
         if ((tx_seq & 0x7F) == 0) {
@@ -335,8 +356,8 @@ void app_main(void) {
             bytes_sent = 0;  // Reset for next interval
         }
 
-        // Update display (rate-limited to reduce overhead)
-        if ((ms_tick & 0x0F) == 0) {
+        // Update display at 10 Hz (every 100ms) to reduce I2C overhead
+        if ((ms_tick % 100) == 0) {
             display_render_tx(current_view, &status);
         }
 

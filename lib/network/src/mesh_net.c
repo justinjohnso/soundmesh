@@ -324,9 +324,13 @@ esp_err_t network_udp_send(const uint8_t *data, size_t len) {
 
 // Send on audio socket (low priority - for audio data)
 esp_err_t network_udp_send_audio(const uint8_t *data, size_t len) {
-    if (udp_sock_audio < 0) return ESP_ERR_INVALID_STATE;
+    // Quick fix: broadcast UDP doesn't demux to multiple RX sockets on same port
+    // Send audio via control socket so RX receives it (same port 3333)
+    // TODO: Use separate ports (3333 ctrl, 3334 audio) for true separation
+    int sock = udp_sock_ctrl;
+    if (sock < 0) return ESP_ERR_INVALID_STATE;
     
-    int sent = sendto(udp_sock_audio, data, len, 0, 
+    int sent = sendto(sock, data, len, 0, 
                      (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr));
     
     if (sent < 0) {

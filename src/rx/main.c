@@ -26,8 +26,8 @@ static rx_status_t status = {
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
 static ring_buffer_t *jitter_buffer = NULL;
 
-#define JITTER_BUFFER_FRAMES 8
-#define PREFILL_FRAMES 3
+#define JITTER_BUFFER_FRAMES 64
+#define PREFILL_FRAMES 32
 
 void app_main(void) {
 ESP_LOGI(TAG, "MeshNet Audio RX starting...");
@@ -97,7 +97,9 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
                                 packets_received++;
                                 bytes_received += payload_len;
                                 last_packet_time = xTaskGetTickCount();
-                                ESP_LOGI(TAG, "Received and buffered audio packet (%d bytes)", payload_len);
+                                if ((packets_received & 0x7F) == 0) {
+                                    ESP_LOGI(TAG, "RX packet %lu", packets_received);
+                                }
                             } else {
                                 ESP_LOGW(TAG, "Failed to write to jitter buffer: %s", esp_err_to_name(write_ret));
                             }
@@ -123,7 +125,7 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
                     packets_received++;
                     bytes_received += received_len;
                     last_packet_time = xTaskGetTickCount();
-                    ESP_LOGI(TAG, "Received and buffered legacy audio packet (%d bytes)", received_len);
+
                 } else {
                     ESP_LOGW(TAG, "Failed to write legacy audio to jitter buffer: %s", esp_err_to_name(write_ret));
                 }
@@ -142,23 +144,23 @@ int16_t silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
         }
         
         // Playback from jitter buffer with prefill
-        size_t available_frames = ring_buffer_available(jitter_buffer);
+        size_t available_bytes = ring_buffer_available(jitter_buffer);
+        size_t available_frames = available_bytes / AUDIO_FRAME_BYTES;
         if (!prefilled) {
             if (available_frames >= PREFILL_FRAMES) {
                 prefilled = true;
-                ESP_LOGI(TAG, "Buffer prefilled, starting playback");
+                ESP_LOGI(TAG, "Buffer prefilled (%zu frames), starting playback", available_frames);
             }
         }
         
         if (prefilled) {
         if (ring_buffer_read(jitter_buffer, (uint8_t*)audio_frame, AUDIO_FRAME_BYTES) == ESP_OK) {
-        ESP_LOGI(TAG, "Playing audio frame");
         i2s_audio_write_samples(audio_frame, AUDIO_FRAME_SAMPLES * 2);
         } else {
         // Buffer underrun - play silence
         i2s_audio_write_samples(silence_frame, AUDIO_FRAME_SAMPLES * 2);
         underrun_count++;
-        if (underrun_count % 10 == 0) {
+        if (underrun_count % 100 == 0) {
         ESP_LOGW(TAG, "Buffer underrun count: %lu", underrun_count);
         }
         }

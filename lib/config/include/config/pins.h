@@ -11,8 +11,8 @@
 #define DISPLAY_WIDTH          128
 #define DISPLAY_HEIGHT         32
 
-// Button GPIO (avoid GPIO 1 = UART TX)
-#define BUTTON_GPIO            GPIO_NUM_4
+// Button GPIO
+#define BUTTON_GPIO            GPIO_NUM_43
 
 // I2S pins for UDA1334 DAC (RX only)
 #define I2S_BCK_IO             GPIO_NUM_7

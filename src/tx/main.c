@@ -1,7 +1,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include <esp_log.h>
 #include <esp_task_wdt.h>
+#include <esp_timer.h>
 #include <esp_adc/adc_oneshot.h>
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
@@ -22,8 +24,16 @@
 
 static const char *TAG = "tx_main";
 
+// Timer for 1ms pacing
+static SemaphoreHandle_t tx_timer_sem = NULL;
+static uint32_t ms_tick = 0;
+
+static void tx_timer_callback(void* arg) {
+    xSemaphoreGive(tx_timer_sem);
+}
+
 static tx_status_t status = {
-.input_mode = INPUT_MODE_USB,
+.input_mode = INPUT_MODE_AUX,
 .audio_active = false,
 .connected_nodes = 0,
 .latency_ms = 10,
@@ -47,12 +57,20 @@ static uint16_t tx_seq = 0;
 
 // ADC processing function (oracle recommendation #2: simplify main loop)
 void update_tone_from_adc(void) {
+    static uint32_t last_log = 0;
+    static uint32_t read_count = 0;
+    
     if (adc1_handle == NULL || adc1_cali_handle == NULL) {
         return; // ADC not initialized
     }
 
     int adc_raw;
-    if (adc_oneshot_read(adc1_handle, ADC_CHANNEL_2, &adc_raw) != ESP_OK) {
+    esp_err_t ret = adc_oneshot_read(adc1_handle, ADC_CHANNEL_3, &adc_raw);
+    if (ret != ESP_OK) {
+        if ((read_count % 1000) == 0) {
+            ESP_LOGW(TAG, "ADC read failed: %s", esp_err_to_name(ret));
+        }
+        read_count++;
         return;
     }
 
@@ -63,11 +81,21 @@ void update_tone_from_adc(void) {
 
     // Map voltage (0-3300mV) to frequency (200-2000Hz)
     uint32_t new_freq = 200 + ((voltage_mv * 1800) / 3300);
+    
+    // Log periodically
+    uint32_t now = xTaskGetTickCount();
+    if ((now - last_log) > pdMS_TO_TICKS(2000)) {
+        ESP_LOGI(TAG, "Knob: raw=%d, mv=%d, freq=%lu Hz", adc_raw, voltage_mv, new_freq);
+        last_log = now;
+    }
+    
     if (new_freq != status.tone_freq_hz) {
         status.tone_freq_hz = new_freq;
         tone_gen_set_frequency(status.tone_freq_hz);
-        ESP_LOGI(TAG, "Tone frequency updated to %lu Hz", status.tone_freq_hz);
+        ESP_LOGI(TAG, "Tone frequency updated to %lu Hz (raw=%d, mv=%d)", status.tone_freq_hz, adc_raw, voltage_mv);
     }
+    
+    read_count++;
 }
 
 void app_main(void) {
@@ -81,7 +109,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(network_init_ap());
     ESP_ERROR_CHECK(network_start_latency_measurement());
 
-    // Initialize ADC for pitch control (GPIO 2 - ADC1_CHANNEL_2)
+    // Initialize ADC for pitch control (GPIO 3 - ADC1_CHANNEL_3 / A2)
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
@@ -92,12 +120,12 @@ void app_main(void) {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_12,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_2, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_3, &config));
 
     // Initialize ADC calibration
     adc_cali_curve_fitting_config_t cali_config = {
         .unit_id = ADC_UNIT_1,
-        .chan = ADC_CHANNEL_2,
+        .chan = ADC_CHANNEL_3,
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
@@ -133,22 +161,45 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     }
 
+    // Create semaphore for timer
+    tx_timer_sem = xSemaphoreCreateBinary();
+    if (!tx_timer_sem) {
+        ESP_LOGE(TAG, "Failed to create timer semaphore");
+        return;
+    }
+    
+    // Create and start 1ms periodic timer
+    const esp_timer_create_args_t timer_args = {
+        .callback = &tx_timer_callback,
+        .name = "tx_pacer",
+        .dispatch_method = ESP_TIMER_TASK
+    };
+    esp_timer_handle_t tx_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &tx_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(tx_timer, 1000)); // 1ms = 1000us
+    
     ESP_LOGI(TAG, "TX initialized, starting main loop");
 
     uint32_t bytes_sent = 0;
     uint32_t last_stats_update = xTaskGetTickCount();
     
     while (1) {
-        // Handle button events
-        button_event_t btn_event = buttons_poll();
-        if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
-            current_view = (current_view == DISPLAY_VIEW_NETWORK) ? 
-                          DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
-            ESP_LOGI(TAG, "View changed to %s", 
-                    current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
-        } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
-            status.input_mode = (status.input_mode + 1) % 3;
-            ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+        // Wait for 1ms timer tick
+        xSemaphoreTake(tx_timer_sem, portMAX_DELAY);
+        ms_tick++;
+        
+        // Handle button events (every 5ms for responsiveness)
+        if ((ms_tick % 5) == 0) {
+            button_event_t btn_event = buttons_poll();
+            if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
+                current_view = (current_view == DISPLAY_VIEW_NETWORK) ? 
+                              DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
+                ESP_LOGI(TAG, "View changed to %s", 
+                        current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
+            } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
+                status.input_mode = (status.input_mode + 1) % 3;
+                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+            }
         }
         
         // Generate/capture audio based on mode
@@ -213,13 +264,12 @@ void app_main(void) {
                     
                     if (std_avg > SIGNAL_THRESHOLD) {
                         status.audio_active = true;
-                        ESP_LOGI(TAG, "AUX: %zu samples, STD=%ld, DC_L=%ld, DC_R=%ld (ACTIVE)", 
-                                 samples_read, std_avg, mean_left, mean_right);
+                        if ((tx_seq & 0xFF) == 0) {
+                            ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
+                        }
                     } else {
                         status.audio_active = false;
                         memset(stereo_frame, 0, sizeof(stereo_frame));
-                        ESP_LOGD(TAG, "AUX: %zu samples, STD=%ld (no signal, silenced)", 
-                                 samples_read, std_avg);
                     }
                 } else {
                     // No data or error - fill with silence
@@ -257,9 +307,13 @@ void app_main(void) {
         esp_err_t send_ret = network_udp_send(framed_buffer, sizeof(hdr) + AUDIO_FRAME_BYTES);
         if (send_ret == ESP_OK) {
         bytes_sent += (NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-        ESP_LOGI(TAG, "Sent framed audio packet seq=%u header+payload=%d bytes payload=%d bytes", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES, AUDIO_FRAME_BYTES);
+        if ((tx_seq & 0x7F) == 0) {
+            ESP_LOGI(TAG, "Sent packet seq=%u (%d bytes)", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
+        }
         } else {
-        ESP_LOGW(TAG, "Failed to send audio packet: %s", esp_err_to_name(send_ret));
+        if ((tx_seq & 0x7F) == 0) {
+            ESP_LOGW(TAG, "Failed to send: %s", esp_err_to_name(send_ret));
+        }
         }
         }
 
@@ -281,12 +335,12 @@ void app_main(void) {
             bytes_sent = 0;  // Reset for next interval
         }
 
-        // Update display
-        display_render_tx(current_view, &status);
+        // Update display (rate-limited to reduce overhead)
+        if ((ms_tick & 0x0F) == 0) {
+            display_render_tx(current_view, &status);
+        }
 
         // Reset watchdog
         esp_task_wdt_reset();
-
-        vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
     }
 }

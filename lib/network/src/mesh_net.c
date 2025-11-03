@@ -7,6 +7,8 @@
 #include <lwip/sockets.h>
 #include <string.h>
 #include <esp_timer.h>
+#include <fcntl.h>
+#include <errno.h>
 
 static const char *TAG = "network";
 static int udp_sock = -1;
@@ -53,6 +55,18 @@ esp_err_t network_init_ap(void) {
     
     int broadcast = 1;
     setsockopt(udp_sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+    
+    // Set socket to non-blocking mode to prevent queue overflow blocking
+    int flags = fcntl(udp_sock, F_GETFL, 0);
+    if (flags < 0) {
+        ESP_LOGE(TAG, "Failed to get socket flags");
+        return ESP_FAIL;
+    }
+    if (fcntl(udp_sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        ESP_LOGE(TAG, "Failed to set non-blocking mode");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "UDP socket set to non-blocking mode");
     
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_port = htons(UDP_PORT);
@@ -182,7 +196,11 @@ esp_err_t network_udp_send(const uint8_t *data, size_t len) {
                      (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr));
     
     if (sent < 0) {
-        ESP_LOGE(TAG, "Send failed");
+        // Handle non-blocking socket errors - silently drop packets when buffer is full
+        if (errno == EWOULDBLOCK || errno == EAGAIN || errno == ENOBUFS || errno == ENOMEM) {
+            return ESP_OK; // Buffer full - expected when broadcasting with no receivers
+        }
+        ESP_LOGE(TAG, "Send failed: %s", strerror(errno));
         return ESP_FAIL;
     }
     
@@ -315,7 +333,7 @@ static void network_measure_latency_task(void *pvParameters) {
 }
 
 esp_err_t network_start_latency_measurement(void) {
-    xTaskCreate(network_measure_latency_task, "latency_measure", 2048, NULL, 5, NULL);
+    xTaskCreate(network_measure_latency_task, "latency_measure", 4096, NULL, 5, NULL);
     return ESP_OK;
 }
 

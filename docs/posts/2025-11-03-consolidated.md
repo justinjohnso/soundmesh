@@ -167,13 +167,115 @@ Separating application roles (TX/RX) from network roles (root/child) enables bet
 ### DMA Solves Embedded Timing Issues
 High-speed continuous sampling requires hardware DMA - polling approaches inevitably fail watchdog timers.
 
+## VS1053 Integration Branch: The ADPCM Compression Attempt
+
+Before pivoting to ESP32 ADC, we invested significant effort in VS1053 codec integration for ADPCM compression. While ultimately unsuccessful due to hardware limitations, this work was essential in understanding codec architectures and compression requirements.
+
+### The Premise: Bandwidth Compression via Hardware Codec
+
+After basic UDP streaming worked with uncompressed PCM (~1.5Mbps), compression became critical for mesh networking. IMA ADPCM promised 4:1 compression with hardware acceleration via VS1053 codec.
+
+**Expected Benefits:**
+- 24x bandwidth reduction (1.5Mbps → 64kbps)
+- Hardware-accelerated encoding/decoding
+- Real aux audio input capability
+- Same chip for TX encode and RX decode
+
+### Adafruit Library Integration: First Attempt
+
+Started with Adafruit's Arduino VS1053 library, creating an adapter layer to bridge C++ Arduino API to ESP-IDF C code:
+
+```cpp
+extern "C" {
+esp_err_t vs1053_init(vs1053_t* vs, spi_host_device_t spi_host) {
+    initArduino();
+    SPI.begin(VS1053_SPI_SCK, VS1053_SPI_MISO, VS1053_SPI_MOSI);
+
+    static Adafruit_VS1053 vs_inst(VS1053_XRESET, VS1053_XCS, VS1053_XDCS, VS1053_DREQ);
+    s_vs = &vs_inst;
+
+    if (!s_vs->begin()) {
+        return ESP_FAIL;
+    }
+    // ...
+}
+}
+```
+
+**Result:** Library supported playback and Ogg recording, but lacked ADPCM recording - `SCI_HDAT1` always returned 0.
+
+### Custom ESP-IDF Driver: Second Attempt
+
+Implemented bare-metal SPI driver with direct register access:
+
+**SPI Configuration:**
+- Two device handles: SCI (commands) and SDI (audio data)
+- Full-duplex SPI (critical for VS1053)
+- DREQ polling before each transaction
+
+**ADPCM Recording Pipeline:**
+```c
+esp_err_t vs1053_start_adpcm_record(vs1053_t* vs, uint32_t sample_rate, bool stereo) {
+    // Soft reset with ADPCM bit set
+    vs1053_sci_write(vs, VS1053_REG_MODE, SM_SDINEW | SM_RESET | SM_ADPCM);
+    vs1053_sci_write(vs, VS1053_REG_AICTRL0, 0);        // ADPCM profile
+    vs1053_sci_write(vs, VS1053_REG_AICTRL1, sample_rate); // Sample rate
+    // Read encoded data from HDAT0/HDAT1 registers
+}
+```
+
+**TX Pipeline:** VS1053 → ADPCM blocks → ring buffer → UDP send
+**RX Pipeline:** UDP receive → jitter buffer → VS1053 ADPCM decode → line-out
+
+### Hardware Reality Check: VS1053 vs VS1053b
+
+The critical discovery: our Adafruit breakout uses VS1053 (playback only), not VS1053b (recording capable). VS1053 lacks ADPCM recording firmware entirely.
+
+**Evidence:**
+- `SCI_HDAT1` register always returned 0
+- Status register showed version 3, not 4 (VS1053b)
+- ADPCM mode activation failed silently
+
+### Technical Lessons from VS1053 Work
+
+**1. Hardware Assumptions Kill Projects**
+Never trust documentation over empirical verification. "VS1053" vs "VS1053b" is a critical distinction.
+
+**2. Library Limitations Can Be Show-Stoppers**
+Adafruit library excellent for playback, but ADPCM recording requires bare-metal register access.
+
+**3. SPI Mode Matters**
+VS1053 requires full-duplex SPI. `SPI_DEVICE_HALFDUPLEX` caused silent failures.
+
+**4. DREQ Behavior Varies by Mode**
+During recording, DREQ low doesn't always indicate error - can be temporary while processing audio.
+
+**5. Plugin Loading Requires Watchdog Management**
+Firmware loading takes significant time. Without `esp_task_wdt_reset()`, watchdog triggers.
+
+### Branch Outcome: Valuable Failure
+
+The VS1053 work was comprehensive but ultimately blocked by incorrect hardware. However, it proved:
+- ADPCM compression architecture was sound
+- Custom codec drivers are feasible on ESP32
+- Pipeline design worked for both encode/decode
+- Build system could support complex audio components
+
+This failure forced the pragmatic pivot to ESP32 ADC, which provided reliable audio input without compression - sufficient for prototyping the mesh networking layer.
+
+**Files from VS1053 branch that influenced main:**
+- Custom SPI driver patterns (reused in other components)
+- ADPCM pipeline architecture (informed future compression work)
+- Build system patterns for complex audio libraries
+- Hardware verification procedures (now mandatory)
+
 ## The Path Forward
 
 The system now has reliable audio input via ESP32 ADC and stable WiFi networking. The mesh migration will deliver true self-healing multi-hop audio distribution, fulfilling the original project vision.
 
 Immediate next steps:
 1. Test ADC end-to-end audio streaming
-2. Implement mesh backend scaffold  
+2. Implement mesh backend scaffold
 3. Validate single-hop mesh formation
 4. Proceed to tree broadcast and multi-hop testing
 

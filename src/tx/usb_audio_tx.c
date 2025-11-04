@@ -21,8 +21,8 @@ static ring_buffer_t *usb_audio_buffer = NULL;
 static bool usb_initialized = false;
 static bool usb_audio_active = false;
 
-// Audio format: 44.1kHz, 16-bit, stereo
-#define USB_SAMPLE_RATE 44100
+// Audio format: 48kHz, 24-bit, stereo (will be downmixed to mono for mesh)
+#define USB_SAMPLE_RATE 48000
 #define USB_CHANNELS 2
 #define USB_BITS_PER_SAMPLE 16
 

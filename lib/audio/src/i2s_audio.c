@@ -31,7 +31,7 @@ esp_err_t i2s_audio_init(void) {
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit, stereo", AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S initialized: %dHz, 24-bit, stereo", AUDIO_SAMPLE_RATE);
     return ESP_OK;
 }
 

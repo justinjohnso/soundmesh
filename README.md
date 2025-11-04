@@ -9,7 +9,7 @@ MeshNet Audio implements a modular wireless audio streaming prototype with TX (t
 - **TX Device**: Captures audio (USB/Aux/Tone) and broadcasts via WiFi SoftAP
 - **RX Device**: Connects to TX and outputs audio via I2S DAC (UDA1334)
 - **Visual Feedback**: SSD1306 OLED displays show network stats and audio status
-- **Real-time Performance**: 16kHz sample rate, 16-bit mono PCM, 10ms packets
+- **Real-time Performance**: 48kHz sample rate, 24-bit mono PCM, 5ms packets
 
 ## 🔧 Hardware Requirements
 
@@ -139,7 +139,7 @@ meshnet-audio/
 
 ### Audio Configuration
 - **Sample Rate**: 16kHz
-- **Bit Depth**: 16-bit PCM
+- **Bit Depth**: 24-bit PCM (professional audio quality)
 - **Channels**: Mono
 - **Packet Size**: 320 bytes (160 samples × 2 bytes)
 - **Packet Interval**: 10ms

@@ -7,6 +7,9 @@ pio_env = env["PIOENV"]
 if pio_env == "tx":
     app_sources = "tx/main.c"
     message = "Building TX firmware"
+elif pio_env == "combo":
+    app_sources = "combo/main.c"
+    message = "Building COMBO firmware"
 else:
     app_sources = "rx/main.c"
     message = "Building RX firmware"

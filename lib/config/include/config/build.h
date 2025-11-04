@@ -15,6 +15,7 @@
 
 // Network configuration - 10.48.0.x scheme (48kHz reference)
 #define MESH_ID                "MeshNet-Audio-48"
+#define MESH_SSID              MESH_ID  // SSID for WiFi AP/STA
 #define MESH_PASSWORD          "meshnet123"
 #define MESH_CHANNEL           6
 #define UDP_PORT               3333  // Legacy (for star topology fallback if needed)

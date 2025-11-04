@@ -85,13 +85,14 @@ esp_err_t usb_audio_read_frames(int16_t *frames, size_t frame_count, size_t *fra
         return ESP_FAIL;
     }
 
+    // Read 16-bit stereo directly
     size_t bytes_to_read = frame_count * 2 * sizeof(int16_t);
     size_t bytes_read = ring_buffer_read(usb_audio_buffer, frames, bytes_to_read);
     *frames_read = bytes_read / (2 * sizeof(int16_t));
 
     // If we don't have enough data, fill with silence
-    if (bytes_read < bytes_to_read) {
-        memset((uint8_t *)frames + bytes_read, 0, bytes_to_read - bytes_read);
+    if (*frames_read < frame_count) {
+        memset(&frames[*frames_read * 2], 0, (frame_count - *frames_read) * 2 * sizeof(int16_t));
         *frames_read = frame_count;
     }
 

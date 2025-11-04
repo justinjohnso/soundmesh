@@ -127,19 +127,19 @@ typedef struct __attribute__((packed)) {
     uint8_t stream_id;      // Stream identifier (multi-TX support)
     uint16_t seq;           // Sequence number (network byte order)
     uint32_t timestamp;     // Sender timestamp in ms
-    uint16_t payload_len;   // 960 bytes for 5ms @ 48kHz stereo
+    uint16_t payload_len;   // 720 bytes for 5ms @ 48kHz 24-bit mono
     uint8_t ttl;            // Hop limit (e.g., 6)
     uint8_t reserved;       // Alignment padding
     // Total: 12 bytes header
-    uint8_t payload[960];   // 5ms of 48kHz 16-bit stereo PCM
+    uint8_t payload[720];   // 5ms of 48kHz 24-bit mono PCM
 } mesh_audio_frame_t;
 ```
 
 **Frame Size Calculation:**
-- 5ms @ 48kHz = 240 samples/channel
-- 240 samples × 2 channels × 2 bytes = **960 bytes**
+- 5ms @ 48kHz = 240 samples
+- 240 samples × 1 channel × 3 bytes (24-bit) = **720 bytes**
 - Header: 12 bytes
-- **Total: 972 bytes** (well under mesh MTU ~1400 bytes)
+- **Total: 732 bytes** (well under mesh MTU ~1400 bytes)
 
 **Why 5ms instead of 10ms:**
 - Lower latency per hop (5ms vs 10ms)
@@ -159,7 +159,7 @@ typedef struct {
     uint32_t timestamp_ms;
 } recent_frame_t;
 
-#define DEDUPE_CACHE_SIZE 32
+#define DEDUPE_CACHE_SIZE 256  // Covers >1 second @ 200 fps
 static recent_frame_t dedupe_cache[DEDUPE_CACHE_SIZE];
 static int dedupe_index = 0;
 
@@ -391,19 +391,22 @@ t=20s: RX3 boots far away → joins via RX2 (multi-hop)
 ```c
 // Every 5ms in main loop
 void tx_main_loop() {
-    // Generate/capture 5ms audio frame (960 bytes)
-    int16_t stereo_frame[240 * 2];  // 240 samples × 2 channels
-    generate_audio(stereo_frame, 240);
+    // Generate/capture 5ms audio frame (720 bytes)
+    int16_t mono_frame[240];  // 240 samples × 1 channel (24-bit will be packed)
+    generate_audio(mono_frame, 240);
     
-    // Build mesh audio frame
+    // Pack to 24-bit and build mesh audio frame
+    uint8_t payload_24bit[720];
+    pack_samples_to_24bit(mono_frame, payload_24bit, 240);
+    
     mesh_audio_frame_t frame;
     frame.magic = NET_FRAME_MAGIC;
     frame.stream_id = my_stream_id;
     frame.seq = htons(tx_seq++);
     frame.timestamp = esp_timer_get_time() / 1000;
-    frame.payload_len = 960;
+    frame.payload_len = 720;
     frame.ttl = 6;  // Max 6 hops
-    memcpy(frame.payload, stereo_frame, 960);
+    memcpy(frame.payload, payload_24bit, 720);
     
     // Broadcast to mesh (toflag = MESH_DATA_TODS for tree distribution)
     network_send_audio(&frame, sizeof(frame));
@@ -456,8 +459,8 @@ void on_mesh_data_received(mesh_addr_t *from, mesh_data_t *data) {
 ### 3. Bandwidth & Latency Analysis
 
 **Audio Bitrate:**
-- 48kHz × 16-bit × 2ch = 1,536,000 bps = **1.5 Mbps**
-- 5ms frames: 960 bytes × 200 fps × 8 = **1.536 Mbps**
+- 48kHz × 24-bit × 1ch = 1,152,000 bps = **1.152 Mbps**
+- 5ms frames: 720 bytes × 200 fps × 8 = **1.152 Mbps**
 - Header overhead: 12 bytes × 200 fps × 8 = **19.2 kbps** (negligible)
 
 **Per-Hop Airtime:**

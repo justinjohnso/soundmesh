@@ -103,11 +103,62 @@
             "problemMatcher": []
         },
 
+        // COMBO Tasks
+        {
+            "label": "COMBO: Build",
+            "type": "shell",
+            "command": "pio run -e combo",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "COMBO: Upload",
+            "type": "shell",
+            "command": "pio run -e combo -t upload --upload-port /dev/cu.usbmodem101",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "COMBO: Monitor",
+            "type": "shell",
+            "command": "pio device monitor -b 115200 --port /dev/cu.usbmodem101",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "COMBO: Build + Upload + Monitor",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "COMBO: Build",
+                "COMBO: Upload",
+                "COMBO: Monitor"
+            ],
+            "problemMatcher": []
+        },
+
         // Both devices
         {
-            "label": "Build Both (TX + RX)",
+            "label": "Build All (TX + RX + COMBO)",
             "type": "shell",
-            "command": "pio run -e tx -e rx",
+            "command": "pio run -e tx -e rx -e combo",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -123,7 +174,7 @@
         {
             "label": "Clean Build",
             "type": "shell",
-            "command": "rm -rf .pio/build && pio run -e tx -e rx",
+            "command": "rm -rf .pio/build && pio run -e tx -e rx -e combo",
             "group": "build",
             "problemMatcher": ["$gcc"],
             "presentation": {

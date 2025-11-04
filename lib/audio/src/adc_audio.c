@@ -158,7 +158,7 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
         uint32_t chan_num = p->type2.channel;
         uint32_t data = p->type2.data;
 
-        // Remove DC bias and scale 12-bit to 16-bit
+        // Remove DC bias and scale 12-bit to 24-bit (left-shift by 12)
         int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
 
         if (chan_num == ADC_LEFT_CHANNEL) {

@@ -15,7 +15,7 @@
 
 static const char *TAG = "usb_audio";
 
-#define USB_AUDIO_BUFFER_SIZE (44100 * 2 * sizeof(int16_t) / 10)  // 100ms buffer
+#define USB_AUDIO_BUFFER_SIZE (48000 * 2 * 3 / 10)  // 100ms buffer @ 48kHz 24-bit stereo
 
 static ring_buffer_t *usb_audio_buffer = NULL;
 

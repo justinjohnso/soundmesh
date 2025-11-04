@@ -31,7 +31,7 @@ esp_err_t i2s_audio_init(void) {
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 24-bit, stereo", AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit, stereo", AUDIO_SAMPLE_RATE);
     return ESP_OK;
 }
 
@@ -39,9 +39,9 @@ esp_err_t i2s_audio_write_samples(const int16_t *samples, size_t num_samples) {
     if (!tx_handle) return ESP_ERR_INVALID_STATE;
     
     size_t bytes_written;
-    esp_err_t ret = i2s_channel_write(tx_handle, samples, 
-                                     num_samples * sizeof(int16_t), 
-                                     &bytes_written, portMAX_DELAY);
+    esp_err_t ret = i2s_channel_write(tx_handle, samples,
+    num_samples * sizeof(int16_t),
+    &bytes_written, portMAX_DELAY);
     
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed");
@@ -53,7 +53,7 @@ esp_err_t i2s_audio_write_samples(const int16_t *samples, size_t num_samples) {
 
 esp_err_t i2s_audio_write_mono_as_stereo(const int16_t *mono_samples, size_t num_mono_samples) {
     if (!tx_handle) return ESP_ERR_INVALID_STATE;
-    
+
     static int16_t stereo_buffer[AUDIO_FRAME_SAMPLES * 2];
     
     for (size_t i = 0; i < num_mono_samples; i++) {
@@ -62,9 +62,9 @@ esp_err_t i2s_audio_write_mono_as_stereo(const int16_t *mono_samples, size_t num
     }
     
     size_t bytes_written;
-    esp_err_t ret = i2s_channel_write(tx_handle, stereo_buffer, 
-                                     num_mono_samples * 2 * sizeof(int16_t), 
-                                     &bytes_written, portMAX_DELAY);
+    esp_err_t ret = i2s_channel_write(tx_handle, stereo_buffer,
+    num_mono_samples * 2 * sizeof(int16_t),
+    &bytes_written, portMAX_DELAY);
     
     if (ret != ESP_OK) {
     ESP_LOGE(TAG, "I2S stereo write failed");

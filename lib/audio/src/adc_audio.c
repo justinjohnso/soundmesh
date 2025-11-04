@@ -18,11 +18,15 @@ static const char *TAG = "adc_audio";
 static adc_continuous_handle_t adc_handle = NULL;
 
 // Static buffers to avoid stack overflow
-static int16_t left_samples[ADC_READ_LEN / 4];
-static int16_t right_samples[ADC_READ_LEN / 4];
+static int16_t mono_samples[ADC_READ_LEN / 4];
 
 // DC bias removal (12-bit ADC mid-point)
 #define ADC_MID_CODE           2048
+
+// DC blocking filter (1st order high-pass, ~20 Hz cutoff at 48 kHz)
+#define DC_BLOCK_ALPHA         0.9974f  // exp(-2*pi*fc/fs)
+static int16_t dc_block_prev_x = 0;
+static int16_t dc_block_prev_y = 0;
 
 esp_err_t adc_audio_init(void) {
     if (adc_handle != NULL) {
@@ -58,12 +62,11 @@ esp_err_t adc_audio_init(void) {
         }
     };
 
-    // ESP32-S3 ADC max is ~83 kHz total, but we can't hit exactly 96 kHz (48*2)
-    // Use maximum safe rate for best quality
+    // Update to 48 kHz mono for v0.1 spec compliance
     adc_continuous_config_t dig_cfg = {
-        .pattern_num = 2,
+        .pattern_num = 1,  // Mono input
         .adc_pattern = adc_pattern,
-        .sample_freq_hz = 83000,  // 41.5 kHz per channel (best we can do, will upsample slightly)
+        .sample_freq_hz = 48000,  // 48 kHz mono
         .conv_mode = ADC_CONV_SINGLE_UNIT_1,
         .format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
     };
@@ -76,7 +79,7 @@ esp_err_t adc_audio_init(void) {
         return ret;
     }
 
-    ESP_LOGI(TAG, "ADC continuous mode initialized (stereo, 41.5 kHz per channel, upsampling to 192 kHz)");
+    ESP_LOGI(TAG, "ADC continuous mode initialized (mono, 48 kHz, 24-bit)");
     return ESP_OK;
 }
 
@@ -147,62 +150,45 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
         return ret;
     }
 
-    // Parse ADC data and demultiplex channels
-    size_t left_count = 0;
-    size_t right_count = 0;
+    // Parse ADC data (mono channel)
+    size_t mono_count = 0;
 
     for (uint32_t i = 0; i < bytes_read; i += SOC_ADC_DIGI_RESULT_BYTES) {
         adc_digi_output_data_t *p = (adc_digi_output_data_t *)&adc_raw_data[i];
-        
-        // Check if valid data (TYPE2 format for ESP32-S3)
-        uint32_t chan_num = p->type2.channel;
-        uint32_t data = p->type2.data;
 
-        // Remove DC bias and scale 12-bit to 24-bit (left-shift by 12)
-        int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
+    // Check if valid data (TYPE2 format for ESP32-S3)
+    uint32_t chan_num = p->type2.channel;
+    uint32_t data = p->type2.data;
 
+        // Only process the configured channel (left)
         if (chan_num == ADC_LEFT_CHANNEL) {
-            left_samples[left_count++] = sample;
-        } else if (chan_num == ADC_RIGHT_CHANNEL) {
-            right_samples[right_count++] = sample;
+            // Remove DC bias and scale 12-bit to 16-bit (left-shift by 4)
+            int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
+
+            // Apply DC blocking filter: y[n] = alpha * (x[n] - x[n-1]) + alpha * y[n-1]
+            int16_t filtered_sample = (int16_t)(DC_BLOCK_ALPHA * (sample - dc_block_prev_x) +
+                                                DC_BLOCK_ALPHA * dc_block_prev_y);
+            dc_block_prev_x = sample;
+            dc_block_prev_y = filtered_sample;
+
+            mono_samples[mono_count++] = filtered_sample;
         }
     }
 
-    // Interleave L/R and upsample from 41.5 kHz to 192 kHz (ratio ~4.63)
-    size_t min_count = (left_count < right_count) ? left_count : right_count;
-    
-    if (min_count == 0) {
-        *samples_read = 0;
-        return ESP_OK;
-    }
-    
-    // Linear interpolation upsampling
-    const float ratio = 192000.0f / 41500.0f;  // ~4.63
-    size_t out_samples = 0;
-    
-    for (out_samples = 0; out_samples < num_samples; out_samples++) {
-        float src_pos = (float)out_samples / ratio;
-        size_t src_idx = (size_t)src_pos;
-        
-        if (src_idx >= min_count - 1) break;
-        
-        float frac = src_pos - (float)src_idx;
-        
-        // Linear interpolation for both channels
-        int32_t left_interp = (int32_t)(left_samples[src_idx] * (1.0f - frac) + 
-                                         left_samples[src_idx + 1] * frac);
-        int32_t right_interp = (int32_t)(right_samples[src_idx] * (1.0f - frac) + 
-                                          right_samples[src_idx + 1] * frac);
-        
-        stereo_buffer[out_samples * 2] = (int16_t)left_interp;
-        stereo_buffer[out_samples * 2 + 1] = (int16_t)right_interp;
+    // Duplicate mono to stereo (no upsampling needed, direct 48 kHz)
+    size_t out_samples = mono_count;
+    if (out_samples > num_samples) out_samples = num_samples;
+
+    for (size_t i = 0; i < out_samples; i++) {
+        stereo_buffer[i * 2] = mono_samples[i];     // Left
+        stereo_buffer[i * 2 + 1] = mono_samples[i]; // Right
     }
 
     *samples_read = out_samples;
 
-    if (min_count > 0) {
-        ESP_LOGD(TAG, "Read %zu stereo samples (L=%zu, R=%zu from %lu bytes)", 
-                 min_count, left_count, right_count, bytes_read);
+    if (mono_count > 0) {
+    ESP_LOGD(TAG, "Read %zu mono samples (duplicated to stereo) from %lu bytes",
+    mono_count, bytes_read);
     }
 
     return ESP_OK;

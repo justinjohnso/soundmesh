@@ -20,13 +20,13 @@ static adc_continuous_handle_t adc_handle = NULL;
 // Static buffers to avoid stack overflow
 static int16_t mono_samples[ADC_READ_LEN / 4];
 
-// DC bias removal (12-bit ADC mid-point)
+// ADC mid-point with hardware biasing circuit (should be ~2048 with DB_12 attenuation)
+// Measure actual value with no input signal and adjust if needed
 #define ADC_MID_CODE           2048
 
-// DC blocking filter (1st order high-pass, ~20 Hz cutoff at 48 kHz)
-#define DC_BLOCK_ALPHA         0.9974f  // exp(-2*pi*fc/fs)
-static int16_t dc_block_prev_x = 0;
-static int16_t dc_block_prev_y = 0;
+// Simple low-pass filter to reduce high-frequency noise
+#define LPF_ALPHA              0.1f  // 1.0 = no filtering
+static int16_t lpf_prev = 0;
 
 esp_err_t adc_audio_init(void) {
     if (adc_handle != NULL) {
@@ -47,16 +47,10 @@ esp_err_t adc_audio_init(void) {
     }
 
     // Configure two-channel pattern (L and R interleaved)
-    adc_digi_pattern_config_t adc_pattern[2] = {
+    adc_digi_pattern_config_t adc_pattern[1] = {
         {
-            .atten = ADC_ATTEN_DB_12,
+            .atten = ADC_ATTEN_DB_6,
             .channel = ADC_LEFT_CHANNEL,
-            .unit = ADC_UNIT_1,
-            .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
-        },
-        {
-            .atten = ADC_ATTEN_DB_12,
-            .channel = ADC_RIGHT_CHANNEL,
             .unit = ADC_UNIT_1,
             .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
         }
@@ -79,7 +73,15 @@ esp_err_t adc_audio_init(void) {
         return ret;
     }
 
-    ESP_LOGI(TAG, "ADC continuous mode initialized (mono, 48 kHz, 24-bit)");
+    ret = adc_continuous_start(adc_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start ADC continuous: %s", esp_err_to_name(ret));
+        adc_continuous_deinit(adc_handle);
+        adc_handle = NULL;
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "ADC continuous mode initialized and started (mono, 48 kHz, 24-bit)");
     return ESP_OK;
 }
 
@@ -88,38 +90,25 @@ esp_err_t adc_audio_deinit(void) {
         return ESP_OK;
     }
 
-    adc_audio_stop();
-    esp_err_t ret = adc_continuous_deinit(adc_handle);
+    esp_err_t ret = adc_continuous_stop(adc_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to stop ADC: %s", esp_err_to_name(ret));
+    }
+    ret = adc_continuous_deinit(adc_handle);
     adc_handle = NULL;
-    
+
     ESP_LOGI(TAG, "ADC deinitialized");
     return ret;
 }
 
 esp_err_t adc_audio_start(void) {
-    if (adc_handle == NULL) {
-        ESP_LOGE(TAG, "ADC not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    esp_err_t ret = adc_continuous_start(adc_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start ADC: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ESP_LOGI(TAG, "ADC started");
+    // ADC is always started
     return ESP_OK;
 }
 
 esp_err_t adc_audio_stop(void) {
-    if (adc_handle == NULL) {
-        return ESP_OK;
-    }
-
-    esp_err_t ret = adc_continuous_stop(adc_handle);
-    ESP_LOGI(TAG, "ADC stopped");
-    return ret;
+    // ADC is always running
+    return ESP_OK;
 }
 
 esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size_t *samples_read) {
@@ -165,11 +154,9 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
             // Remove DC bias and scale 12-bit to 16-bit (left-shift by 4)
             int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
 
-            // Apply DC blocking filter: y[n] = alpha * (x[n] - x[n-1]) + alpha * y[n-1]
-            int16_t filtered_sample = (int16_t)(DC_BLOCK_ALPHA * (sample - dc_block_prev_x) +
-                                                DC_BLOCK_ALPHA * dc_block_prev_y);
-            dc_block_prev_x = sample;
-            dc_block_prev_y = filtered_sample;
+            // Apply low-pass filter to reduce high-frequency noise
+            int16_t filtered_sample = (int16_t)(LPF_ALPHA * sample + (1.0f - LPF_ALPHA) * lpf_prev);
+            lpf_prev = filtered_sample;
 
             mono_samples[mono_count++] = filtered_sample;
         }

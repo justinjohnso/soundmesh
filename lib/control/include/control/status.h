@@ -36,4 +36,5 @@ typedef struct {
     input_mode_t input_mode;
     bool audio_active;
     uint32_t tone_freq_hz;
+    float output_volume;
 } combo_status_t;

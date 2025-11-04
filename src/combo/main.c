@@ -32,9 +32,10 @@ static void combo_timer_callback(void* arg) {
 }
 
 static combo_status_t status = {
-.input_mode = INPUT_MODE_TONE,
+.input_mode = INPUT_MODE_AUX,
 .audio_active = false,
-.tone_freq_hz = 110
+.tone_freq_hz = 110,
+.output_volume = 1.0f
 };
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;  // Default to audio view
@@ -47,7 +48,7 @@ static int16_t mono_frame[AUDIO_FRAME_SAMPLES];
 static int16_t stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 
 // ADC processing function
-void update_tone_from_adc(void) {
+void update_volume_from_adc(void) {
     static uint32_t last_log = 0;
     static uint32_t read_count = 0;
 
@@ -70,22 +71,19 @@ void update_tone_from_adc(void) {
         return;
     }
 
-    // Map voltage (0-3300mV) to frequency (200-2000Hz)
-    uint32_t new_freq = 200 + ((voltage_mv * 1800) / 3300);
+    // Map voltage (0-2200mV) to volume (0.0-1.0)
+    float new_volume = (float)voltage_mv / 2200.0f;
+    if (new_volume > 1.0f) new_volume = 1.0f;
 
     // Log periodically
     uint32_t now = xTaskGetTickCount();
     if ((now - last_log) > pdMS_TO_TICKS(2000)) {
-        ESP_LOGI(TAG, "Knob: raw=%d, mv=%d, freq=%lu Hz", adc_raw, voltage_mv, new_freq);
+        ESP_LOGI(TAG, "Knob: raw=%d, mv=%d, volume=%.2f", adc_raw, voltage_mv, new_volume);
         last_log = now;
     }
 
-    // Only update if frequency changed significantly
-    if (abs((int)new_freq - (int)status.tone_freq_hz) > 5) {
-        status.tone_freq_hz = new_freq;
-        tone_gen_set_frequency(status.tone_freq_hz);
-        ESP_LOGI(TAG, "Tone frequency updated to %lu Hz", status.tone_freq_hz);
-    }
+    // Update volume
+    status.output_volume = new_volume;
 
     read_count++;
 }
@@ -97,7 +95,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(buttons_init());
 
-    // Initialize ADC for pitch control (GPIO 3 - ADC1_CHANNEL_3 / A2)
+    // Initialize ADC for volume control (GPIO 3 - ADC1_CHANNEL_3 / A3)
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
@@ -106,7 +104,7 @@ void app_main(void) {
 
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN_DB_12,
+        .atten = ADC_ATTEN_DB_6,
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_3, &config));
 
@@ -114,7 +112,7 @@ void app_main(void) {
     adc_cali_curve_fitting_config_t cali_config = {
         .unit_id = ADC_UNIT_1,
         .chan = ADC_CHANNEL_3,
-        .atten = ADC_ATTEN_DB_12,
+        .atten = ADC_ATTEN_DB_6,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle));
@@ -180,28 +178,16 @@ void app_main(void) {
                 ESP_LOGI(TAG, "View changed to %s",
                         current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
-                input_mode_t old_mode = status.input_mode;
                 status.input_mode = (status.input_mode + 1) % 3;
 
-                // Manage ADC continuous mode based on input mode
-                if (old_mode == INPUT_MODE_AUX && status.input_mode != INPUT_MODE_AUX) {
-                    adc_audio_stop();
-                    ESP_LOGI(TAG, "Input mode changed to %d (ADC stopped)", status.input_mode);
-                } else if (old_mode != INPUT_MODE_AUX && status.input_mode == INPUT_MODE_AUX) {
-                    adc_audio_start();
-                    ESP_LOGI(TAG, "Input mode changed to %d (ADC started)", status.input_mode);
-                } else {
-                    ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
-                }
+                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
             }
         }
 
         // Generate/capture audio based on mode (every 10ms to match frame size)
         if ((ms_tick % AUDIO_FRAME_MS) != 0) {
             // Update knob every 1ms for responsiveness, but don't generate audio
-            if (status.input_mode == INPUT_MODE_TONE) {
-                update_tone_from_adc();
-            }
+            update_volume_from_adc();
             continue; // Skip non-frame ticks for audio generation
         }
 
@@ -258,13 +244,14 @@ void app_main(void) {
                     int32_t std_right = (int32_t)sqrt(var_right / AUDIO_FRAME_SAMPLES);
                     int32_t std_avg = (std_left + std_right) / 2;
 
-                    const int32_t SIGNAL_THRESHOLD = 500;
+                    const int32_t SIGNAL_THRESHOLD = 10;
+
+                    if ((ms_tick & 0xFF) == 0) {
+                        ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
+                    }
 
                     if (std_avg > SIGNAL_THRESHOLD) {
                         status.audio_active = true;
-                        if ((ms_tick & 0xFF) == 0) {
-                            ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
-                        }
                     } else {
                         status.audio_active = false;
                         memset(stereo_frame, 0, sizeof(stereo_frame));
@@ -280,6 +267,13 @@ void app_main(void) {
             break;
         default:
             break;
+        }
+
+        // Apply volume scaling for AUX and USB modes
+        if (status.input_mode == INPUT_MODE_AUX || status.input_mode == INPUT_MODE_USB) {
+            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES * 2; i++) {
+                stereo_frame[i] = (int16_t)(stereo_frame[i] * status.output_volume);
+            }
         }
 
         // Output audio directly to I2S (UDA1334)

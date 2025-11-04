@@ -417,6 +417,12 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
 
         display_draw_string(0, 2, "Output: I2S");
 
+        if (status->input_mode == INPUT_MODE_AUX || status->input_mode == INPUT_MODE_USB) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Vol: %.1f", status->output_volume);
+            display_draw_string(0, 3, buf);
+        }
+
         if (status->audio_active) {
             // Draw animated waveform
             for (int x = 0; x < DISPLAY_WIDTH; x++) {

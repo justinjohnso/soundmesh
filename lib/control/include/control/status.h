@@ -31,3 +31,9 @@ typedef struct {
     bool receiving_audio;
     uint32_t bandwidth_kbps;
 } rx_status_t;
+
+typedef struct {
+    input_mode_t input_mode;
+    bool audio_active;
+    uint32_t tone_freq_hz;
+} combo_status_t;

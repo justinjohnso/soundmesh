@@ -346,18 +346,18 @@ animation_counter++;
 
 if (view == DISPLAY_VIEW_NETWORK) {
 char buf[32];
-    snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
-    display_draw_string(0, 0, buf);
+snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
+display_draw_string(0, 0, buf);
 
 snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
 display_draw_string(0, 1, buf);
 
-    if (status->rssi == -100) {
-    display_draw_string(0, 2, "RSSI: -- dBm");
-    } else {
-    snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-    display_draw_string(0, 2, buf);
-    }
+if (status->rssi == -100) {
+display_draw_string(0, 2, "RSSI: -- dBm");
+} else {
+snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+display_draw_string(0, 2, buf);
+}
 } else {
 display_draw_string(0, 0, "Streaming...");
 
@@ -367,17 +367,69 @@ display_draw_string(0, 2, buf);
 
 if (status->receiving_audio) {
 // Draw animated waveform
-    for (int x = 0; x < DISPLAY_WIDTH; x++) {
-        float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-    int y = 16 + (int)(sinf(phase) * 10.0f);
-    if (y >= 0 && y < DISPLAY_HEIGHT) {
-        display_draw_pixel(x, y);
+for (int x = 0; x < DISPLAY_WIDTH; x++) {
+float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+int y = 16 + (int)(sinf(phase) * 10.0f);
+if (y >= 0 && y < DISPLAY_HEIGHT) {
+display_draw_pixel(x, y);
 }
 }
 } else {
-        // Flat line
+// Flat line
+int y = 16;
+for (int x = 0; x < DISPLAY_WIDTH; x++) {
+display_draw_pixel(x, y);
+}
+}
+}
+
+display_update();
+}
+
+// Render COMBO display
+void display_render_combo(display_view_t view, const combo_status_t *status) {
+    display_clear();
+
+    static uint32_t animation_counter = 0;
+    animation_counter++;
+
+    if (view == DISPLAY_VIEW_NETWORK) {
+        display_draw_string(0, 0, "COMBO Mode");
+        display_draw_string(0, 1, "Local Loopback");
+        display_draw_string(0, 2, "No Network");
+    } else {
+        const char *mode_str = "Unknown";
+        if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
+        else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
+        else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Source: %s", mode_str);
+        display_draw_string(0, 0, buf);
+
+        if (status->input_mode == INPUT_MODE_TONE) {
+            snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
+            display_draw_string(0, 1, buf);
+        } else {
+            const char *status_str = status->audio_active ? "Playing..." : "Idle...";
+            display_draw_string(0, 1, status_str);
+        }
+
+        display_draw_string(0, 2, "Output: I2S");
+
+        if (status->audio_active) {
+            // Draw animated waveform
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+                int y = 16 + (int)(sinf(phase) * 10.0f);
+                if (y >= 0 && y < DISPLAY_HEIGHT) {
+                    display_draw_pixel(x, y);
+                }
+            }
+        } else {
+            // Flat line
             int y = 16;
-        for (int x = 0; x < DISPLAY_WIDTH; x++) {
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 display_draw_pixel(x, y);
             }
         }

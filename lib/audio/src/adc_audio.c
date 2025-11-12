@@ -20,7 +20,7 @@ static adc_continuous_handle_t adc_handle = NULL;
 // Static buffers to avoid stack overflow
 static int16_t mono_samples[ADC_READ_LEN / 4];
 
-// ADC mid-point with hardware biasing circuit (should be ~2048 with DB_12 attenuation)
+// ADC mid-point with preamp biasing circuit (1.65V bias, ~2048 with DB_11 attenuation)
 // Measure actual value with no input signal and adjust if needed
 #define ADC_MID_CODE           2048
 
@@ -49,7 +49,7 @@ esp_err_t adc_audio_init(void) {
     // Configure two-channel pattern (L and R interleaved)
     adc_digi_pattern_config_t adc_pattern[1] = {
         {
-            .atten = ADC_ATTEN_DB_6,
+            .atten = ADC_ATTEN_DB_11,
             .channel = ADC_LEFT_CHANNEL,
             .unit = ADC_UNIT_1,
             .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,

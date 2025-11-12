@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
+#include <esp_mesh.h>
 #include <esp_adc/adc_oneshot.h>
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
@@ -165,7 +166,16 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &combo_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(combo_timer, 1000)); // 1ms = 1000us
 
-    ESP_LOGI(TAG, "COMBO initialized, starting main loop");
+    ESP_LOGI(TAG, "COMBO initialized, registering for network startup notification");
+
+    // Wait for mesh network to be ready via event notification (not polling)
+    // Ready when: (1) connected to existing mesh, OR (2) becomes root and initializes
+    // Network layer notifies us immediately when ready
+    ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
+    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (notify_value > 0) {
+        ESP_LOGI(TAG, "Network ready - starting audio transmission");
+    }
 
     uint32_t bytes_sent = 0;
     static uint16_t combo_seq = 0;
@@ -322,8 +332,9 @@ void app_main(void) {
             i2s_audio_write_samples(stereo_frame, AUDIO_FRAME_SAMPLES * 2);
         }
 
-        // Transmit audio to mesh network if available
+        // Transmit audio to mesh network when ready
         // Payload format (v0.1): PCM S24LE packed, mono, 48 kHz, 5ms frames (720 bytes)
+        // Only attempt send if both audio is active AND mesh is fully ready
         if (status.audio_active && network_is_stream_ready()) {
             // packet_buffer already contains 24-bit packed mono data from conversion above
 
@@ -349,7 +360,8 @@ void app_main(void) {
                 if ((combo_seq & 0x7F) == 0) {
                     ESP_LOGI(TAG, "Sent packet seq=%u (%d bytes)", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
                 }
-            } else {
+            } else if (send_ret != ESP_ERR_MESH_DISCONNECTED) {
+                // Only warn on errors other than disconnected (expected for standalone root)
                 if ((combo_seq & 0x7F) == 0) {
                     ESP_LOGW(TAG, "Failed to send: %s", esp_err_to_name(send_ret));
                 }

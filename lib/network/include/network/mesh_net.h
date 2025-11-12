@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // ============================================================================
 // ESP-WIFI-MESH Network API (v0.1)
@@ -12,6 +14,10 @@
 
 // Network initialization
 esp_err_t network_init_mesh(void);
+
+// Startup synchronization (event-driven, not polling)
+// Call this before your main loop to wait for network readiness via task notification
+esp_err_t network_register_startup_notification(TaskHandle_t task_handle);
 
 // Audio transmission/reception
 esp_err_t network_send_audio(const uint8_t *data, size_t len);

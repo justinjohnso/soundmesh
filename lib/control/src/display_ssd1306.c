@@ -386,7 +386,7 @@ display_draw_pixel(x, y);
 display_update();
 }
 
-// Render COMBO display
+// Render COMBO display (identical to TX since combo is a TX node)
 void display_render_combo(display_view_t view, const combo_status_t *status) {
     display_clear();
 
@@ -394,34 +394,39 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
     animation_counter++;
 
     if (view == DISPLAY_VIEW_NETWORK) {
-        display_draw_string(0, 0, "COMBO Mode");
-        display_draw_string(0, 1, "Local Loopback");
-        display_draw_string(0, 2, "No Network");
-    } else {
-        const char *mode_str = "Unknown";
-        if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
-        else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
-        else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
-
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Source: %s", mode_str);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Nodes: %lu", status->connected_nodes);
         display_draw_string(0, 0, buf);
 
-        if (status->input_mode == INPUT_MODE_TONE) {
-            snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
-            display_draw_string(0, 1, buf);
+        snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
+        display_draw_string(0, 1, buf);
+
+        if (status->rssi == -100) {
+            display_draw_string(0, 2, "RSSI: -- dBm");
         } else {
-            const char *status_str = status->audio_active ? "Playing..." : "Idle...";
+            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+            display_draw_string(0, 2, buf);
+        }
+    } else {
+    const char *mode_str = "Unknown";
+    if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
+    else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
+    else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Source: %s", mode_str);
+    display_draw_string(0, 0, buf);
+
+    if (status->input_mode == INPUT_MODE_TONE) {
+        snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
+            display_draw_string(0, 1, buf);
+    } else {
+        const char *status_str = status->audio_active ? "Playing..." : "Idle...";
             display_draw_string(0, 1, status_str);
         }
 
-        display_draw_string(0, 2, "Output: I2S");
-
-        if (status->input_mode == INPUT_MODE_AUX || status->input_mode == INPUT_MODE_USB) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "Vol: %.1f", status->output_volume);
-            display_draw_string(0, 3, buf);
-        }
+        snprintf(buf, sizeof(buf), "Bandwidth: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 2, buf);
 
         if (status->audio_active) {
             // Draw animated waveform

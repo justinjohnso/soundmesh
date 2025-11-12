@@ -30,9 +30,50 @@ static ring_buffer_t *jitter_buffer = NULL;
 #define PREFILL_FRAMES 5         // Prefill 5 frames = 50ms latency
 
 // Move large buffers to static storage to avoid stack overflow
-static uint8_t rx_packet_buffer[MAX_PACKET_SIZE];
 static int16_t rx_audio_frame[AUDIO_FRAME_SAMPLES * 2];
 static int16_t rx_silence_frame[AUDIO_FRAME_SAMPLES * 2] = {0};
+
+// Packet tracking for statistics
+static uint32_t packets_received = 0;
+static uint32_t dropped_packets = 0;
+static uint16_t last_seq = 0;
+static bool first_packet = true;
+static uint32_t last_packet_time = 0;
+
+// Audio callback for mesh network - called when audio frames are received
+static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp) {
+    if (len != AUDIO_FRAME_BYTES) {
+        ESP_LOGW(TAG, "Invalid audio frame size: %d", len);
+        return;
+    }
+    
+    // Track sequence gaps for packet loss measurement
+    if (!first_packet) {
+        uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
+        if (seq != expected_seq) {
+            int16_t gap = (int16_t)(seq - expected_seq);
+            if (gap > 0) {
+                dropped_packets += gap;
+            }
+        }
+    }
+    first_packet = false;
+    last_seq = seq;
+    
+    // Write to jitter buffer
+    esp_err_t write_ret = ring_buffer_write(jitter_buffer, payload, AUDIO_FRAME_BYTES);
+    if (write_ret == ESP_OK) {
+        status.receiving_audio = true;
+        packets_received++;
+        last_packet_time = xTaskGetTickCount();
+        
+        if ((packets_received & 0x7F) == 0) {
+            ESP_LOGI(TAG, "RX packet %lu (seq=%u)", packets_received, seq);
+        }
+    } else {
+        ESP_LOGW(TAG, "Jitter buffer full, dropping packet seq=%u", seq);
+    }
+}
 
 void app_main(void) {
 ESP_LOGI(TAG, "MeshNet Audio RX starting...");
@@ -43,13 +84,14 @@ ESP_LOGW(TAG, "Display init failed, continuing without display");
 }
 ESP_ERROR_CHECK(buttons_init());
 
-// Initialize network layer (STA mode) - don't abort if connection fails
-esp_err_t net_ret = network_init_sta();
-if (net_ret != ESP_OK) {
-    ESP_LOGW(TAG, "Failed to connect to TX AP, will retry in background");
-    }
-    // DISABLED: Latency task steals packets from audio socket
-    // ESP_ERROR_CHECK(network_start_latency_measurement());
+// Initialize network layer (ESP-WIFI-MESH mode)
+// Automatically joins existing mesh or becomes root if first
+ESP_LOGI(TAG, "Starting mesh network...");
+ESP_ERROR_CHECK(network_init_mesh());
+ESP_ERROR_CHECK(network_start_latency_measurement());
+
+// Register audio callback for mesh audio reception
+ESP_ERROR_CHECK(network_register_audio_callback(audio_rx_callback));
 
 // Initialize audio output
 ESP_ERROR_CHECK(i2s_audio_init());
@@ -63,20 +105,15 @@ return;
 }
 
 ESP_LOGI(TAG, "RX initialized, starting main loop");
-    
+
 // Log initial stack/heap status
 ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
 ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-    uint32_t last_packet_time = 0;
-    uint32_t packets_received = 0;
-    uint32_t bytes_received = 0;
-    uint32_t last_stats_update = xTaskGetTickCount();
-    uint32_t underrun_count = 0;
-    bool prefilled = false;
-    uint16_t last_seq = 0;
-    uint32_t dropped_packets = 0;
-    bool first_packet = true;
+uint32_t bytes_received = 0;
+uint32_t last_stats_update = xTaskGetTickCount();
+uint32_t underrun_count = 0;
+bool prefilled = false;
     
     while (1) {
         // Handle button events
@@ -88,86 +125,10 @@ ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
                     current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
         }
         
-        // Receive raw PCM audio packets (10ms timeout matches frame period)
-        size_t received_len;
-        esp_err_t ret = network_udp_recv(rx_packet_buffer, MAX_PACKET_SIZE,
-        &received_len, AUDIO_FRAME_MS);
-
-        if (ret == ESP_OK) {
-            // Parse minimal frame header
-                if (received_len >= NET_FRAME_HEADER_SIZE) {
-                    net_frame_header_t hdr;
-                    memcpy(&hdr, rx_packet_buffer, NET_FRAME_HEADER_SIZE);
-                    if (hdr.magic == NET_FRAME_MAGIC && hdr.version == NET_FRAME_VERSION && hdr.type == NET_PKT_TYPE_AUDIO_RAW) {
-                        uint16_t payload_len = ntohs(hdr.payload_len);
-                        uint16_t seq = ntohs(hdr.seq);
-                        if (payload_len == AUDIO_FRAME_BYTES && received_len == (NET_FRAME_HEADER_SIZE + payload_len)) {
-                            ESP_LOGD(TAG, "Received framed audio packet seq=%u payload=%u bytes", seq, payload_len);
-                            
-                            // Track sequence gaps to measure packet loss
-                            if (!first_packet) {
-                                uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
-                                if (seq != expected_seq) {
-                                    int16_t gap = (int16_t)(seq - expected_seq);
-                                    if (gap > 0) {
-                                        dropped_packets += gap;
-                                    }
-                                }
-                            }
-                            first_packet = false;
-                            last_seq = seq;
-                            
-                            uint8_t *payload = rx_packet_buffer + NET_FRAME_HEADER_SIZE;
-                            esp_err_t write_ret = ring_buffer_write(jitter_buffer, payload, AUDIO_FRAME_BYTES);
-                            if (write_ret == ESP_OK) {
-                                status.receiving_audio = true;
-                                packets_received++;
-                                bytes_received += payload_len;
-                                last_packet_time = xTaskGetTickCount();
-                                if ((packets_received & 0x7F) == 0) {
-                                    ESP_LOGI(TAG, "RX packet %lu", packets_received);
-                                }
-                            } else {
-                                ESP_LOGW(TAG, "Failed to write to jitter buffer: %s", esp_err_to_name(write_ret));
-                            }
-                        } else {
-                            // Dump first 16 bytes for debugging header/payload alignment
-                            char hexbuf[3 * 16 + 1];
-                            int to_print = (received_len < 16) ? received_len : 16;
-                            for (int i = 0; i < to_print; ++i) {
-                                sprintf(&hexbuf[i * 3], "%02X ", (unsigned char)rx_packet_buffer[i]);
-                            }
-                            hexbuf[to_print * 3] = '\0';
-                            ESP_LOGW(TAG, "Audio frame size mismatch: payload_len=%d received_len=%d seq=%u head=%s", payload_len, received_len, seq, hexbuf);
-                        }
-                    } else {
-                        ESP_LOGW(TAG, "Invalid frame header: magic=0x%02x version=%d type=%d", hdr.magic, hdr.version, hdr.type);
-                    }
-            } else if (received_len == AUDIO_FRAME_BYTES) {
-                // Legacy payload-only frame (no header). Accept for backward compatibility.
-                    ESP_LOGD(TAG, "Received legacy raw audio packet (no header), payload=%d bytes", received_len);
-                esp_err_t write_ret = ring_buffer_write(jitter_buffer, rx_packet_buffer, AUDIO_FRAME_BYTES);
-                if (write_ret == ESP_OK) {
-                    status.receiving_audio = true;
-                    packets_received++;
-                    bytes_received += received_len;
-                    last_packet_time = xTaskGetTickCount();
-
-                } else {
-                    ESP_LOGW(TAG, "Failed to write legacy audio to jitter buffer: %s", esp_err_to_name(write_ret));
-                }
-            } else {
-                ESP_LOGW(TAG, "Received too-small packet without header: len=%d", received_len);
-            }
-        } else if (ret == ESP_ERR_TIMEOUT) {
-            // Normal timeout, no packet
-        } else {
-            ESP_LOGW(TAG, "Network receive error: %s", esp_err_to_name(ret));
-            // No packet received - check timeout
-            if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(100)) {
-                status.receiving_audio = false;
-                prefilled = false;
-            }
+        // Check for audio stream timeout (callback-based reception)
+        if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(100)) {
+            status.receiving_audio = false;
+            prefilled = false;
         }
         
         // Playback from jitter buffer with prefill

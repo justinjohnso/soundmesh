@@ -6,9 +6,11 @@
 #include <esp_mesh.h>
 #include <esp_mesh_internal.h>
 #include <esp_mac.h>
+#include <esp_netif.h>
 #include <nvs_flash.h>
 #include <string.h>
 #include <esp_timer.h>
+#include <lwip/ip4_addr.h>
 
 static const char *TAG = "network_mesh";
 
@@ -24,13 +26,27 @@ static uint8_t my_stream_id = 1;  // Unique stream ID for this TX/COMBO node
 // Mesh state
 static bool is_mesh_connected = false;
 static bool is_mesh_root = false;
+static bool is_mesh_root_ready = false;  // Track when root is fully initialized
 static uint8_t mesh_layer = 0;
 static int mesh_children_count = 0;
 static mesh_addr_t mesh_parent_addr;
 static uint32_t last_latency_measurement = 10; // Default 10ms
 
+// Task handles for event notifications (set to NULL if not created)
+static TaskHandle_t heartbeat_task_handle = NULL;
+static TaskHandle_t waiting_task_handles[2] = {NULL, NULL};  // For startup notifications
+static int waiting_task_count = 0;
+
 // Mesh startup timeout - force root after 5 seconds if no network found
 #define MESH_SEARCH_TIMEOUT_MS 5000
+
+// Event-driven mesh readiness flow:
+// 1. esp_timer one-shot timer enforces esp_mesh_fix_root(true) if no connection after 5 seconds
+// 2. MESH_EVENT_ROOT_FIXED or MESH_EVENT_PARENT_CONNECTED fires when node becomes ready
+// 3. Event handler configures static IP (if root) and sets is_mesh_root_ready = true
+// 4. Waiting tasks are notified via xTaskNotifyGive() - they wake up immediately
+// 5. Audio transmission begins immediately without polling delays
+// Fully event-driven: no polling loops, all state transitions via events/notifications
 
 // Receive buffer for mesh packets
 #define MESH_RX_BUFFER_SIZE 1500
@@ -66,7 +82,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data);
 static void mesh_rx_task(void *arg);
 static void mesh_heartbeat_task(void *arg);
-static void mesh_root_timeout_task(void *arg);
+static void mesh_root_timeout_callback(void *arg);  // Timer callback, not a task
 static bool is_duplicate(uint8_t stream_id, uint16_t seq);
 static void mark_seen(uint8_t stream_id, uint16_t seq);
 static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender);
@@ -142,8 +158,16 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             mesh_event_connected_t *connected = (mesh_event_connected_t *)event_data;
             memcpy(&mesh_parent_addr, &connected->connected, sizeof(mesh_addr_t));
             is_mesh_connected = true;
+            is_mesh_root_ready = true;  // Child nodes are immediately ready
             mesh_layer = esp_mesh_get_layer();
-            ESP_LOGI(TAG, "Parent connected, layer: %d", mesh_layer);
+            ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
+            
+            // Notify all waiting tasks - stream is ready
+            for (int i = 0; i < waiting_task_count; i++) {
+                if (waiting_task_handles[i] != NULL) {
+                    xTaskNotifyGive(waiting_task_handles[i]);
+                }
+            }
             break;
         }
         
@@ -166,7 +190,105 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG, "Became mesh root");
             is_mesh_root = true;
             mesh_layer = 0;
+            
+            // Explicitly enable AP mode for mesh broadcasting
+            // Root node MUST have AP enabled so children can connect
+            {
+                wifi_mode_t mode;
+                esp_wifi_get_mode(&mode);
+                ESP_LOGI(TAG, "Current WiFi mode: %d", mode);
+                
+                // Ensure AP mode is enabled (should be WIFI_MODE_APSTA for mesh root)
+                if (mode != WIFI_MODE_APSTA) {
+                    ESP_LOGI(TAG, "Setting WiFi mode to APSTA for mesh AP broadcasting");
+                    esp_err_t mode_err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+                    if (mode_err != ESP_OK) {
+                        ESP_LOGW(TAG, "Failed to set WiFi mode to APSTA: %s", esp_err_to_name(mode_err));
+                    } else {
+                        ESP_LOGI(TAG, "WiFi mode set to APSTA successfully");
+                    }
+                } else {
+                    ESP_LOGI(TAG, "WiFi mode already APSTA");
+                }
+                
+                // Configure AP SSID to match MESH_SSID instead of default ESP-MESH name
+                {
+                    wifi_config_t wifi_config;
+                    esp_err_t cfg_err = esp_wifi_get_config(WIFI_IF_AP, &wifi_config);
+                    if (cfg_err == ESP_OK) {
+                        // Set AP SSID to our mesh SSID
+                        memset(wifi_config.ap.ssid, 0, sizeof(wifi_config.ap.ssid));
+                        memcpy(wifi_config.ap.ssid, MESH_SSID, strlen(MESH_SSID));
+                        wifi_config.ap.ssid_len = strlen(MESH_SSID);
+                        
+                        // Set AP password
+                        memset(wifi_config.ap.password, 0, sizeof(wifi_config.ap.password));
+                        memcpy(wifi_config.ap.password, MESH_PASSWORD, strlen(MESH_PASSWORD));
+                        
+                        // Ensure AP is not hidden
+                        wifi_config.ap.ssid_hidden = 0;
+                        
+                        // Apply config
+                        cfg_err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+                        if (cfg_err == ESP_OK) {
+                            ESP_LOGI(TAG, "AP reconfigured: SSID=%s (hidden=%d)", MESH_SSID, wifi_config.ap.ssid_hidden);
+                            
+                            // Restart WiFi to apply AP changes
+                            esp_wifi_stop();
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                            esp_wifi_start();
+                            ESP_LOGI(TAG, "WiFi restarted to apply AP settings");
+                        } else {
+                            ESP_LOGW(TAG, "Failed to set AP config: %s", esp_err_to_name(cfg_err));
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "Failed to get AP config: %s", esp_err_to_name(cfg_err));
+                    }
+                }
+            }
+            
+            // Configure static IP for root node (for standalone mesh mode)
+            {
+                esp_netif_t *mesh_netif = esp_netif_get_handle_from_ifkey("WIFI_MESH_ROOT");
+                if (mesh_netif == NULL) {
+                    mesh_netif = esp_netif_get_handle_from_ifkey("WIFI_MESH");
+                }
+                
+                if (mesh_netif) {
+                    // Set static IP: 192.168.100.1 (standard mesh root IP)
+                    esp_netif_ip_info_t ip_info;
+                    IP4_ADDR(&ip_info.ip, 192, 168, 100, 1);
+                    IP4_ADDR(&ip_info.gw, 192, 168, 100, 1);
+                    IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+                    
+                    esp_err_t ip_err = esp_netif_set_ip_info(mesh_netif, &ip_info);
+                    if (ip_err == ESP_OK) {
+                        ESP_LOGI(TAG, "Root ready: static IP configured (192.168.100.1)");
+                        is_mesh_root_ready = true;
+                    } else {
+                        ESP_LOGW(TAG, "Failed to set static IP: %s", esp_err_to_name(ip_err));
+                        is_mesh_root_ready = true;  // Still mark ready - AP should broadcast regardless
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Could not find mesh netif - AP should still broadcast");
+                    is_mesh_root_ready = true;
+                }
+            }
+            
+            // Notify all waiting tasks - root is ready
+            for (int i = 0; i < waiting_task_count; i++) {
+                if (waiting_task_handles[i] != NULL) {
+                    xTaskNotifyGive(waiting_task_handles[i]);
+                }
+            }
             break;
+            
+        case MESH_EVENT_ROOT_ADDRESS: {
+            mesh_event_root_address_t *root_addr = (mesh_event_root_address_t *)event_data;
+            ESP_LOGI(TAG, "Root address event received: " MACSTR, MAC2STR(root_addr->addr));
+            // Root is already marked ready when ROOT_FIXED fired, this is just informational
+            break;
+        }
             
         case MESH_EVENT_TODS_STATE: {
             mesh_event_toDS_state_t *toDs_state = (mesh_event_toDS_state_t *)event_data;
@@ -199,7 +321,7 @@ static void mesh_rx_task(void *arg) {
         
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Mesh receive error: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(10));
+            // Continue immediately - blocking receive handles waiting
             continue;
         }
         
@@ -303,6 +425,13 @@ esp_err_t network_init_mesh(void) {
     // Register mesh event handler
     ESP_ERROR_CHECK(esp_event_handler_register(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler, NULL));
     
+    // Get the mesh netif - we'll configure static IP if node becomes root
+    esp_netif_t *mesh_netif = esp_netif_get_handle_from_ifkey("WIFI_MESH_ROOT");
+    if (mesh_netif == NULL) {
+        // Try alternate name used in some configurations
+        mesh_netif = esp_netif_get_handle_from_ifkey("WIFI_MESH");
+    }
+    
     // Configure mesh
     mesh_cfg_t mesh_config = MESH_INIT_CONFIG_DEFAULT();
     
@@ -370,22 +499,31 @@ esp_err_t network_init_mesh(void) {
       ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
       
       // Start mesh - this begins the network search
-      // Our timeout task will force root after 5 seconds if no network found
-      ESP_ERROR_CHECK(esp_mesh_start());
-     
-     ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
-     
-     // Start receive task
-     xTaskCreate(mesh_rx_task, "mesh_rx", 4096, NULL, 5, NULL);
-     
-     // Start heartbeat task (2 second interval) - includes root timeout enforcement
-     xTaskCreate(mesh_heartbeat_task, "mesh_hb", 3072, NULL, 4, NULL);
-     
-     // Also enforce timeout immediately in a separate task to guarantee root becomes available quickly
-      xTaskCreate(mesh_root_timeout_task, "mesh_timeout", 4096, NULL, 5, NULL);
-     
-     return ESP_OK;
-     }
+       // Timeout timer below will enforce root after 5 seconds if no connection
+       ESP_ERROR_CHECK(esp_mesh_start());
+      
+      ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
+      
+      // Start receive task
+      xTaskCreate(mesh_rx_task, "mesh_rx", 4096, NULL, 5, NULL);
+      
+      // Start heartbeat task (2 second interval) - will be notified when ready
+      xTaskCreate(mesh_heartbeat_task, "mesh_hb", 3072, NULL, 4, &heartbeat_task_handle);
+      
+      // Create one-shot timer for root timeout (fires after 5 seconds if no connection)
+      // This ensures nodes don't hang indefinitely in search mode
+      const esp_timer_create_args_t timeout_timer_args = {
+          .callback = &mesh_root_timeout_callback,
+          .name = "mesh_timeout",
+          .dispatch_method = ESP_TIMER_TASK
+      };
+      esp_timer_handle_t timeout_timer;
+      ESP_ERROR_CHECK(esp_timer_create(&timeout_timer_args, &timeout_timer));
+      // Start as one-shot timer (will fire once after MESH_SEARCH_TIMEOUT_MS)
+      ESP_ERROR_CHECK(esp_timer_start_once(timeout_timer, MESH_SEARCH_TIMEOUT_MS * 1000));  // Convert ms to us
+      
+      return ESP_OK;
+      }
 
 // Send heartbeat message to mesh
 static void send_heartbeat(void) {
@@ -429,75 +567,36 @@ static void send_stream_announcement(void) {
     }
 }
 
-// Root timeout task - becomes root if no existing mesh found after 5 seconds
-// This prevents nodes from hanging indefinitely in search mode
-static void mesh_root_timeout_task(void *arg) {
-    uint32_t start_time = esp_timer_get_time() / 1000;
-    
-    ESP_LOGI(TAG, "Root timeout monitor started - will become root after 5 seconds if no network found");
-    
-    // Wait for mesh to connect OR timeout
-    while (!is_mesh_connected && !is_mesh_root) {
-        uint32_t elapsed = (esp_timer_get_time() / 1000) - start_time;
+// Root timeout callback - enforces root if no existing mesh found after 5 seconds
+// Called once by one-shot timer; actual readiness is handled by MESH_EVENT_ROOT_FIXED
+static void mesh_root_timeout_callback(void *arg) {
+    // Only enforce root if we haven't connected to parent yet
+    if (!is_mesh_connected && !is_mesh_root) {
+        ESP_LOGI(TAG, "Mesh search timeout after %u ms - enforcing this node as root", MESH_SEARCH_TIMEOUT_MS);
         
-        if (elapsed >= MESH_SEARCH_TIMEOUT_MS) {
-            ESP_LOGI(TAG, "Timeout enforced after %lu ms - fixing this node as root", (unsigned long)elapsed);
-            
-            // Fix this node as root permanently (for single device or until external mesh forms)
-            esp_err_t err = esp_mesh_fix_root(true);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "Fixed as root node");
-                
-                // Wait for mesh root event to be processed (state machine in ESP-IDF takes time)
-                uint32_t root_wait_start = esp_timer_get_time() / 1000;
-                while (!is_mesh_root) {
-                    uint32_t root_wait_elapsed = (esp_timer_get_time() / 1000) - root_wait_start;
-                    if (root_wait_elapsed > 2000) {
-                        ESP_LOGW(TAG, "Timeout waiting for root event after %lu ms", (unsigned long)root_wait_elapsed);
-                        break;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                }
-                
-                if (is_mesh_root) {
-                    ESP_LOGI(TAG, "Mesh root established successfully");
-                    
-                    // Wait additional time for mesh to fully initialize and stabilize
-                    // During this time, mesh child connections and parent AP setup occur
-                    ESP_LOGI(TAG, "Waiting for mesh to stabilize...");
-                    vTaskDelay(pdMS_TO_TICKS(2000));  // Wait 2 more seconds for full stabilization
-                    
-                    ESP_LOGI(TAG, "Mesh network is now stable and ready for transmission");
-                }
-            } else {
-                ESP_LOGW(TAG, "Failed to fix as root: %s", esp_err_to_name(err));
-            }
-            break;  // Exit after one attempt
+        // Fix this node as root permanently
+        // The event handler (MESH_EVENT_ROOT_FIXED) will handle setup and notification
+        esp_err_t err = esp_mesh_fix_root(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to fix as root: %s", esp_err_to_name(err));
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(100));
+    } else {
+        ESP_LOGD(TAG, "Mesh connection established before timeout - timeout callback ignored");
     }
-    
-    // Task complete, delete self
-    vTaskDelete(NULL);
 }
 
 // Heartbeat task - sends periodic heartbeats
+// Starts immediately; heartbeats are only sent when is_mesh_root_ready becomes true
 static void mesh_heartbeat_task(void *arg) {
     const uint32_t HEARTBEAT_INTERVAL_MS = 2000;  // 2 seconds
     
-    ESP_LOGI(TAG, "Heartbeat task started");
+    ESP_LOGI(TAG, "Heartbeat task started (will send once network is ready)");
     
-    // Wait for mesh to be connected or timeout enforced
-    // (The separate mesh_root_timeout_task handles root election)
-    uint32_t wait_start = esp_timer_get_time() / 1000;
-    while (!is_mesh_connected && !is_mesh_root) {
-        uint32_t elapsed = (esp_timer_get_time() / 1000) - wait_start;
-        // Log periodically for debugging
-        if (elapsed % 5000 < 100) {  // Every 5 seconds
-            ESP_LOGD(TAG, "Waiting for mesh (elapsed: %lu ms)", (unsigned long)elapsed);
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
+    // Wait for network readiness event via notification
+    // Event handler will notify us when is_mesh_root_ready = true
+    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (notify_value > 0) {
+        ESP_LOGI(TAG, "Network ready - sending heartbeats");
     }
     
     // Send initial stream announcement (TX/COMBO only)
@@ -509,9 +608,31 @@ static void mesh_heartbeat_task(void *arg) {
     }
 }
 
+// Register a task to be notified when network is stream-ready
+// This is used by startup code to wait for network initialization without polling
+esp_err_t network_register_startup_notification(TaskHandle_t task_handle) {
+    if (waiting_task_count >= 2) {
+        return ESP_ERR_NO_MEM;  // Can only wait for 2 tasks
+    }
+    
+    waiting_task_handles[waiting_task_count] = task_handle;
+    waiting_task_count++;
+    
+    ESP_LOGD(TAG, "Task registered for startup notification (count=%d)", waiting_task_count);
+    
+    // If already ready, notify immediately
+    if (is_mesh_root_ready) {
+        xTaskNotifyGive(task_handle);
+        ESP_LOGD(TAG, "Network already ready - notifying immediately");
+    }
+    
+    return ESP_OK;
+}
+
 // Send audio frame via mesh (broadcast to all nodes)
 esp_err_t network_send_audio(const uint8_t *data, size_t len) {
-    if (!is_mesh_connected && !is_mesh_root) {
+    // Allow sending if: (1) connected as child, or (2) root AND ready
+    if (!is_mesh_connected && !(is_mesh_root && is_mesh_root_ready)) {
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -536,7 +657,8 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
 
 // Send control message via mesh
 esp_err_t network_send_control(const uint8_t *data, size_t len) {
-    if (!is_mesh_connected && !is_mesh_root) {
+    // Allow sending if: (1) connected as child, or (2) root AND ready
+    if (!is_mesh_connected && !(is_mesh_root && is_mesh_root_ready)) {
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -581,7 +703,8 @@ uint32_t network_get_latency_ms(void) {
 }
 
 bool network_is_stream_ready(void) {
-    return is_mesh_connected || is_mesh_root;
+    // Ready if: (1) connected as child, or (2) root AND fully initialized
+    return is_mesh_connected || (is_mesh_root && is_mesh_root_ready);
 }
 
 uint32_t network_get_connected_nodes(void) {

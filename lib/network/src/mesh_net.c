@@ -352,24 +352,26 @@ esp_err_t network_init_mesh(void) {
         ESP_LOGI(TAG, "Root preference: LOW (RX node)");
     }
     
-    // Allow root migration - nodes can become root via timeout, then later migration is allowed
+    // Don't fix root initially - let timeout task handle it
+    // This allows natural mesh formation if another node is nearby
     ESP_ERROR_CHECK(esp_mesh_fix_root(false));
      
      // Configure root election attempts BEFORE starting mesh
-     // Reduced aggressively since we enforce timeout separately
+     // Use shorter scan to allow timeout-based root election within 5 seconds
      mesh_attempts_t attempts = {
-         .scan = 10,    // Keep scanning, but timeout will enforce root after 5s
-         .vote = 1000,  // Keep default vote attempts for healing
+         .scan = 3,     // Scan 3 times (faster progression to timeout fallback)
+         .vote = 100,   // Reasonable vote count (will proceed to next step)
          .fail = 60,    // Keep default fail threshold
          .monitor_ie = 3  // Keep default IE monitoring
      };
      ESP_ERROR_CHECK(esp_mesh_set_attempts(&attempts));
-     
-     // Disable WiFi power save for better real-time performance
-     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-     
-     // Start mesh
-     ESP_ERROR_CHECK(esp_mesh_start());
+      
+      // Disable WiFi power save for better real-time performance
+      ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+      
+      // Start mesh - this begins the network search
+      // Our timeout task will force root after 5 seconds if no network found
+      ESP_ERROR_CHECK(esp_mesh_start());
      
      ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
      
@@ -380,7 +382,7 @@ esp_err_t network_init_mesh(void) {
      xTaskCreate(mesh_heartbeat_task, "mesh_hb", 3072, NULL, 4, NULL);
      
      // Also enforce timeout immediately in a separate task to guarantee root becomes available quickly
-     xTaskCreate(mesh_root_timeout_task, "mesh_timeout", 2048, NULL, 5, NULL);
+      xTaskCreate(mesh_root_timeout_task, "mesh_timeout", 4096, NULL, 5, NULL);
      
      return ESP_OK;
      }
@@ -441,15 +443,32 @@ static void mesh_root_timeout_task(void *arg) {
         if (elapsed >= MESH_SEARCH_TIMEOUT_MS) {
             ESP_LOGI(TAG, "Timeout enforced after %lu ms - fixing this node as root", (unsigned long)elapsed);
             
-            // Temporarily fix this node as root (works on any node, not just existing root)
+            // Fix this node as root permanently (for single device or until external mesh forms)
             esp_err_t err = esp_mesh_fix_root(true);
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "Fixed as root node");
-                // Wait a moment to allow mesh to transition
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                // Release root lock to allow migration if a better root appears later
-                ESP_ERROR_CHECK(esp_mesh_fix_root(false));
-                ESP_LOGI(TAG, "Released root lock - mesh can migrate to better root if needed");
+                
+                // Wait for mesh root event to be processed (state machine in ESP-IDF takes time)
+                uint32_t root_wait_start = esp_timer_get_time() / 1000;
+                while (!is_mesh_root) {
+                    uint32_t root_wait_elapsed = (esp_timer_get_time() / 1000) - root_wait_start;
+                    if (root_wait_elapsed > 2000) {
+                        ESP_LOGW(TAG, "Timeout waiting for root event after %lu ms", (unsigned long)root_wait_elapsed);
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+                
+                if (is_mesh_root) {
+                    ESP_LOGI(TAG, "Mesh root established successfully");
+                    
+                    // Wait additional time for mesh to fully initialize and stabilize
+                    // During this time, mesh child connections and parent AP setup occur
+                    ESP_LOGI(TAG, "Waiting for mesh to stabilize...");
+                    vTaskDelay(pdMS_TO_TICKS(2000));  // Wait 2 more seconds for full stabilization
+                    
+                    ESP_LOGI(TAG, "Mesh network is now stable and ready for transmission");
+                }
             } else {
                 ESP_LOGW(TAG, "Failed to fix as root: %s", esp_err_to_name(err));
             }

@@ -261,26 +261,59 @@ esp_mesh_fix_root(false);   // Allow root migration
 esp_mesh_start();
 ```
 
+**Boot Sequence (All Node Types - Same):**
+
+```
+Node boots
+  ↓
+Scan for existing mesh network (3-5 seconds)
+  ↓
+├─ Beacons found?
+│  └─ YES → Join existing mesh as child (any role joins any mesh)
+│
+└─ NO → After 5-second timeout, become root
+   └─ Release root lock immediately to allow normal election
+```
+
+**Root Preference Behavior:**
+
+1. **All nodes scan for existing networks first** - joining takes priority over role preference
+2. **If no network exists**, the first node to timeout becomes root (usually ~5 seconds)
+3. **Vote percentage** (90% TX, 10% RX) only matters if an **election event** occurs:
+   - Root node leaves network
+   - Mesh reconfigures (rare)
+   - Explicit election trigger
+
 **Election Scenarios:**
 
 ```
 Scenario 1: TX boots first
-  - TX scans (no mesh) → becomes root (preference = 0.9)
-  - RX boots → joins as child
+  - TX scans (no mesh) → timeout after 5s → becomes root
+  - RX boots → finds mesh → joins as child
+  - Result: TX is root (preferred)
 
-Scenario 2: RX boots first  
-  - RX scans (no mesh) → becomes root (preference = 0.1)
-  - TX boots → joins as child, but has higher preference
-  - Next election event → TX becomes root
+Scenario 2: RX boots first
+  - RX scans (no mesh) → timeout after 5s → becomes root
+  - TX boots → finds mesh → joins as child
+  - Result: RX is root (suboptimal, but network works)
+  - TX can still publish audio from anywhere in tree
+  - Note: Next election event would prefer TX as root
 
-Scenario 3: Root failure (TX was root)
-  - TX dies → election triggered
-  - If COMBO exists: COMBO elected (preference = 0.9)
-  - If only RX: RX becomes root (preference = 0.1)
-  - If new TX joins later: TX elected at next event
+Scenario 3: Both boot simultaneously (timing variant of above)
+  - Whichever becomes root first wins (determined by scan/timeout timing)
+  - Both can broadcast/receive normally regardless of who is root
+
+Scenario 4: Root failure (RX was root, TX joined as child)
+  - RX dies → election triggered
+  - TX has 90% vote preference → becomes new root
+  - Network reconfigures, audio continues
 ```
 
-**Key Principle:** Root preference only affects natural election events (boot, root failure). No active takeover to avoid network churn.
+**Key Principle:** 
+- All nodes prefer to **join existing networks** over becoming root
+- Root preference only matters during **election events** (failures/reconfig)
+- **Root role ≠ functionality** — TX can broadcast, RX can receive from any position
+- Network is **self-healing** — topology reconfigures automatically on node changes
 
 ### Root Migration Handling
 

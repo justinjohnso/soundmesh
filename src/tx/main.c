@@ -206,7 +206,14 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &tx_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tx_timer, 1000)); // 1ms = 1000us
     
-    ESP_LOGI(TAG, "TX initialized, starting main loop");
+    ESP_LOGI(TAG, "TX initialized, registering for network startup notification");
+    
+    // Wait for network to be stream-ready via event notification (not polling)
+    ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
+    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (notify_value > 0) {
+        ESP_LOGI(TAG, "Network ready - starting audio transmission");
+    }
 
     uint32_t bytes_sent = 0;
     uint32_t last_stats_update = xTaskGetTickCount();

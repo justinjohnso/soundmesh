@@ -104,7 +104,14 @@ ESP_LOGE(TAG, "Failed to create jitter buffer");
 return;
 }
 
-ESP_LOGI(TAG, "RX initialized, starting main loop");
+ESP_LOGI(TAG, "RX initialized, registering for network startup notification");
+
+// Wait for network to be stream-ready via event notification (not polling)
+ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
+uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+if (notify_value > 0) {
+    ESP_LOGI(TAG, "Network ready - starting audio reception");
+}
 
 // Log initial stack/heap status
 ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));

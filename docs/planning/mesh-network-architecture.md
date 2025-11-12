@@ -220,21 +220,27 @@ void on_audio_frame_received(mesh_audio_frame_t *frame, mesh_addr_t *sender) {
 
 ## Root Election Strategy
 
-### ESP-WIFI-MESH Automatic Root Election
+### ESP-WIFI-MESH Root Election with TX/COMBO Preference
+
+**Election Hierarchy:**
+1. **TX/COMBO nodes** (highest priority) - Broadcast nodes should be root
+2. **RX nodes** (lowest priority) - Only become root if no TX/COMBO available
+
+**Rationale:** If no TX/COMBO nodes exist in the network, RX nodes have no audio to receive anyway. TX/COMBO as root ensures the audio source is at the network center.
 
 **Default Behavior (Self-Organized Mode):**
 1. **No existing mesh** → First node becomes root
 2. **Existing mesh** → New node joins as child
 3. **Root leaves** → ESP-MESH automatically elects new root from children
-4. **Election criteria** - RSSI, connection stability, capacity
+4. **Election criteria** - Vote percentage (set by node role), RSSI, stability
 
-**Our Approach: Let ESP-MESH Decide (Minimal Intervention)**
+**Our Implementation: Role-Based Root Preference**
 
 ```c
 // Initialize mesh in self-organized mode
 mesh_cfg_t mesh_cfg = MESH_INIT_CONFIG_DEFAULT();
 mesh_cfg.channel = 6;
-mesh_cfg.mesh_id = MESH_ID;  // Shared identifier
+mesh_cfg.mesh_id = MESH_ID;  // Shared identifier (6-byte, "MshN48" encoding)
 mesh_cfg.router.ssid[0] = 0; // No external router
 mesh_cfg.mesh_ap.max_connection = 10;  // Children per node
 mesh_cfg.mesh_ap.nonmesh_max_connection = 0;  // No non-mesh STAs
@@ -242,22 +248,39 @@ mesh_cfg.mesh_ap.nonmesh_max_connection = 0;  // No non-mesh STAs
 // Self-organized mode (automatic root election)
 esp_mesh_set_self_organized(true, false);  // No external router
 esp_mesh_set_max_layer(6);  // Max hops
+
+// Set root preference based on node role (only affects natural elections)
+if (my_node_role == NODE_ROLE_TX) {
+    esp_mesh_set_vote_percentage(0.9);  // TX/COMBO: 90% vote weight
+} else {
+    esp_mesh_set_vote_percentage(0.1);  // RX: 10% vote weight
+}
+
 esp_mesh_fix_root(false);   // Allow root migration
 
 esp_mesh_start();
 ```
 
-**RX-First Preference (Optional Enhancement):**
-```c
-// On boot, if no mesh beacons detected after 5 seconds
-if (scan_for_mesh_beacons() == 0 && local_role == ROLE_RX) {
-    esp_mesh_fix_root(true);   // Lock as root temporarily
-    ESP_LOGI(TAG, "No mesh found - becoming root (RX preference)");
-}
+**Election Scenarios:**
 
-// Later, when other nodes join, release root lock
-// ESP-MESH will handle migration if a better root candidate appears
 ```
+Scenario 1: TX boots first
+  - TX scans (no mesh) → becomes root (preference = 0.9)
+  - RX boots → joins as child
+
+Scenario 2: RX boots first  
+  - RX scans (no mesh) → becomes root (preference = 0.1)
+  - TX boots → joins as child, but has higher preference
+  - Next election event → TX becomes root
+
+Scenario 3: Root failure (TX was root)
+  - TX dies → election triggered
+  - If COMBO exists: COMBO elected (preference = 0.9)
+  - If only RX: RX becomes root (preference = 0.1)
+  - If new TX joins later: TX elected at next event
+```
+
+**Key Principle:** Root preference only affects natural election events (boot, root failure). No active takeover to avoid network churn.
 
 ### Root Migration Handling
 

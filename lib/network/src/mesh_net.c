@@ -521,9 +521,12 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     mesh_data.proto = MESH_PROTO_BIN;
     mesh_data.tos = MESH_TOS_P2P;  // Low priority for audio
     
-    // Broadcast to all descendants (NULL destination = broadcast)
+    // When root: broadcast to all descendants (tree broadcast with TODS)
+    // When child: send up to parent who will handle broadcast
     esp_err_t err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_TODS, NULL, 0);
     
+    // Note: ESP_ERR_MESH_NO_ROUTE_FOUND is expected when root has no children
+    // In that case, the audio is still queued and would be transmitted if children existed
     if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
         ESP_LOGD(TAG, "Mesh send failed: %s", esp_err_to_name(err));
     }

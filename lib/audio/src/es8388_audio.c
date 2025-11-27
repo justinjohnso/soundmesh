@@ -165,8 +165,10 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     res |= es8388_write_reg(ES8388_DACCONTROL1, 0x18);  // 16-bit I2S
     res |= es8388_write_reg(ES8388_DACCONTROL2, 0x02);  // DACFsMode=single speed, ratio=256
     res |= es8388_write_reg(ES8388_DACCONTROL16, 0x00); // Audio from I2S (not analog bypass)
-    res |= es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer
-    res |= es8388_write_reg(ES8388_DACCONTROL20, 0x90); // Right DAC to right mixer
+    res |= es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer (LD2LO=1)
+    res |= es8388_write_reg(ES8388_DACCONTROL18, 0x00); // Reserved/unused
+    res |= es8388_write_reg(ES8388_DACCONTROL19, 0x00); // Reserved/unused  
+    res |= es8388_write_reg(ES8388_DACCONTROL20, 0x90); // Right DAC to right mixer (RD2RO=1)
     res |= es8388_write_reg(ES8388_DACCONTROL21, 0x80); // ADC and DAC share LRCK
     res |= es8388_write_reg(ES8388_DACCONTROL23, 0x00); // VROI = 0
     
@@ -425,8 +427,9 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
     size_t bytes_written = 0;
     size_t bytes_to_write = frames * 2 * sizeof(int16_t);  // stereo = 2 channels
     
+    // Use 20ms timeout to prevent blocking indefinitely
     esp_err_t ret = i2s_channel_write(i2s_tx_handle, stereo_buffer, bytes_to_write,
-                                       &bytes_written, portMAX_DELAY);
+                                       &bytes_written, pdMS_TO_TICKS(20));
     
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));

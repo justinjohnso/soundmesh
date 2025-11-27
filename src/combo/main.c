@@ -117,8 +117,8 @@ void app_main(void) {
 
 #ifdef CONFIG_USE_ES8388
     // Initialize ES8388 with DAC enabled for headphone monitor output
+    // Note: Volume is set in es8388_codec_init() BEFORE I2S starts (I2C fails after due to MCLK EMI)
     ESP_ERROR_CHECK(es8388_audio_init(true));
-    ESP_ERROR_CHECK(es8388_audio_set_volume(100));  // Max output volume (0dB PGA needs full output gain)
 #else
     ESP_ERROR_CHECK(adc_audio_init());
     ESP_ERROR_CHECK(i2s_audio_init());

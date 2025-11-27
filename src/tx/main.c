@@ -18,16 +18,18 @@
 #include "network/mesh_net.h"
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
-#include "audio/adc_audio.h"
-// #include "audio/opus_codec.h"  // Removed for now
 #include "audio/ring_buffer.h"
+
+#ifdef CONFIG_USE_ES8388
+#include "audio/es8388_audio.h"
+#else
+#include "audio/adc_audio.h"
+#endif
 
 static const char *TAG = "tx_main";
 
-// Compile-time check for v0.1 audio format
 _Static_assert(AUDIO_BITS_PER_SAMPLE == 24 && AUDIO_CHANNELS == 1, "v0.1 requires 24-bit mono");
 
-// Audio format conversion helpers: 16-bit → 24-bit packed (S24LE)
 static inline void s24le_pack(int32_t s24, uint8_t* out) {
     out[0] = (uint8_t)(s24 & 0xFF);
     out[1] = (uint8_t)((s24 >> 8) & 0xFF);
@@ -36,21 +38,19 @@ static inline void s24le_pack(int32_t s24, uint8_t* out) {
 
 static void pcm16_mono_to_pcm24_mono_pack(const int16_t* in, size_t frames, uint8_t* out) {
     for (size_t i = 0; i < frames; i++) {
-        int32_t s24 = ((int32_t)in[i]) << 8;  // 16→24 bit zero-pad LSBs
+        int32_t s24 = ((int32_t)in[i]) << 8;
         s24le_pack(s24, &out[i * 3]);
     }
 }
 
 static void pcm16_stereo_to_pcm24_mono_pack(const int16_t* in_lr, size_t frames, uint8_t* out) {
     for (size_t i = 0; i < frames; i++) {
-        // Mono = average L+R (simple downmix)
         int32_t m = ((int32_t)in_lr[i*2] + (int32_t)in_lr[i*2 + 1]) >> 1;
         int32_t s24 = m << 8;
         s24le_pack(s24, &out[i * 3]);
     }
 }
 
-// Timer for 1ms pacing
 static SemaphoreHandle_t tx_timer_sem = NULL;
 static uint32_t ms_tick = 0;
 
@@ -59,35 +59,36 @@ static void tx_timer_callback(void* arg) {
 }
 
 static tx_status_t status = {
-.input_mode = INPUT_MODE_TONE,  // Start in TONE mode so ADC continuous doesn't block knob
-.audio_active = false,
-.connected_nodes = 0,
-.latency_ms = 10,
-.bandwidth_kbps = 0,
-.rssi = 0,
-.tone_freq_hz = 110
+    .input_mode = INPUT_MODE_TONE,
+    .audio_active = false,
+    .connected_nodes = 0,
+    .latency_ms = 10,
+    .bandwidth_kbps = 0,
+    .rssi = 0,
+    .tone_freq_hz = 110
 };
 
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
 static ring_buffer_t *audio_buffer = NULL;
+
+#ifndef CONFIG_USE_ES8388
 static adc_oneshot_unit_handle_t adc1_handle;
 static adc_cali_handle_t adc1_cali_handle = NULL;
+#endif
 
-// Global audio buffers to reduce stack usage (oracle recommendation #1)
 static int16_t mono_frame[AUDIO_FRAME_SAMPLES];
 static int16_t stereo_frame[AUDIO_FRAME_SAMPLES * 2];
-// TX uses a temporary buffer for framed packets (header + payload)
 static uint8_t packet_buffer[AUDIO_FRAME_BYTES];
 static uint8_t framed_buffer[NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES];
 static uint16_t tx_seq = 0;
 
-// ADC processing function (oracle recommendation #2: simplify main loop)
+#ifndef CONFIG_USE_ES8388
 void update_tone_from_adc(void) {
     static uint32_t last_log = 0;
     static uint32_t read_count = 0;
     
     if (adc1_handle == NULL || adc1_cali_handle == NULL) {
-        return; // ADC not initialized
+        return;
     }
 
     int adc_raw;
@@ -105,17 +106,14 @@ void update_tone_from_adc(void) {
         return;
     }
 
-    // Map voltage (0-3300mV) to frequency (200-2000Hz)
     uint32_t new_freq = 200 + ((voltage_mv * 1800) / 3300);
     
-    // Log periodically
     uint32_t now = xTaskGetTickCount();
     if ((now - last_log) > pdMS_TO_TICKS(2000)) {
         ESP_LOGI(TAG, "Knob: raw=%d, mv=%d, freq=%lu Hz", adc_raw, voltage_mv, new_freq);
         last_log = now;
     }
     
-    // Only update if frequency changed significantly (reduce log spam)
     if (abs((int)new_freq - (int)status.tone_freq_hz) > 5) {
         status.tone_freq_hz = new_freq;
         tone_gen_set_frequency(status.tone_freq_hz);
@@ -124,20 +122,46 @@ void update_tone_from_adc(void) {
     
     read_count++;
 }
+#else
+void update_tone_oscillate(void) {
+    static uint32_t last_log = 0;
+    
+    uint32_t phase = (ms_tick / 20) % 200;
+    float ratio = (float)phase / 200.0f;
+    float sine_val = sinf(ratio * 2.0f * M_PI);
+    uint32_t center = 500;
+    uint32_t range = 200;
+    uint32_t new_freq = center + (uint32_t)(sine_val * range);
+    
+    if (abs((int)new_freq - (int)status.tone_freq_hz) > 5) {
+        status.tone_freq_hz = new_freq;
+        tone_gen_set_frequency(status.tone_freq_hz);
+    }
+    
+    uint32_t now = xTaskGetTickCount();
+    if ((now - last_log) > pdMS_TO_TICKS(2000)) {
+        ESP_LOGI(TAG, "Tone oscillating: freq=%lu Hz", status.tone_freq_hz);
+        last_log = now;
+    }
+}
+#endif
 
 void app_main(void) {
     ESP_LOGI(TAG, "MeshNet Audio TX starting...");
     
-    // Initialize control layer
+#ifdef CONFIG_USE_ES8388
+    ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
+#else
+    ESP_LOGI(TAG, "Audio input: ADC (legacy)");
+#endif
+
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(buttons_init());
     
-    // Initialize network layer (ESP-WIFI-MESH mode)
-    // Automatically forms mesh or joins existing mesh
     ESP_ERROR_CHECK(network_init_mesh());
     ESP_ERROR_CHECK(network_start_latency_measurement());
 
-    // Initialize ADC for pitch control (GPIO 3 - ADC1_CHANNEL_3 / A2)
+#ifndef CONFIG_USE_ES8388
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
@@ -150,7 +174,6 @@ void app_main(void) {
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_3, &config));
 
-    // Initialize ADC calibration
     adc_cali_curve_fitting_config_t cali_config = {
         .unit_id = ADC_UNIT_1,
         .chan = ADC_CHANNEL_3,
@@ -158,45 +181,43 @@ void app_main(void) {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle));
+#endif
 
-    // Initialize audio layer
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
     ESP_ERROR_CHECK(usb_audio_init());
-    ESP_ERROR_CHECK(adc_audio_init());
-    // Don't start ADC yet - will start when switching to AUX mode
-    // ESP_ERROR_CHECK(opus_codec_init());  // Removed for now
 
-    // Create ring buffer
+#ifdef CONFIG_USE_ES8388
+    // TX mode: ES8388 ADC only (no DAC output needed)
+    ESP_ERROR_CHECK(es8388_audio_init(false));
+#else
+    ESP_ERROR_CHECK(adc_audio_init());
+#endif
+
     audio_buffer = ring_buffer_create(RING_BUFFER_SIZE);
     if (!audio_buffer) {
         ESP_LOGE(TAG, "Failed to create ring buffer");
         return;
     }
     
-    // Initialize watchdog timer (oracle recommendation #4)
-    // Check if already initialized (ESP-IDF might have done it)
     esp_err_t wdt_err = esp_task_wdt_init(&(esp_task_wdt_config_t){
-        .timeout_ms = 5000,  // 5 second timeout
+        .timeout_ms = 5000,
         .idle_core_mask = 0,
         .trigger_panic = true,
     });
 
     if (wdt_err == ESP_ERR_INVALID_STATE) {
-        // Already initialized, just add our task
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     } else {
         ESP_ERROR_CHECK(wdt_err);
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     }
 
-    // Create semaphore for timer
     tx_timer_sem = xSemaphoreCreateBinary();
     if (!tx_timer_sem) {
         ESP_LOGE(TAG, "Failed to create timer semaphore");
         return;
     }
     
-    // Create and start 1ms periodic timer
     const esp_timer_create_args_t timer_args = {
         .callback = &tx_timer_callback,
         .name = "tx_pacer",
@@ -204,11 +225,10 @@ void app_main(void) {
     };
     esp_timer_handle_t tx_timer;
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &tx_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(tx_timer, 1000)); // 1ms = 1000us
+    ESP_ERROR_CHECK(esp_timer_start_periodic(tx_timer, 1000));
     
     ESP_LOGI(TAG, "TX initialized, registering for network startup notification");
     
-    // Wait for network to be stream-ready via event notification (not polling)
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
     uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (notify_value > 0) {
@@ -219,11 +239,9 @@ void app_main(void) {
     uint32_t last_stats_update = xTaskGetTickCount();
     
     while (1) {
-        // Wait for 1ms timer tick (but only send every 10ms)
         xSemaphoreTake(tx_timer_sem, portMAX_DELAY);
         ms_tick++;
         
-        // Handle button events (every 5ms for responsiveness)
         if ((ms_tick % 5) == 0) {
             button_event_t btn_event = buttons_poll();
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
@@ -234,47 +252,43 @@ void app_main(void) {
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
                 input_mode_t old_mode = status.input_mode;
                 status.input_mode = (status.input_mode + 1) % 3;
+                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
                 
-                // Manage ADC continuous mode based on input mode
+#ifndef CONFIG_USE_ES8388
                 if (old_mode == INPUT_MODE_AUX && status.input_mode != INPUT_MODE_AUX) {
-                    // Leaving AUX mode - stop continuous ADC
                     adc_audio_stop();
-                    ESP_LOGI(TAG, "Input mode changed to %d (ADC stopped)", status.input_mode);
                 } else if (old_mode != INPUT_MODE_AUX && status.input_mode == INPUT_MODE_AUX) {
-                    // Entering AUX mode - start continuous ADC
                     adc_audio_start();
-                    ESP_LOGI(TAG, "Input mode changed to %d (ADC started)", status.input_mode);
-                } else {
-                    ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
                 }
+#endif
             }
         }
         
-        // Generate/capture audio based on mode (every 10ms to match frame size)
         if ((ms_tick % AUDIO_FRAME_MS) != 0) {
-            // Update knob every 1ms for responsiveness, but don't generate audio
             if (status.input_mode == INPUT_MODE_TONE) {
+#ifdef CONFIG_USE_ES8388
+                update_tone_oscillate();
+#else
                 update_tone_from_adc();
+#endif
             }
-            continue; // Skip non-frame ticks for audio generation
+            continue;
         }
         
         status.audio_active = false;
         switch (status.input_mode) {
         case INPUT_MODE_TONE:
             tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
-            // Pack 16-bit mono → 24-bit mono for network transmission
             pcm16_mono_to_pcm24_mono_pack(mono_frame, AUDIO_FRAME_SAMPLES, packet_buffer);
             status.audio_active = true;
             break;
+
         case INPUT_MODE_USB:
             if (usb_audio_is_active()) {
                 size_t frames_read;
                 usb_audio_read_frames(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
                 if (frames_read > 0) {
-                    // Pack 16-bit stereo → 24-bit mono (downmix L+R)
                     pcm16_stereo_to_pcm24_mono_pack(stereo_frame, frames_read, packet_buffer);
-                    // Pad remaining samples with silence if needed
                     for (size_t i = frames_read; i < AUDIO_FRAME_SAMPLES; i++) {
                         s24le_pack(0, &packet_buffer[i * 3]);
                     }
@@ -284,13 +298,17 @@ void app_main(void) {
                 }
             }
             break;
+
         case INPUT_MODE_AUX:
             {
                 size_t samples_read = 0;
+#ifdef CONFIG_USE_ES8388
+                esp_err_t ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
+#else
                 esp_err_t ret = adc_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
+#endif
                 
                 if (ret == ESP_OK && samples_read > 0) {
-                    // Fill remaining samples with last value if needed
                     if (samples_read < AUDIO_FRAME_SAMPLES) {
                         int16_t last_left = stereo_frame[(samples_read - 1) * 2];
                         int16_t last_right = stereo_frame[(samples_read - 1) * 2 + 1];
@@ -300,8 +318,6 @@ void app_main(void) {
                         }
                     }
                     
-                    // Detect actual audio by measuring AC variance (not DC offset)
-                    // Calculate mean
                     int64_t sum_left = 0, sum_right = 0;
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                         sum_left += stereo_frame[i * 2];
@@ -310,7 +326,6 @@ void app_main(void) {
                     int32_t mean_left = (int32_t)(sum_left / AUDIO_FRAME_SAMPLES);
                     int32_t mean_right = (int32_t)(sum_right / AUDIO_FRAME_SAMPLES);
                     
-                    // Calculate variance (AC component)
                     int64_t var_left = 0, var_right = 0;
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                         int32_t diff_l = stereo_frame[i * 2] - mean_left;
@@ -322,11 +337,9 @@ void app_main(void) {
                     int32_t std_right = (int32_t)sqrt(var_right / AUDIO_FRAME_SAMPLES);
                     int32_t std_avg = (std_left + std_right) / 2;
                     
-                    // Threshold: look for AC variation, not DC offset
-                    const int32_t SIGNAL_THRESHOLD = 500;  // ~1.5% of full scale
+                    const int32_t SIGNAL_THRESHOLD = 500;
                     
                     if (std_avg > SIGNAL_THRESHOLD) {
-                        // Pack 16-bit stereo → 24-bit mono (downmix L+R)
                         pcm16_stereo_to_pcm24_mono_pack(stereo_frame, samples_read, packet_buffer);
                         status.audio_active = true;
                         if ((tx_seq & 0xFF) == 0) {
@@ -337,58 +350,47 @@ void app_main(void) {
                         status.audio_active = false;
                     }
                 } else {
-                    // No data or error - fill with silence
                     memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
                     status.audio_active = false;
                     if (ret != ESP_OK) {
-                        ESP_LOGW(TAG, "AUX: ADC read error: %s", esp_err_to_name(ret));
+                        ESP_LOGW(TAG, "AUX: read error: %s", esp_err_to_name(ret));
                     }
                 }
             }
             break;
+
         default:
-            // Handle any unhandled cases
             break;
         }
         
-        // If we have audio and network is ready, send 24-bit mono PCM
-        // Payload format (v0.1): PCM S24LE packed, mono, 48 kHz, 5ms frames (720 bytes)
         if (status.audio_active && network_is_stream_ready()) {
-        // packet_buffer already contains 24-bit packed mono data from conversion above
+            net_frame_header_t hdr;
+            hdr.magic = NET_FRAME_MAGIC;
+            hdr.version = NET_FRAME_VERSION;
+            hdr.type = NET_PKT_TYPE_AUDIO_RAW;
+            hdr.stream_id = 1;
+            hdr.seq = htons(tx_seq++);
+            hdr.timestamp = htonl((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+            hdr.payload_len = htons((uint16_t)AUDIO_FRAME_BYTES);
+            hdr.ttl = 6;
+            hdr.reserved = 0;
 
-        // Build frame header
-        net_frame_header_t hdr;
-        hdr.magic = NET_FRAME_MAGIC;
-        hdr.version = NET_FRAME_VERSION;
-        hdr.type = NET_PKT_TYPE_AUDIO_RAW;
-        hdr.stream_id = 1;  // Stream ID (will be set by network layer)
-        hdr.seq = htons(tx_seq++);
-        hdr.timestamp = htonl((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
-        hdr.payload_len = htons((uint16_t)AUDIO_FRAME_BYTES);
-        hdr.ttl = 6;  // Max 6 hops
-        hdr.reserved = 0;
+            memcpy(framed_buffer, &hdr, NET_FRAME_HEADER_SIZE);
+            memcpy(framed_buffer + NET_FRAME_HEADER_SIZE, packet_buffer, AUDIO_FRAME_BYTES);
 
-        // Copy header + payload to framed buffer
-        memcpy(framed_buffer, &hdr, NET_FRAME_HEADER_SIZE);
-        memcpy(framed_buffer + NET_FRAME_HEADER_SIZE, packet_buffer, AUDIO_FRAME_BYTES);
-
-        esp_err_t send_ret = network_send_audio(framed_buffer, NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-        if (send_ret == ESP_OK) {
-        bytes_sent += (NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-        if ((tx_seq & 0x7F) == 0) {
-            ESP_LOGI(TAG, "Sent packet seq=%u (%d bytes)", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-        }
-        } else {
-        if ((tx_seq & 0x7F) == 0) {
-            ESP_LOGW(TAG, "Failed to send: %s", esp_err_to_name(send_ret));
-        }
-        }
+            esp_err_t send_ret = network_send_audio(framed_buffer, NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
+            if (send_ret == ESP_OK) {
+                bytes_sent += (NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
+                if ((tx_seq & 0x7F) == 0) {
+                    ESP_LOGI(TAG, "Sent packet seq=%u (%d bytes)", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
+                }
+            } else {
+                if ((tx_seq & 0x7F) == 0) {
+                    ESP_LOGW(TAG, "Failed to send: %s", esp_err_to_name(send_ret));
+                }
+            }
         }
 
-        // Note: ping processing and responses are handled inside the network layer.
-        // Avoid application-level ping rebroadcast to prevent ping storms.
-
-        // Update network stats every second
         uint32_t now = xTaskGetTickCount();
         if ((now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
             uint32_t elapsed_ticks = now - last_stats_update;
@@ -400,15 +402,13 @@ void app_main(void) {
             status.rssi = network_get_rssi();
             status.latency_ms = network_get_latency_ms();
             last_stats_update = now;
-            bytes_sent = 0;  // Reset for next interval
+            bytes_sent = 0;
         }
 
-        // Update display at 10 Hz (every 100ms) to reduce I2C overhead
         if ((ms_tick % 100) == 0) {
             display_render_tx(current_view, &status);
         }
 
-        // Reset watchdog
         esp_task_wdt_reset();
     }
 }

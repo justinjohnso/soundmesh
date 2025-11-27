@@ -51,6 +51,18 @@ static void pcm16_stereo_to_pcm24_mono_pack(const int16_t* in_lr, size_t frames,
     }
 }
 
+static void pcm32_stereo_to_pcm24_mono_pack(const int32_t* in_lr, size_t frames, uint8_t* out) {
+    for (size_t i = 0; i < frames; i++) {
+        // ES8388 32-bit I2S outputs 24-bit audio LEFT-JUSTIFIED (MSB-aligned)
+        // Data is in upper 24 bits, lower 8 bits are zero padding
+        // Shift right by 8 to get actual 24-bit signed value
+        int32_t left = in_lr[i*2] >> 8;
+        int32_t right = in_lr[i*2 + 1] >> 8;
+        int32_t mono = (left + right) >> 1;
+        s24le_pack(mono & 0x00FFFFFF, &out[i * 3]);
+    }
+}
+
 static SemaphoreHandle_t tx_timer_sem = NULL;
 static uint32_t ms_tick = 0;
 
@@ -77,7 +89,8 @@ static adc_cali_handle_t adc1_cali_handle = NULL;
 #endif
 
 static int16_t mono_frame[AUDIO_FRAME_SAMPLES];
-static int16_t stereo_frame[AUDIO_FRAME_SAMPLES * 2];
+static int16_t stereo_frame_16[AUDIO_FRAME_SAMPLES * 2];  // For USB audio (16-bit)
+static int32_t stereo_frame_32[AUDIO_FRAME_SAMPLES * 2];  // For ES8388 (24-bit in 32-bit containers)
 static uint8_t packet_buffer[AUDIO_FRAME_BYTES];
 static uint8_t framed_buffer[NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES];
 static uint16_t tx_seq = 0;
@@ -286,9 +299,9 @@ void app_main(void) {
         case INPUT_MODE_USB:
             if (usb_audio_is_active()) {
                 size_t frames_read;
-                usb_audio_read_frames(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
+                usb_audio_read_frames(stereo_frame_16, AUDIO_FRAME_SAMPLES, &frames_read);
                 if (frames_read > 0) {
-                    pcm16_stereo_to_pcm24_mono_pack(stereo_frame, frames_read, packet_buffer);
+                    pcm16_stereo_to_pcm24_mono_pack(stereo_frame_16, frames_read, packet_buffer);
                     for (size_t i = frames_read; i < AUDIO_FRAME_SAMPLES; i++) {
                         s24le_pack(0, &packet_buffer[i * 3]);
                     }
@@ -303,33 +316,82 @@ void app_main(void) {
             {
                 size_t samples_read = 0;
 #ifdef CONFIG_USE_ES8388
-                esp_err_t ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
+                esp_err_t ret = es8388_audio_read_stereo(stereo_frame_32, AUDIO_FRAME_SAMPLES, &samples_read);
 #else
-                esp_err_t ret = adc_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
+                esp_err_t ret = adc_audio_read_stereo(stereo_frame_16, AUDIO_FRAME_SAMPLES, &samples_read);
 #endif
                 
                 if (ret == ESP_OK && samples_read > 0) {
+#ifdef CONFIG_USE_ES8388
+                    // ES8388 returns 24-bit samples in 32-bit containers
                     if (samples_read < AUDIO_FRAME_SAMPLES) {
-                        int16_t last_left = stereo_frame[(samples_read - 1) * 2];
-                        int16_t last_right = stereo_frame[(samples_read - 1) * 2 + 1];
+                        int32_t last_left = stereo_frame_32[(samples_read - 1) * 2];
+                        int32_t last_right = stereo_frame_32[(samples_read - 1) * 2 + 1];
                         for (size_t i = samples_read; i < AUDIO_FRAME_SAMPLES; i++) {
-                            stereo_frame[i * 2] = last_left;
-                            stereo_frame[i * 2 + 1] = last_right;
+                            stereo_frame_32[i * 2] = last_left;
+                            stereo_frame_32[i * 2 + 1] = last_right;
                         }
                     }
                     
+                    // ES8388 32-bit I2S: 24-bit audio is LEFT-JUSTIFIED (MSB-aligned)
+                    // Shift right by 8 to get actual 24-bit signed values for statistics
                     int64_t sum_left = 0, sum_right = 0;
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        sum_left += stereo_frame[i * 2];
-                        sum_right += stereo_frame[i * 2 + 1];
+                        sum_left += stereo_frame_32[i * 2] >> 8;
+                        sum_right += stereo_frame_32[i * 2 + 1] >> 8;
                     }
                     int32_t mean_left = (int32_t)(sum_left / AUDIO_FRAME_SAMPLES);
                     int32_t mean_right = (int32_t)(sum_right / AUDIO_FRAME_SAMPLES);
                     
                     int64_t var_left = 0, var_right = 0;
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        int32_t diff_l = stereo_frame[i * 2] - mean_left;
-                        int32_t diff_r = stereo_frame[i * 2 + 1] - mean_right;
+                        int32_t val_l = stereo_frame_32[i * 2] >> 8;
+                        int32_t val_r = stereo_frame_32[i * 2 + 1] >> 8;
+                        int32_t diff_l = val_l - mean_left;
+                        int32_t diff_r = val_r - mean_right;
+                        var_left += (int64_t)diff_l * diff_l;
+                        var_right += (int64_t)diff_r * diff_r;
+                    }
+                    int32_t std_left = (int32_t)sqrt((double)(var_left / AUDIO_FRAME_SAMPLES));
+                    int32_t std_right = (int32_t)sqrt((double)(var_right / AUDIO_FRAME_SAMPLES));
+                    int32_t std_avg = (std_left + std_right) / 2;
+                    
+                    // Threshold for 24-bit audio (~-60dB = ~8000)
+                    const int32_t SIGNAL_THRESHOLD = 5000;
+                    
+                    if (std_avg > SIGNAL_THRESHOLD) {
+                        pcm32_stereo_to_pcm24_mono_pack(stereo_frame_32, samples_read, packet_buffer);
+                        status.audio_active = true;
+                        if ((tx_seq & 0xFF) == 0) {
+                            ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
+                        }
+                    } else {
+                        memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
+                        status.audio_active = false;
+                    }
+#else
+                    // Legacy ADC path (16-bit)
+                    if (samples_read < AUDIO_FRAME_SAMPLES) {
+                        int16_t last_left = stereo_frame_16[(samples_read - 1) * 2];
+                        int16_t last_right = stereo_frame_16[(samples_read - 1) * 2 + 1];
+                        for (size_t i = samples_read; i < AUDIO_FRAME_SAMPLES; i++) {
+                            stereo_frame_16[i * 2] = last_left;
+                            stereo_frame_16[i * 2 + 1] = last_right;
+                        }
+                    }
+                    
+                    int64_t sum_left = 0, sum_right = 0;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        sum_left += stereo_frame_16[i * 2];
+                        sum_right += stereo_frame_16[i * 2 + 1];
+                    }
+                    int32_t mean_left = (int32_t)(sum_left / AUDIO_FRAME_SAMPLES);
+                    int32_t mean_right = (int32_t)(sum_right / AUDIO_FRAME_SAMPLES);
+                    
+                    int64_t var_left = 0, var_right = 0;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        int32_t diff_l = stereo_frame_16[i * 2] - mean_left;
+                        int32_t diff_r = stereo_frame_16[i * 2 + 1] - mean_right;
                         var_left += (int64_t)diff_l * diff_l;
                         var_right += (int64_t)diff_r * diff_r;
                     }
@@ -340,7 +402,7 @@ void app_main(void) {
                     const int32_t SIGNAL_THRESHOLD = 500;
                     
                     if (std_avg > SIGNAL_THRESHOLD) {
-                        pcm16_stereo_to_pcm24_mono_pack(stereo_frame, samples_read, packet_buffer);
+                        pcm16_stereo_to_pcm24_mono_pack(stereo_frame_16, samples_read, packet_buffer);
                         status.audio_active = true;
                         if ((tx_seq & 0xFF) == 0) {
                             ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
@@ -349,6 +411,7 @@ void app_main(void) {
                         memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
                         status.audio_active = false;
                     }
+#endif
                 } else {
                     memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
                     status.audio_active = false;

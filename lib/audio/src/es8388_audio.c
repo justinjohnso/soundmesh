@@ -162,7 +162,8 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     // Configure DAC
     res |= es8388_write_reg(ES8388_DACPOWER, 0xC0);     // Disable DAC outputs initially
     res |= es8388_write_reg(ES8388_CONTROL1, 0x12);     // ADC+DAC mode
-    res |= es8388_write_reg(ES8388_DACCONTROL1, 0x18);  // 16-bit I2S
+    // DACCONTROL1: DACWL[4:2]=000 (24-bit), DACFORMAT[1:0]=00 (I2S), polarity bits=0
+    res |= es8388_write_reg(ES8388_DACCONTROL1, 0x00);  // 24-bit I2S format
     res |= es8388_write_reg(ES8388_DACCONTROL2, 0x02);  // DACFsMode=single speed, ratio=256
     res |= es8388_write_reg(ES8388_DACCONTROL16, 0x00); // Audio from I2S (not analog bypass)
     res |= es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer (LD2LO=1)
@@ -184,7 +185,8 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     res |= es8388_write_reg(ES8388_ADCCONTROL2, ADC_INPUT_LINPUT2_RINPUT2);
     
     res |= es8388_write_reg(ES8388_ADCCONTROL3, 0x02);  // DS: stereo
-    res |= es8388_write_reg(ES8388_ADCCONTROL4, 0x0C);  // 16-bit I2S, left/right normal
+    // ADCCONTROL4: DATSEL[7:6]=00 (L=LADC,R=RADC), ADCLRP=0, ADCWL[4:2]=000 (24-bit), ADCFORMAT[1:0]=00 (I2S)
+    res |= es8388_write_reg(ES8388_ADCCONTROL4, 0x00);  // 24-bit I2S format
     res |= es8388_write_reg(ES8388_ADCCONTROL5, 0x02);  // ADCFsMode=single speed, ratio=256
     
     // Set ADC volume
@@ -228,8 +230,11 @@ static esp_err_t i2s_init(bool enable_dac)
     ESP_LOGI(TAG, "Initializing I2S for ES8388");
     
     // Channel configuration - create both TX and RX on same port
+    // Increase DMA buffering to handle WiFi/mesh scanning stalls (~40ms total)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    chan_cfg.dma_desc_num = 8;                      // 8 DMA descriptors
+    chan_cfg.dma_frame_num = 240;                   // 240 frames per descriptor (5ms at 48kHz)
     
     esp_err_t ret;
     
@@ -247,13 +252,17 @@ static esp_err_t i2s_init(bool enable_dac)
     }
     
     // Standard mode configuration for ES8388
+    // Use 32-bit slots for 24-bit audio (industry standard: 24-bit data in 32-bit containers)
+    // This provides natural alignment and matches ESP32 DMA word size
+    i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    
     i2s_std_config_t std_cfg = {
         .clk_cfg = {
             .sample_rate_hz = AUDIO_SAMPLE_RATE,
             .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,  // MCLK = 256 * Fs = 12.288 MHz
+            .mclk_multiple = I2S_MCLK_MULTIPLE_256,  // MCLK = 256 * Fs = 12.288 MHz (lower EMI than 384x)
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = slot_cfg,
         .gpio_cfg = {
             .mclk = ES8388_MCLK_IO,
             .bclk = ES8388_BCLK_IO,
@@ -299,7 +308,7 @@ static esp_err_t i2s_init(bool enable_dac)
         }
     }
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit stereo, MCLK=GPIO%d", 
+    ESP_LOGI(TAG, "I2S initialized: %dHz, 24-bit in 32-bit slots, MCLK=256Fs on GPIO%d", 
              AUDIO_SAMPLE_RATE, ES8388_MCLK_IO);
     
     return ESP_OK;
@@ -382,7 +391,7 @@ esp_err_t es8388_audio_deinit(void)
     return ESP_OK;
 }
 
-esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, size_t *frames_read)
+esp_err_t es8388_audio_read_stereo(int32_t *stereo_buffer, size_t max_frames, size_t *frames_read)
 {
     if (!es8388_initialized || !i2s_rx_handle) {
         ESP_LOGE(TAG, "ES8388 not initialized");
@@ -394,7 +403,7 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
     }
     
     size_t bytes_read = 0;
-    size_t bytes_to_read = max_frames * 2 * sizeof(int16_t);  // stereo = 2 channels
+    size_t bytes_to_read = max_frames * 2 * sizeof(int32_t);  // stereo = 2 channels, 32-bit containers
     
     esp_err_t ret = i2s_channel_read(i2s_rx_handle, stereo_buffer, bytes_to_read, 
                                       &bytes_read, pdMS_TO_TICKS(10));
@@ -410,7 +419,7 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
         return ret;
     }
     
-    *frames_read = bytes_read / (2 * sizeof(int16_t));
+    *frames_read = bytes_read / (2 * sizeof(int32_t));
     return ESP_OK;
 }
 
@@ -418,7 +427,7 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
 static int i2s_tx_error_count = 0;
 #define I2S_TX_ERROR_THRESHOLD 3
 
-esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
+esp_err_t es8388_audio_write_stereo(const int32_t *stereo_buffer, size_t frames)
 {
     if (!es8388_initialized || !dac_enabled || !i2s_tx_handle) {
         return ESP_ERR_INVALID_STATE;
@@ -429,11 +438,11 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
     }
     
     size_t bytes_written = 0;
-    size_t bytes_to_write = frames * 2 * sizeof(int16_t);  // stereo = 2 channels
+    size_t bytes_to_write = frames * 2 * sizeof(int32_t);  // stereo = 2 channels, 32-bit containers
     
-    // Use 20ms timeout to prevent blocking indefinitely
+    // Use 50ms timeout to handle WiFi/mesh scanning stalls
     esp_err_t ret = i2s_channel_write(i2s_tx_handle, stereo_buffer, bytes_to_write,
-                                       &bytes_written, pdMS_TO_TICKS(20));
+                                       &bytes_written, pdMS_TO_TICKS(50));
     
     if (ret == ESP_ERR_TIMEOUT) {
         i2s_tx_error_count++;

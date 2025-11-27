@@ -56,7 +56,7 @@ static void pcm16_stereo_to_pcm24_mono_pack(const int16_t* in_lr, size_t frames,
 
 
 static combo_status_t status = {
-    .input_mode = INPUT_MODE_TONE,
+    .input_mode = INPUT_MODE_AUX,
     .audio_active = false,
     .connected_nodes = 0,
     .latency_ms = 10,

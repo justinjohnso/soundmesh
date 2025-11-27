@@ -107,28 +107,35 @@ static bool dac_enabled = false;
 static esp_err_t es8388_write_reg(uint8_t reg, uint8_t val)
 {
     uint8_t data[2] = {reg, val};
-    esp_err_t ret;
+    esp_err_t ret = ESP_FAIL;
     
-    // Retry I2C writes - MCLK signal on GPIO1 can cause I2C interference
-    for (int retry = 0; retry < 5; retry++) {
+    // Retry I2C write up to 3 times
+    for (int i = 0; i < 3; i++) {
         ret = i2c_master_write_to_device(
-            I2C_MASTER_NUM, ES8388_ADDR, data, 2, pdMS_TO_TICKS(50));
-        if (ret == ESP_OK) {
-            return ESP_OK;
-        }
-        // Small delay before retry - helps with MCLK-induced noise
-        vTaskDelay(pdMS_TO_TICKS(2));
+            I2C_MASTER_NUM, ES8388_ADDR, data, 2, pdMS_TO_TICKS(100));
+        if (ret == ESP_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
-    ESP_LOGE(TAG, "I2C write failed after retries: reg=0x%02x, val=0x%02x, err=%s", 
-             reg, val, esp_err_to_name(ret));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C write failed: reg=0x%02x, val=0x%02x, err=%s", 
+                 reg, val, esp_err_to_name(ret));
+    }
     return ret;
 }
 
 static esp_err_t es8388_read_reg(uint8_t reg, uint8_t *val)
 {
-    esp_err_t ret = i2c_master_write_read_device(
-        I2C_MASTER_NUM, ES8388_ADDR, &reg, 1, val, 1, pdMS_TO_TICKS(100));
+    esp_err_t ret = ESP_FAIL;
+    
+    // Retry I2C read up to 3 times
+    for (int i = 0; i < 3; i++) {
+        ret = i2c_master_write_read_device(
+            I2C_MASTER_NUM, ES8388_ADDR, &reg, 1, val, 1, pdMS_TO_TICKS(100));
+        if (ret == ESP_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2C read failed: reg=0x%02x, err=%s", reg, esp_err_to_name(ret));
     }
@@ -140,6 +147,9 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     esp_err_t res = ESP_OK;
     
     ESP_LOGI(TAG, "Initializing ES8388 codec (DAC=%s)", enable_dac ? "enabled" : "disabled");
+    
+    // Add larger delay to let MCLK stabilize before sending I2C commands
+    vTaskDelay(pdMS_TO_TICKS(50));
     
     // Reset codec to default state
     res |= es8388_write_reg(ES8388_DACCONTROL3, 0x04);  // Mute DAC during config
@@ -307,15 +317,15 @@ esp_err_t es8388_audio_init(bool enable_dac)
     }
     ESP_LOGI(TAG, "ES8388 detected, CONTROL1=0x%02x", test_val);
     
-    // IMPORTANT: Configure ES8388 codec registers BEFORE starting I2S
-    // ESP-ADF pattern: codec config first, then I2S (which drives MCLK/BCLK/WS)
+    // CRITICAL: Configure ES8388 codec registers BEFORE starting I2S
+    // I2S drives MCLK on GPIO1 which creates EMI that disrupts I2C on GPIO5/6
     ret = es8388_codec_init(enable_dac);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES8388 codec initialization failed");
         return ret;
     }
     
-    // Now initialize I2S interface (starts driving clocks to codec)
+    // Now initialize I2S interface (starts driving MCLK/BCLK/WS to codec)
     ret = i2s_init(enable_dac);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S initialization failed");
@@ -426,17 +436,18 @@ esp_err_t es8388_audio_set_volume(uint8_t volume)
     // Lower register value = higher volume
     uint8_t reg_val = (100 - volume) * 33 / 100;
     
+    // Note: I2C may fail after I2S starts due to MCLK EMI on GPIO1
+    // Volume control is non-critical - audio works at default volume if this fails
     esp_err_t ret1 = es8388_write_reg(ES8388_DACCONTROL24, reg_val);  // LOUT1 volume
     esp_err_t ret2 = es8388_write_reg(ES8388_DACCONTROL25, reg_val);  // ROUT1 volume
     
     if (ret1 == ESP_OK && ret2 == ESP_OK) {
         ESP_LOGI(TAG, "Volume set to %d%% (reg=0x%02x)", volume, reg_val);
     } else {
-        ESP_LOGW(TAG, "Volume set partial/failed (reg=0x%02x), using default", reg_val);
+        ESP_LOGW(TAG, "Volume set failed (I2C error after I2S start), using default");
     }
     
-    // Return OK even if failed - audio still works at default volume
-    return ESP_OK;
+    return ESP_OK;  // Non-fatal - audio still works
 }
 
 esp_err_t es8388_audio_set_input_gain(uint8_t gain_db)

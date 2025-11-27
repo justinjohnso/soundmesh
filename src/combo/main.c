@@ -53,12 +53,7 @@ static void pcm16_stereo_to_pcm24_mono_pack(const int16_t* in_lr, size_t frames,
     }
 }
 
-static SemaphoreHandle_t combo_timer_sem = NULL;
-static uint32_t ms_tick = 0;
 
-static void combo_timer_callback(void* arg) {
-    xSemaphoreGive(combo_timer_sem);
-}
 
 static combo_status_t status = {
     .input_mode = INPUT_MODE_TONE,
@@ -79,10 +74,10 @@ static int16_t stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 static uint8_t packet_buffer[AUDIO_FRAME_BYTES];
 static uint8_t framed_buffer[NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES];
 
-void update_tone_oscillate(void) {
-    static uint32_t last_log = 0;
+void update_tone_oscillate(int64_t now_ms) {
+    static int64_t last_log_ms = 0;
     
-    uint32_t phase = (ms_tick / 20) % 200;
+    uint32_t phase = ((uint32_t)(now_ms / 20)) % 200;
     float ratio = (float)phase / 200.0f;
     float sine_val = sinf(ratio * 2.0f * M_PI);
     uint32_t center = 500;
@@ -94,10 +89,9 @@ void update_tone_oscillate(void) {
         tone_gen_set_frequency(status.tone_freq_hz);
     }
     
-    uint32_t now = xTaskGetTickCount();
-    if ((now - last_log) > pdMS_TO_TICKS(2000)) {
+    if ((now_ms - last_log_ms) > 2000) {
         ESP_LOGI(TAG, "Tone oscillating: freq=%lu Hz", status.tone_freq_hz);
-        last_log = now;
+        last_log_ms = now_ms;
     }
 }
 
@@ -149,21 +143,6 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     }
 
-    combo_timer_sem = xSemaphoreCreateBinary();
-    if (!combo_timer_sem) {
-        ESP_LOGE(TAG, "Failed to create timer semaphore");
-        return;
-    }
-
-    const esp_timer_create_args_t timer_args = {
-        .callback = &combo_timer_callback,
-        .name = "combo_pacer",
-        .dispatch_method = ESP_TIMER_TASK
-    };
-    esp_timer_handle_t combo_timer;
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &combo_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(combo_timer, 1000));
-
     ESP_LOGI(TAG, "COMBO initialized, registering for network startup notification");
 
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
@@ -174,12 +153,23 @@ void app_main(void) {
 
     uint32_t bytes_sent = 0;
     static uint16_t combo_seq = 0;
+    
+    // Real-time scheduling using esp_timer_get_time() instead of semaphore ticks
+    int64_t last_audio_ms = esp_timer_get_time() / 1000;
+    int64_t last_button_ms = last_audio_ms;
+    int64_t last_display_ms = last_audio_ms;
+    int64_t last_stats_ms = last_audio_ms;
+    static uint32_t frame_count = 0;
 
     while (1) {
-        xSemaphoreTake(combo_timer_sem, portMAX_DELAY);
-        ms_tick++;
-
-        if ((ms_tick % 5) == 0) {
+        // Yield to other tasks briefly
+        vTaskDelay(pdMS_TO_TICKS(1));
+        
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        
+        // Button polling every 5ms
+        if (now_ms - last_button_ms >= 5) {
+            last_button_ms = now_ms;
             button_event_t btn_event = buttons_poll();
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
                 current_view = (current_view == DISPLAY_VIEW_NETWORK) ?
@@ -200,13 +190,19 @@ void app_main(void) {
 #endif
             }
         }
+        
+        // Tone oscillation update (runs frequently for smooth modulation)
+        if (status.input_mode == INPUT_MODE_TONE) {
+            update_tone_oscillate(now_ms);
+        }
 
-        if ((ms_tick % AUDIO_FRAME_MS) != 0) {
-            if (status.input_mode == INPUT_MODE_TONE) {
-                update_tone_oscillate();
-            }
+        // Audio frame processing every AUDIO_FRAME_MS (10ms)
+        if (now_ms - last_audio_ms < AUDIO_FRAME_MS) {
+            esp_task_wdt_reset();
             continue;
         }
+        last_audio_ms += AUDIO_FRAME_MS;  // Advance by frame period to maintain timing
+        frame_count++;
 
         status.audio_active = false;
         
@@ -276,7 +272,7 @@ void app_main(void) {
 
                     const int32_t SIGNAL_THRESHOLD = 10;
 
-                    if ((ms_tick & 0xFF) == 0) {
+                    if ((frame_count & 0x3F) == 0) {
                         ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
                     }
 
@@ -314,7 +310,7 @@ void app_main(void) {
 #else
             i2s_audio_write_samples(stereo_frame, AUDIO_FRAME_SAMPLES * 2);
 #endif
-            if ((ms_tick & 0x7F) == 0) {
+            if ((frame_count & 0x3F) == 0) {
                 ESP_LOGI(TAG, "Output frame to headphones");
             }
         } else {
@@ -355,22 +351,22 @@ void app_main(void) {
             }
         }
 
-        uint32_t now = xTaskGetTickCount();
-        static uint32_t last_stats_update = 0;
-        if ((now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
-            uint32_t elapsed_ticks = now - last_stats_update;
-            uint32_t elapsed_ms = elapsed_ticks * portTICK_PERIOD_MS;
+        // Stats update every 1000ms
+        if (now_ms - last_stats_ms >= 1000) {
+            int64_t elapsed_ms = now_ms - last_stats_ms;
             if (elapsed_ms > 0 && bytes_sent > 0) {
-                status.bandwidth_kbps = (bytes_sent * 8) / elapsed_ms;
+                status.bandwidth_kbps = (bytes_sent * 8) / (uint32_t)elapsed_ms;
             }
             status.connected_nodes = network_get_connected_nodes();
             status.rssi = network_get_rssi();
             status.latency_ms = network_get_latency_ms();
-            last_stats_update = now;
+            last_stats_ms = now_ms;
             bytes_sent = 0;
         }
 
-        if ((ms_tick % 100) == 0) {
+        // Display update every 100ms
+        if (now_ms - last_display_ms >= 100) {
+            last_display_ms = now_ms;
             display_render_combo(current_view, &status);
         }
 

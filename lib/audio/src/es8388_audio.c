@@ -91,12 +91,14 @@ static const char *TAG = "es8388_audio";
 #define ADC_INPUT_LINPUT2_RINPUT2   0x50  // LIN2/RIN2 for line input
 #define ADC_INPUT_DIFFERENCE        0xF0
 
-// DAC output selection for DACPOWER register
-#define DAC_OUTPUT_LOUT1    (1 << 4)
-#define DAC_OUTPUT_ROUT1    (1 << 5)
-#define DAC_OUTPUT_LOUT2    (1 << 6)
-#define DAC_OUTPUT_ROUT2    (1 << 7)
-#define DAC_OUTPUT_ALL      (DAC_OUTPUT_LOUT1 | DAC_OUTPUT_ROUT1 | DAC_OUTPUT_LOUT2 | DAC_OUTPUT_ROUT2)
+// DAC output selection for DACPOWER register (0x04)
+// Bits 7-6: PdnDACL/R (0=power up, 1=power down)
+// Bits 5-2: Output enables (1=enabled)
+#define DAC_OUTPUT_ROUT2    0x04  // bit 2
+#define DAC_OUTPUT_LOUT2    0x08  // bit 3
+#define DAC_OUTPUT_ROUT1    0x10  // bit 4
+#define DAC_OUTPUT_LOUT1    0x20  // bit 5
+#define DAC_OUTPUT_ALL      0x3C  // All outputs enabled, DACs powered up
 
 // I2S handles
 static i2s_chan_handle_t i2s_tx_handle = NULL;
@@ -174,7 +176,7 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     
     // Configure ADC
     res |= es8388_write_reg(ES8388_ADCPOWER, 0xFF);     // Power off ADC first
-    res |= es8388_write_reg(ES8388_ADCCONTROL1, 0x88);  // MIC PGA gain = 24dB (good for line input)
+    res |= es8388_write_reg(ES8388_ADCCONTROL1, 0x00);  // PGA gain = 0dB (no clipping at max laptop volume)
     
     // Select LIN2/RIN2 as input source (for line input from aux cable)
     res |= es8388_write_reg(ES8388_ADCCONTROL2, ADC_INPUT_LINPUT2_RINPUT2);
@@ -192,12 +194,20 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     
     // Enable DAC if requested (for COMBO mode headphone output)
     if (enable_dac) {
-        // Enable LOUT1/ROUT1 for headphone output
-        res |= es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_LOUT1 | DAC_OUTPUT_ROUT1);
+        // Set output volume BEFORE I2S starts (I2C fails after due to MCLK EMI)
+        // Output volume scale: 0x00=-45dB, 0x1E=0dB, 0x21=+4.5dB (max)
+        // Using max output gain (+4.5dB) for unity passthrough
+        res |= es8388_write_reg(ES8388_DACCONTROL24, 0x21);  // LOUT1 volume +4.5dB
+        res |= es8388_write_reg(ES8388_DACCONTROL25, 0x21);  // ROUT1 volume +4.5dB
+        res |= es8388_write_reg(ES8388_DACCONTROL26, 0x21);  // LOUT2 volume +4.5dB
+        res |= es8388_write_reg(ES8388_DACCONTROL27, 0x21);  // ROUT2 volume +4.5dB
+        
+        // Enable ALL outputs + power up DACs (bits 7-6 = 0 for DAC power on)
+        res |= es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ALL);  // 0x3C
         // Unmute DAC
         res |= es8388_write_reg(ES8388_DACCONTROL3, 0x00);
         dac_enabled = true;
-        ESP_LOGI(TAG, "DAC enabled for headphone output");
+        ESP_LOGI(TAG, "DAC enabled for headphone output (+4.5dB)");
     } else {
         dac_enabled = false;
     }

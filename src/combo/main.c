@@ -111,6 +111,10 @@ void update_tone_oscillate(int64_t now_ms) {
 void app_main(void) {
     ESP_LOGI(TAG, "MeshNet Audio COMBO starting...");
 
+    // Raise main task priority above default (1) to reduce starvation, but below network tasks
+    // WiFi runs at 18-23, mesh RX at 5 - we run at 10 (audio can hiccup, network should not)
+    vTaskPrioritySet(NULL, 10);
+
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
     ESP_LOGI(TAG, "Audio output: ES8388 headphone (monitor)");

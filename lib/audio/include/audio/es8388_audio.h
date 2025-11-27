@@ -19,7 +19,7 @@ extern "C" {
  *   I2C: SDA=GPIO5, SCL=GPIO6 (shared with OLED)
  *   I2S: MCLK=GPIO1, BCLK=GPIO7, WS=GPIO8, DOUT=GPIO9, DIN=GPIO2
  *   
- * Audio format: 48kHz, 16-bit stereo I2S
+ * Audio format: 48kHz, 24-bit stereo I2S (samples in 32-bit containers)
  */
 
 /**
@@ -40,21 +40,25 @@ esp_err_t es8388_audio_deinit(void);
 /**
  * Read stereo audio samples from ES8388 ADC (line input)
  * 
- * @param stereo_buffer Output buffer for interleaved L/R samples
+ * Samples are 24-bit in 32-bit containers (left-justified, sign-extended).
+ * 
+ * @param stereo_buffer Output buffer for interleaved L/R samples (int32_t)
  * @param max_frames Maximum number of stereo frames to read
  * @param frames_read Output: actual number of frames read
  * @return ESP_OK on success, ESP_ERR_TIMEOUT if no data available
  */
-esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, size_t *frames_read);
+esp_err_t es8388_audio_read_stereo(int32_t *stereo_buffer, size_t max_frames, size_t *frames_read);
 
 /**
  * Write stereo audio samples to ES8388 DAC (headphone output)
  * 
- * @param stereo_buffer Input buffer with interleaved L/R samples
+ * Samples are 24-bit in 32-bit containers (left-justified).
+ * 
+ * @param stereo_buffer Input buffer with interleaved L/R samples (int32_t)
  * @param frames Number of stereo frames to write
  * @return ESP_OK on success
  */
-esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames);
+esp_err_t es8388_audio_write_stereo(const int32_t *stereo_buffer, size_t frames);
 
 /**
  * Set the DAC output volume

@@ -414,6 +414,10 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
     return ESP_OK;
 }
 
+// Track consecutive I2S TX errors for recovery
+static int i2s_tx_error_count = 0;
+#define I2S_TX_ERROR_THRESHOLD 3
+
 esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
 {
     if (!es8388_initialized || !dac_enabled || !i2s_tx_handle) {
@@ -431,11 +435,29 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
     esp_err_t ret = i2s_channel_write(i2s_tx_handle, stereo_buffer, bytes_to_write,
                                        &bytes_written, pdMS_TO_TICKS(20));
     
-    if (ret != ESP_OK) {
+    if (ret == ESP_ERR_TIMEOUT) {
+        i2s_tx_error_count++;
+        
+        // After several consecutive timeouts, try to recover I2S channel
+        if (i2s_tx_error_count >= I2S_TX_ERROR_THRESHOLD) {
+            ESP_LOGW(TAG, "I2S TX timeout x%d, recovering channel...", i2s_tx_error_count);
+            
+            // Disable and re-enable the I2S TX channel to clear stuck state
+            i2s_channel_disable(i2s_tx_handle);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            i2s_channel_enable(i2s_tx_handle);
+            
+            i2s_tx_error_count = 0;
+            ESP_LOGI(TAG, "I2S TX channel recovered");
+        }
+        return ESP_ERR_TIMEOUT;
+    } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
         return ret;
     }
     
+    // Success - reset error counter
+    i2s_tx_error_count = 0;
     return ESP_OK;
 }
 

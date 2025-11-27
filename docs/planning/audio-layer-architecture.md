@@ -122,9 +122,68 @@ tone_gen_generate_samples(mono_frame, 240);
 network_send_audio((uint8_t*)mono_frame, 720);
 ```
 
-### 2. ADC Aux Input (Default/Primary)
+### 2. ES8388 Audio Codec (Primary - TX/COMBO)
 
-**Purpose:** Analog audio input via ESP32-S3 ADC (aux cable, mic, instrument)
+**Purpose:** High-quality audio input/output via PCBArtists ES8388 module
+
+**Hardware:** PCBArtists ES8388 Audio Codec Module
+- Compatible with ESP-ADF LyraT board support
+- LIN2/RIN2 line inputs for aux cable connection
+- Built-in headphone amplifier for monitor output
+- I2C control (address 0x10) + I2S audio interface
+
+**Specification:**
+- **Sample Rate:** 48 kHz
+- **Bit Depth:** 16-bit I2S (native), converted to 24-bit for network
+- **Channels:** Stereo input, downmixed to mono for transmission
+- **Input:** LIN2/RIN2 line inputs (aux cable)
+- **Output:** Headphone jack (monitor output, COMBO mode only)
+- **Implementation:** `lib/audio/src/es8388_audio.c`
+
+**Pin Connections (XIAO ESP32-S3):**
+```
+XIAO ESP32-S3          ES8388 Module
+─────────────          ─────────────
+3.3V  ──────────────── DVDD (pin 16), AVDD (pin 5)
+GND   ──────────────── GND (pins 3,4,6,11,14)
+A0/GPIO1 ───────────── MCLK (pin 15)
+A1/GPIO2 ───────────── DOUT (pin 20) - I2S from codec
+SDA/GPIO5 ──────────── SDA (pin 12)
+SCL/GPIO6 ──────────── SCL (pin 13)
+SCK/GPIO7 ──────────── SCLK (pin 17)
+MISO/GPIO8 ─────────── LRCLK (pin 19)
+MOSI/GPIO9 ─────────── DIN (pin 18) - I2S to codec
+```
+
+**API:**
+```c
+esp_err_t es8388_audio_init(bool enable_dac);  // enable_dac=true for COMBO
+esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, size_t *frames_read);
+esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames);
+esp_err_t es8388_audio_set_volume(uint8_t volume);
+esp_err_t es8388_audio_set_input_gain(uint8_t gain_db);
+```
+
+**Frame Generation (COMBO mode with monitor output):**
+```c
+// Every 5ms (240 samples @ 48kHz)
+int16_t stereo_frame[480];  // 240 frames × 2 channels
+size_t frames_read;
+es8388_audio_read_stereo(stereo_frame, 240, &frames_read);
+
+// Output to local headphone monitor
+es8388_audio_write_stereo(stereo_frame, frames_read);
+
+// Downmix to mono and pack for network
+pcm16_stereo_to_pcm24_mono_pack(stereo_frame, frames_read, packet_buffer);
+network_send_audio(packet_buffer, 720);
+```
+
+### 2b. ADC Aux Input (Legacy/Fallback)
+
+**Purpose:** Analog audio input via ESP32-S3 ADC (legacy hardware without ES8388)
+
+**Status:** Deprecated - replaced by ES8388 for new builds
 
 **Specification:**
 - **Sample Rate:** 48 kHz
@@ -134,44 +193,15 @@ network_send_audio((uint8_t*)mono_frame, 720);
 - **Input Mode:** Continuous DMA sampling
 - **Implementation:** `lib/audio/src/adc_audio.c`
 
-**Bit Depth Conversion:**
-```c
-// ADC returns 12-bit samples (0-4095)
-// Left-shift by 12 to fill 24-bit range
-int32_t sample_24bit = ((int32_t)(adc_12bit_sample - 2048)) << 12;  // Center at zero
-
-// Pack to 3 bytes for network transmission (little-endian)
-uint8_t packed[3] = {
-    sample_24bit & 0xFF,
-    (sample_24bit >> 8) & 0xFF,
-    (sample_24bit >> 16) & 0xFF
-};
-```
-
-**Challenges:**
-- **DC Offset:** ADC may have DC bias → High-pass filter (1st order, ~20 Hz cutoff)
-- **Sample Rate:** ESP32-S3 ADC max ~83 kHz total → Use 48 kHz for single channel
-- **DMA Buffer Management:** Continuous mode requires careful buffer handling
+**Note:** The ADC-based input is still compiled and available when `CONFIG_USE_ES8388` 
+is not defined. This allows fallback to the original hardware design if needed.
 
 **API:**
 ```c
 esp_err_t adc_audio_init(void);
 esp_err_t adc_audio_start(void);
-esp_err_t adc_audio_read_mono(int16_t *mono_buffer, size_t num_samples, size_t *samples_read);
+esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size_t *samples_read);
 esp_err_t adc_audio_stop(void);
-```
-
-**Frame Generation:**
-```c
-// Every 5ms (240 samples @ 48kHz)
-int16_t mono_frame[240];
-size_t samples_read;
-adc_audio_read_mono(mono_frame, 240, &samples_read);
-
-// Apply DC blocking (optional)
-dc_block_filter(mono_frame, 240);
-
-network_send_audio((uint8_t*)mono_frame, 720);
 ```
 
 ### 3. USB Audio Input (Future/v0.2)

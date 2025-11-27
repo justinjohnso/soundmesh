@@ -336,6 +336,7 @@
                 "ARDUINO_EVENT_RUNNING_CORE=1",
                 "LOG_LOCAL_LEVEL=ESP_LOG_INFO",
                 "CONFIG_TX_BUILD",
+                "CONFIG_USE_ES8388",
                 ""
             ],
             "cStandard": "gnu17",

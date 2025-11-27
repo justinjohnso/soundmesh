@@ -162,6 +162,9 @@ void update_tone_oscillate(void) {
 void app_main(void) {
     ESP_LOGI(TAG, "MeshNet Audio TX starting...");
     
+    // Raise main task priority above default (1) to reduce starvation, but below network tasks
+    vTaskPrioritySet(NULL, 10);
+    
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
 #else

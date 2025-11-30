@@ -9,11 +9,11 @@
             "name": "PlatformIO",
             "includePath": [
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/src",
-                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/include",
-                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/src",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/control/include",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/control/src",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/audio/src",
+                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/include",
+                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/src",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/config/include",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/config",
                 "/Users/justin/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
@@ -158,6 +158,7 @@
                 "/Users/justin/.platformio/packages/framework-espidf/components/touch_element/include",
                 "/Users/justin/.platformio/packages/framework-espidf/components/usb/include",
                 "/Users/justin/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
+                "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/components/esp-opus/include",
                 "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/audio/include",
                 ""
             ],
@@ -165,11 +166,11 @@
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/src",
-                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/include",
-                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/src",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/control/include",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/control/src",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/audio/src",
+                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/include",
+                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/network/src",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/config/include",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/config",
                     "/Users/justin/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
@@ -314,6 +315,7 @@
                     "/Users/justin/.platformio/packages/framework-espidf/components/touch_element/include",
                     "/Users/justin/.platformio/packages/framework-espidf/components/usb/include",
                     "/Users/justin/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
+                    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/components/esp-opus/include",
                     "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/lib/audio/include",
                     ""
                 ]

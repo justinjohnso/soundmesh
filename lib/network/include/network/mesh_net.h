@@ -48,10 +48,12 @@ typedef enum {
 	NET_PKT_TYPE_HEARTBEAT = 2,
 	NET_PKT_TYPE_STREAM_ANNOUNCE = 3,
 	NET_PKT_TYPE_CONTROL = 0x10,
+	NET_PKT_TYPE_AUDIO_OPUS = 0x11,  // Opus-compressed audio frame
 } net_pkt_type_t;
 
-// Audio frame header (12 bytes, aligned for mesh)
-#define NET_FRAME_HEADER_SIZE 12
+// Audio frame header (14 bytes, aligned for mesh)
+// CRITICAL: This MUST match sizeof(net_frame_header_t)!
+#define NET_FRAME_HEADER_SIZE 14
 
 typedef struct __attribute__((packed)) {
 	uint8_t magic;          // 0xA5 (NET_FRAME_MAGIC)

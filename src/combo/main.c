@@ -1,3 +1,10 @@
+/**
+ * MeshNet Audio COMBO Node
+ * 
+ * TX + local headphone monitor via ES8388
+ * Uses ESP-ADF pipeline with Opus compression for mesh transmission
+ */
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -6,7 +13,6 @@
 #include <esp_timer.h>
 #include <esp_mesh.h>
 #include <string.h>
-#include <arpa/inet.h>
 #include <math.h>
 #include "config/build.h"
 #include "config/pins.h"
@@ -15,7 +21,7 @@
 #include "control/status.h"
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
-#include "audio/ring_buffer.h"
+#include "audio/adf_pipeline.h"
 #include "network/mesh_net.h"
 
 #ifdef CONFIG_USE_ES8388
@@ -23,37 +29,9 @@
 #else
 #include "audio/adc_audio.h"
 #include "audio/i2s_audio.h"
-#include <esp_adc/adc_oneshot.h>
-#include <esp_adc/adc_cali.h>
-#include <esp_adc/adc_cali_scheme.h>
 #endif
 
 static const char *TAG = "combo_main";
-
-_Static_assert(AUDIO_BITS_PER_SAMPLE == 24 && AUDIO_CHANNELS == 1, "v0.1 requires 24-bit mono");
-
-static inline void s24le_pack(int32_t s24, uint8_t* out) {
-    out[0] = (uint8_t)(s24 & 0xFF);
-    out[1] = (uint8_t)((s24 >> 8) & 0xFF);
-    out[2] = (uint8_t)((s24 >> 16) & 0xFF);
-}
-
-static void pcm16_mono_to_pcm24_mono_pack(const int16_t* in, size_t frames, uint8_t* out) {
-    for (size_t i = 0; i < frames; i++) {
-        int32_t s24 = ((int32_t)in[i]) << 8;
-        s24le_pack(s24, &out[i * 3]);
-    }
-}
-
-static void pcm16_stereo_to_pcm24_mono_pack(const int16_t* in_lr, size_t frames, uint8_t* out) {
-    for (size_t i = 0; i < frames; i++) {
-        int32_t m = ((int32_t)in_lr[i*2] + (int32_t)in_lr[i*2 + 1]) >> 1;
-        int32_t s24 = m << 8;
-        s24le_pack(s24, &out[i * 3]);
-    }
-}
-
-
 
 static combo_status_t status = {
     .input_mode = INPUT_MODE_AUX,
@@ -67,12 +45,7 @@ static combo_status_t status = {
 };
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
-static ring_buffer_t *audio_buffer = NULL;
-
-static int16_t mono_frame[AUDIO_FRAME_SAMPLES];
-static int16_t stereo_frame[AUDIO_FRAME_SAMPLES * 2];
-static uint8_t packet_buffer[AUDIO_FRAME_BYTES];
-static uint8_t framed_buffer[NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES];
+static adf_pipeline_handle_t tx_pipeline = NULL;
 
 void update_tone_oscillate(int64_t now_ms) {
     static int64_t last_log_ms = 0;
@@ -96,7 +69,12 @@ void update_tone_oscillate(int64_t now_ms) {
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "MeshNet Audio COMBO starting...");
+    ESP_LOGI(TAG, "======================================");
+    ESP_LOGI(TAG, "MeshNet Audio COMBO starting (Opus)...");
+    ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
+    ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames, Opus %d kbps",
+             AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS, OPUS_BITRATE / 1000);
+    ESP_LOGI(TAG, "======================================");
 
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
@@ -106,36 +84,54 @@ void app_main(void) {
     ESP_LOGI(TAG, "Audio output: UDA1334 DAC");
 #endif
 
+    // Initialize control layer
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(buttons_init());
 
-    ESP_ERROR_CHECK(network_init_mesh());
-    ESP_ERROR_CHECK(network_start_latency_measurement());
-
+    // Initialize audio sources (tone generator, USB)
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
     ESP_ERROR_CHECK(usb_audio_init());
 
 #ifdef CONFIG_USE_ES8388
-    // Initialize ES8388 with DAC enabled for headphone monitor output
-    // Note: Volume is set in es8388_codec_init() BEFORE I2S starts (I2C fails after due to MCLK EMI)
+    // Initialize ES8388 with DAC enabled for headphone monitor
     ESP_ERROR_CHECK(es8388_audio_init(true));
 #else
     ESP_ERROR_CHECK(adc_audio_init());
     ESP_ERROR_CHECK(i2s_audio_init());
 #endif
 
-    audio_buffer = ring_buffer_create(RING_BUFFER_SIZE);
-    if (!audio_buffer) {
-        ESP_LOGE(TAG, "Failed to create ring buffer");
+    // Create TX pipeline with Opus encoding BEFORE network init
+    // Opus codec needs ~20KB heap - allocate before WiFi/mesh consumes heap
+    ESP_LOGI(TAG, "Creating audio pipeline (heap: %lu bytes)...", 
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    
+    adf_pipeline_config_t pipeline_cfg = ADF_PIPELINE_CONFIG_DEFAULT();
+    pipeline_cfg.type = ADF_PIPELINE_TX;
+    pipeline_cfg.enable_local_output = true;  // Enable headphone monitoring
+    pipeline_cfg.opus_bitrate = OPUS_BITRATE;
+    pipeline_cfg.opus_complexity = OPUS_COMPLEXITY;
+    
+    tx_pipeline = adf_pipeline_create(&pipeline_cfg);
+    if (!tx_pipeline) {
+        ESP_LOGE(TAG, "Failed to create TX pipeline");
         return;
     }
+    
+    ESP_LOGI(TAG, "Audio pipeline created (heap: %lu bytes remaining)",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
+    // Initialize network layer (ESP-WIFI-MESH) - after audio pipeline
+    // WiFi/mesh stack consumes significant heap (~40KB)
+    ESP_LOGI(TAG, "Starting mesh network...");
+    ESP_ERROR_CHECK(network_init_mesh());
+    ESP_ERROR_CHECK(network_start_latency_measurement());
+
+    // Initialize watchdog
     esp_err_t wdt_err = esp_task_wdt_init(&(esp_task_wdt_config_t){
         .timeout_ms = 5000,
         .idle_core_mask = 0,
         .trigger_panic = true,
     });
-
     if (wdt_err == ESP_ERR_INVALID_STATE) {
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     } else {
@@ -143,27 +139,33 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     }
 
-    ESP_LOGI(TAG, "COMBO initialized, registering for network startup notification");
+    ESP_LOGI(TAG, "COMBO initialized, waiting for network...");
 
+    // Wait for network to be ready (event-driven, not polling)
+    // Use chunked waits to feed watchdog during mesh formation (can take 10+ seconds)
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
-    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (notify_value > 0) {
-        ESP_LOGI(TAG, "Network ready - starting audio transmission");
+    uint32_t notify_value = 0;
+    while (notify_value == 0) {
+        notify_value = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));  // Wait 1 second at a time
+        esp_task_wdt_reset();  // Feed watchdog while waiting
     }
+    ESP_LOGI(TAG, "Network ready - starting audio pipeline");
 
-    uint32_t bytes_sent = 0;
-    static uint16_t combo_seq = 0;
-    
-    // Real-time scheduling using esp_timer_get_time() instead of semaphore ticks
-    int64_t last_audio_ms = esp_timer_get_time() / 1000;
-    int64_t last_button_ms = last_audio_ms;
-    int64_t last_display_ms = last_audio_ms;
-    int64_t last_stats_ms = last_audio_ms;
-    static uint32_t frame_count = 0;
+    // Start the TX pipeline
+    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
+    status.audio_active = true;
+
+    ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+
+    // Main control loop - just handles UI, pipeline runs in separate tasks
+    int64_t last_button_ms = esp_timer_get_time() / 1000;
+    int64_t last_display_ms = last_button_ms;
+    int64_t last_stats_ms = last_button_ms;
 
     while (1) {
-        // Yield to other tasks briefly
-        vTaskDelay(pdMS_TO_TICKS(1));
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(10));
         
         int64_t now_ms = esp_timer_get_time() / 1000;
         
@@ -177,191 +179,39 @@ void app_main(void) {
                 ESP_LOGI(TAG, "View changed to %s",
                         current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
-                input_mode_t old_mode = status.input_mode;
                 status.input_mode = (status.input_mode + 1) % 3;
+                adf_input_mode_t adf_mode = (status.input_mode == INPUT_MODE_TONE) ? ADF_INPUT_MODE_TONE :
+                                            (status.input_mode == INPUT_MODE_USB) ? ADF_INPUT_MODE_USB :
+                                            ADF_INPUT_MODE_AUX;
+                adf_pipeline_set_input_mode(tx_pipeline, adf_mode);
                 ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
-
-#ifndef CONFIG_USE_ES8388
-                if (old_mode == INPUT_MODE_AUX && status.input_mode != INPUT_MODE_AUX) {
-                    adc_audio_stop();
-                } else if (old_mode != INPUT_MODE_AUX && status.input_mode == INPUT_MODE_AUX) {
-                    adc_audio_start();
-                }
-#endif
             }
         }
         
-        // Tone oscillation update (runs frequently for smooth modulation)
+        // Tone oscillation for test mode
         if (status.input_mode == INPUT_MODE_TONE) {
             update_tone_oscillate(now_ms);
         }
 
-        // Audio frame processing every AUDIO_FRAME_MS (10ms)
-        if (now_ms - last_audio_ms < AUDIO_FRAME_MS) {
-            esp_task_wdt_reset();
-            continue;
-        }
-        last_audio_ms += AUDIO_FRAME_MS;  // Advance by frame period to maintain timing
-        frame_count++;
-
-        status.audio_active = false;
-        
-        switch (status.input_mode) {
-        case INPUT_MODE_TONE:
-            tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
-            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                stereo_frame[i * 2] = stereo_frame[i * 2 + 1] = mono_frame[i];
-            }
-            pcm16_mono_to_pcm24_mono_pack(mono_frame, AUDIO_FRAME_SAMPLES, packet_buffer);
-            status.audio_active = true;
-            break;
-
-        case INPUT_MODE_USB:
-            if (usb_audio_is_active()) {
-                size_t frames_read;
-                usb_audio_read_frames(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
-                if (frames_read > 0) {
-                    pcm16_stereo_to_pcm24_mono_pack(stereo_frame, frames_read, packet_buffer);
-                    for (size_t i = frames_read; i < AUDIO_FRAME_SAMPLES; i++) {
-                        s24le_pack(0, &packet_buffer[i * 3]);
-                    }
-                    status.audio_active = true;
-                } else {
-                    memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
-                }
-            }
-            break;
-
-        case INPUT_MODE_AUX:
-            {
-                size_t samples_read = 0;
-#ifdef CONFIG_USE_ES8388
-                esp_err_t ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
-#else
-                esp_err_t ret = adc_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &samples_read);
-#endif
-
-                if (ret == ESP_OK && samples_read > 0) {
-                    if (samples_read < AUDIO_FRAME_SAMPLES) {
-                        int16_t last_left = stereo_frame[(samples_read - 1) * 2];
-                        int16_t last_right = stereo_frame[(samples_read - 1) * 2 + 1];
-                        for (size_t i = samples_read; i < AUDIO_FRAME_SAMPLES; i++) {
-                            stereo_frame[i * 2] = last_left;
-                            stereo_frame[i * 2 + 1] = last_right;
-                        }
-                    }
-
-                    int64_t sum_left = 0, sum_right = 0;
-                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        sum_left += stereo_frame[i * 2];
-                        sum_right += stereo_frame[i * 2 + 1];
-                    }
-                    int32_t mean_left = (int32_t)(sum_left / AUDIO_FRAME_SAMPLES);
-                    int32_t mean_right = (int32_t)(sum_right / AUDIO_FRAME_SAMPLES);
-
-                    int64_t var_left = 0, var_right = 0;
-                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        int32_t diff_l = stereo_frame[i * 2] - mean_left;
-                        int32_t diff_r = stereo_frame[i * 2 + 1] - mean_right;
-                        var_left += (int64_t)diff_l * diff_l;
-                        var_right += (int64_t)diff_r * diff_r;
-                    }
-                    int32_t std_left = (int32_t)sqrt(var_left / AUDIO_FRAME_SAMPLES);
-                    int32_t std_right = (int32_t)sqrt(var_right / AUDIO_FRAME_SAMPLES);
-                    int32_t std_avg = (std_left + std_right) / 2;
-
-                    const int32_t SIGNAL_THRESHOLD = 10;
-
-                    if ((frame_count & 0x3F) == 0) {
-                        ESP_LOGI(TAG, "AUX: STD=%ld, DC_L=%ld, DC_R=%ld", std_avg, mean_left, mean_right);
-                    }
-
-                    if (std_avg > SIGNAL_THRESHOLD) {
-                        pcm16_stereo_to_pcm24_mono_pack(stereo_frame, samples_read, packet_buffer);
-                        status.audio_active = true;
-                    } else {
-                        memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
-                        status.audio_active = false;
-                    }
-                } else {
-                    memset(packet_buffer, 0, AUDIO_FRAME_BYTES);
-                    status.audio_active = false;
-                    if (ret != ESP_OK) {
-                        ESP_LOGW(TAG, "AUX: read error: %s", esp_err_to_name(ret));
-                    }
-                }
-            }
-            break;
-
-        default:
-            break;
-        }
-
-        if (status.input_mode == INPUT_MODE_AUX || status.input_mode == INPUT_MODE_USB) {
-            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES * 2; i++) {
-                stereo_frame[i] = (int16_t)(stereo_frame[i] * status.output_volume);
-            }
-        }
-
-        // Output to local headphone monitor (ES8388 DAC or UDA1334)
-        if (status.audio_active) {
-#ifdef CONFIG_USE_ES8388
-            es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
-#else
-            i2s_audio_write_samples(stereo_frame, AUDIO_FRAME_SAMPLES * 2);
-#endif
-            if ((frame_count & 0x3F) == 0) {
-                ESP_LOGI(TAG, "Output frame to headphones");
-            }
-        } else {
-            memset(stereo_frame, 0, sizeof(stereo_frame));
-#ifdef CONFIG_USE_ES8388
-            es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
-#else
-            i2s_audio_write_samples(stereo_frame, AUDIO_FRAME_SAMPLES * 2);
-#endif
-        }
-
-        // Transmit to mesh network
-        if (status.audio_active && network_is_stream_ready()) {
-            net_frame_header_t hdr;
-            hdr.magic = NET_FRAME_MAGIC;
-            hdr.version = NET_FRAME_VERSION;
-            hdr.type = NET_PKT_TYPE_AUDIO_RAW;
-            hdr.stream_id = 1;
-            hdr.seq = htons(combo_seq++);
-            hdr.timestamp = htonl((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
-            hdr.payload_len = htons((uint16_t)AUDIO_FRAME_BYTES);
-            hdr.ttl = 6;
-            hdr.reserved = 0;
-
-            memcpy(framed_buffer, &hdr, NET_FRAME_HEADER_SIZE);
-            memcpy(framed_buffer + NET_FRAME_HEADER_SIZE, packet_buffer, AUDIO_FRAME_BYTES);
-
-            esp_err_t send_ret = network_send_audio(framed_buffer, NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-            if (send_ret == ESP_OK) {
-                bytes_sent += (NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-                if ((combo_seq & 0x7F) == 0) {
-                    ESP_LOGI(TAG, "Sent packet seq=%u (%d bytes)", ntohs(hdr.seq), NET_FRAME_HEADER_SIZE + AUDIO_FRAME_BYTES);
-                }
-            } else if (send_ret != ESP_ERR_MESH_DISCONNECTED) {
-                if ((combo_seq & 0x7F) == 0) {
-                    ESP_LOGW(TAG, "Failed to send: %s", esp_err_to_name(send_ret));
-                }
-            }
-        }
-
         // Stats update every 1000ms
         if (now_ms - last_stats_ms >= 1000) {
-            int64_t elapsed_ms = now_ms - last_stats_ms;
-            if (elapsed_ms > 0 && bytes_sent > 0) {
-                status.bandwidth_kbps = (bytes_sent * 8) / (uint32_t)elapsed_ms;
-            }
             status.connected_nodes = network_get_connected_nodes();
             status.rssi = network_get_rssi();
             status.latency_ms = network_get_latency_ms();
+            
+            // Get pipeline stats
+            adf_pipeline_stats_t stats;
+            if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
+                // Estimate bandwidth from frames processed (Opus ~100 bytes/frame @ 100fps)
+                status.bandwidth_kbps = (stats.frames_processed * 100 * 8) / 1000;
+                
+                ESP_LOGI(TAG, "Stats: nodes=%lu, rssi=%d, frames=%lu, drops=%lu, enc=%luus",
+                         status.connected_nodes, status.rssi,
+                         stats.frames_processed, stats.frames_dropped,
+                         stats.avg_encode_time_us);
+            }
+            
             last_stats_ms = now_ms;
-            bytes_sent = 0;
         }
 
         // Display update every 100ms
@@ -369,7 +219,5 @@ void app_main(void) {
             last_display_ms = now_ms;
             display_render_combo(current_view, &status);
         }
-
-        esp_task_wdt_reset();
     }
 }

@@ -106,6 +106,8 @@ static i2s_chan_handle_t i2s_rx_handle = NULL;
 static bool es8388_initialized = false;
 static bool dac_enabled = false;
 
+
+
 static esp_err_t es8388_write_reg(uint8_t reg, uint8_t val)
 {
     uint8_t data[2] = {reg, val};
@@ -194,6 +196,19 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     // Power on ADC
     res |= es8388_write_reg(ES8388_ADCPOWER, 0x00);     // Power on ADC, enable L/R input
     
+    // Verify ADC is powered on
+    uint8_t adc_power_readback = 0xFF;
+    es8388_read_reg(ES8388_ADCPOWER, &adc_power_readback);
+    ESP_LOGI(TAG, "ADC power register readback: 0x%02x (expected 0x00)", adc_power_readback);
+    
+    // Also read back ADC control registers to verify configuration
+    uint8_t adc_ctrl2 = 0, adc_ctrl4 = 0, adc_ctrl5 = 0;
+    es8388_read_reg(ES8388_ADCCONTROL2, &adc_ctrl2);
+    es8388_read_reg(ES8388_ADCCONTROL4, &adc_ctrl4);
+    es8388_read_reg(ES8388_ADCCONTROL5, &adc_ctrl5);
+    ESP_LOGI(TAG, "ADC config: CTRL2=0x%02x (input sel), CTRL4=0x%02x (format), CTRL5=0x%02x (fs)",
+             adc_ctrl2, adc_ctrl4, adc_ctrl5);
+    
     // Enable DAC if requested (for COMBO mode headphone output)
     if (enable_dac) {
         // Set output volume BEFORE I2S starts (I2C fails after due to MCLK EMI)
@@ -228,6 +243,8 @@ static esp_err_t i2s_init(bool enable_dac)
     ESP_LOGI(TAG, "Initializing I2S for ES8388");
     
     // Channel configuration - create both TX and RX on same port
+    // Using ESP-IDF defaults for DMA (dma_desc_num=6, dma_frame_num=240)
+    // Custom DMA config was causing I2S RX to return 0 bytes - revert to working state
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     
@@ -299,8 +316,10 @@ static esp_err_t i2s_init(bool enable_dac)
         }
     }
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit stereo, MCLK=GPIO%d", 
-             AUDIO_SAMPLE_RATE, ES8388_MCLK_IO);
+    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit stereo, MCLK=GPIO%d, DIN=GPIO%d", 
+             AUDIO_SAMPLE_RATE, ES8388_MCLK_IO, ES8388_DIN_IO);
+    ESP_LOGI(TAG, "I2S DMA: %d descriptors x %d frames = %d samples buffered",
+             I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM, I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM);
     
     return ESP_OK;
 }
@@ -342,6 +361,25 @@ esp_err_t es8388_audio_init(bool enable_dac)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S initialization failed");
         return ret;
+    }
+    
+    // Give codec time to sync to MCLK
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    // Re-enable ADC after I2S/MCLK is running
+    // The ES8388 may need MCLK active before ADC can fully start
+    // Note: I2C might fail due to MCLK EMI, but we try anyway
+    esp_err_t adc_ret = es8388_write_reg(ES8388_ADCPOWER, 0x00);
+    if (adc_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Post-MCLK ADC enable failed (I2C EMI) - may already be enabled");
+    } else {
+        ESP_LOGI(TAG, "ADC re-enabled after MCLK started");
+    }
+    
+    // Read back ADC power state
+    uint8_t adc_pwr = 0xFF;
+    if (es8388_read_reg(ES8388_ADCPOWER, &adc_pwr) == ESP_OK) {
+        ESP_LOGI(TAG, "ADC power after MCLK: 0x%02x", adc_pwr);
     }
     
     es8388_initialized = true;
@@ -396,8 +434,21 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
     size_t bytes_read = 0;
     size_t bytes_to_read = max_frames * 2 * sizeof(int16_t);  // stereo = 2 channels
     
+    // Use short timeout like working version - let caller handle partial reads
     esp_err_t ret = i2s_channel_read(i2s_rx_handle, stereo_buffer, bytes_to_read, 
-                                      &bytes_read, pdMS_TO_TICKS(10));
+                                      &bytes_read, pdMS_TO_TICKS(100));
+    
+    // Debug: Log actual bytes read periodically
+    static uint32_t read_count = 0;
+    static uint32_t zero_byte_count = 0;
+    read_count++;
+    if (bytes_read == 0 && ret == ESP_OK) {
+        zero_byte_count++;
+    }
+    if ((read_count % 500) == 0) {
+        ESP_LOGI(TAG, "I2S RX stats: reads=%lu, zero_bytes=%lu, last_ret=%d, last_bytes=%u",
+                 read_count, zero_byte_count, ret, (unsigned)bytes_read);
+    }
     
     if (ret == ESP_ERR_TIMEOUT) {
         *frames_read = 0;
@@ -414,10 +465,6 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
     return ESP_OK;
 }
 
-// Track consecutive I2S TX errors for recovery
-static int i2s_tx_error_count = 0;
-#define I2S_TX_ERROR_THRESHOLD 3
-
 esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
 {
     if (!es8388_initialized || !dac_enabled || !i2s_tx_handle) {
@@ -431,33 +478,26 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
     size_t bytes_written = 0;
     size_t bytes_to_write = frames * 2 * sizeof(int16_t);  // stereo = 2 channels
     
-    // Use 20ms timeout to prevent blocking indefinitely
+    // Use longer timeout (100ms) to ride through WiFi scan delays
+    // With 160ms DMA buffer, we have plenty of headroom
     esp_err_t ret = i2s_channel_write(i2s_tx_handle, stereo_buffer, bytes_to_write,
-                                       &bytes_written, pdMS_TO_TICKS(20));
+                                       &bytes_written, pdMS_TO_TICKS(100));
     
     if (ret == ESP_ERR_TIMEOUT) {
-        i2s_tx_error_count++;
-        
-        // After several consecutive timeouts, try to recover I2S channel
-        if (i2s_tx_error_count >= I2S_TX_ERROR_THRESHOLD) {
-            ESP_LOGW(TAG, "I2S TX timeout x%d, recovering channel...", i2s_tx_error_count);
-            
-            // Disable and re-enable the I2S TX channel to clear stuck state
-            i2s_channel_disable(i2s_tx_handle);
-            vTaskDelay(pdMS_TO_TICKS(5));
-            i2s_channel_enable(i2s_tx_handle);
-            
-            i2s_tx_error_count = 0;
-            ESP_LOGI(TAG, "I2S TX channel recovered");
+        // Timeout during WiFi activity is expected - just drop the frame
+        // The DMA buffer will continue playing, so this is usually inaudible
+        static uint32_t last_timeout_log = 0;
+        uint32_t now = xTaskGetTickCount();
+        if ((now - last_timeout_log) > pdMS_TO_TICKS(5000)) {
+            ESP_LOGW(TAG, "I2S TX timeout (WiFi activity?) - frame dropped");
+            last_timeout_log = now;
         }
-        return ESP_ERR_TIMEOUT;
+        return ESP_OK;  // Treat as success - DMA buffer keeps playing
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
         return ret;
     }
     
-    // Success - reset error counter
-    i2s_tx_error_count = 0;
     return ESP_OK;
 }
 

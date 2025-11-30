@@ -26,8 +26,9 @@ typedef struct {
 
 typedef struct {
     int rssi;
-    uint32_t latency_ms;
     uint32_t hops;
+    uint32_t latency_ms;     // RTT/2 from ping measurements
+    uint8_t buffer_pct;      // Jitter buffer fill percentage (0-100)
     bool receiving_audio;
     uint32_t bandwidth_kbps;
 } rx_status_t;
@@ -36,9 +37,10 @@ typedef struct {
     input_mode_t input_mode;
     bool audio_active;
     uint32_t connected_nodes;
-    uint32_t latency_ms;
     uint32_t bandwidth_kbps;
-    int rssi;
     uint32_t tone_freq_hz;
     float output_volume;
+    // Nearest child info (for root display)
+    int nearest_rssi;
+    uint32_t nearest_latency_ms;
 } combo_status_t;

@@ -7,6 +7,7 @@ idf_component_register(
         "src/tone_gen.c"
         "src/ring_buffer.c"
         "src/opus_codec.c"
+        "src/adf_pipeline.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver esp_adc
+    REQUIRES driver esp_adc esp-opus
 )

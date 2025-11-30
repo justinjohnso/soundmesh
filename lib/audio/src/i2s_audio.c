@@ -10,6 +10,8 @@ static i2s_chan_handle_t tx_handle = NULL;
 
 esp_err_t i2s_audio_init(void) {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
+    // Use default DMA config (6 desc × 240 frames = ~5.7KB) to save internal SRAM
+    // Custom DMA config (8 × 480 = ~15KB) causes task creation to fail due to OOM
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),

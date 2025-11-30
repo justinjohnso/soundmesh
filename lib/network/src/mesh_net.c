@@ -30,7 +30,16 @@ static bool is_mesh_root_ready = false;  // Track when root is fully initialized
 static uint8_t mesh_layer = 0;
 static int mesh_children_count = 0;
 static mesh_addr_t mesh_parent_addr;
-static uint32_t last_latency_measurement = 10; // Default 10ms
+static uint32_t measured_latency_ms = 0;       // RTT/2 from ping measurements
+static uint32_t last_ping_sent_ms = 0;         // Timestamp when last ping was sent
+static bool ping_pending = false;              // Waiting for pong response
+
+// Nearest child tracking (for root node display)
+static int8_t nearest_child_rssi = -100;       // Best RSSI from any child
+static uint32_t nearest_child_latency_ms = 0;  // RTT/2 to nearest child
+static mesh_addr_t nearest_child_addr;         // Address of nearest child
+static uint32_t last_child_ping_ms = 0;
+static bool child_ping_pending = false;
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -88,6 +97,9 @@ static void mark_seen(uint8_t stream_id, uint16_t seq);
 static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender);
 static void send_heartbeat(void);
 static void send_stream_announcement(void);
+static void send_pong(const mesh_addr_t *dest, uint32_t original_timestamp);
+static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
+static void handle_pong(const mesh_ping_t *pong);
 
 // Duplicate detection
 static bool is_duplicate(uint8_t stream_id, uint16_t seq) {
@@ -186,15 +198,19 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             // Root nodes ignore this - they have no real parent in standalone mesh
             break;
             
-        case MESH_EVENT_CHILD_CONNECTED:
-            ESP_LOGI(TAG, "Child connected");
-            mesh_children_count = esp_mesh_get_routing_table_size();
+        case MESH_EVENT_CHILD_CONNECTED: {
+            int new_count = esp_mesh_get_routing_table_size();
+            ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
+            mesh_children_count = new_count;
             break;
+        }
         
-        case MESH_EVENT_CHILD_DISCONNECTED:
-            ESP_LOGI(TAG, "Child disconnected");
-            mesh_children_count = esp_mesh_get_routing_table_size();
+        case MESH_EVENT_CHILD_DISCONNECTED: {
+            int new_count = esp_mesh_get_routing_table_size();
+            ESP_LOGI(TAG, "Child disconnected (routing table: %d)", new_count);
+            mesh_children_count = new_count;
             break;
+        }
         
         case MESH_EVENT_ROOT_FIXED:
             // IMPORTANT: ROOT_FIXED fires on ALL nodes when they join a mesh with a fixed root,
@@ -288,69 +304,161 @@ static void mesh_rx_task(void *arg) {
             continue;
         }
         
-        // Validate minimum frame size
-        if (data.size < NET_FRAME_HEADER_SIZE) {
-            ESP_LOGD(TAG, "Received too-small packet: %d bytes", data.size);
-            continue;
-        }
+        // Check first byte to determine packet type
+        // Control packets (heartbeat, ping, pong) have type as first byte
+        // Audio frames have magic (0xA5) as first byte
+        uint8_t first_byte = data.data[0];
         
-        // Parse frame header
-        net_frame_header_t *hdr = (net_frame_header_t *)data.data;
-        
-        // Validate frame magic
-        if (hdr->magic != NET_FRAME_MAGIC || hdr->version != NET_FRAME_VERSION) {
-            ESP_LOGD(TAG, "Invalid frame header: magic=0x%02x version=%d", hdr->magic, hdr->version);
-            continue;
-        }
-        
-        uint16_t seq = ntohs(hdr->seq);
-        
-        // Check for audio frames (both raw and Opus)
-        if (hdr->type == NET_PKT_TYPE_AUDIO_RAW || hdr->type == NET_PKT_TYPE_AUDIO_OPUS) {
-            // Debug: count audio frames received
-            static uint32_t audio_frames_rx = 0;
-            audio_frames_rx++;
-            if ((audio_frames_rx % 100) == 1) {
-                ESP_LOGI(TAG, "Audio frame RX #%lu: type=%u seq=%u ttl=%u size=%d callback=%s",
-                         audio_frames_rx, hdr->type, seq, hdr->ttl, data.size,
-                         audio_rx_callback ? "YES" : "NO");
+        if (first_byte == NET_PKT_TYPE_HEARTBEAT) {
+            // Heartbeat packet
+            if (is_mesh_root && data.size >= sizeof(mesh_heartbeat_t)) {
+                mesh_heartbeat_t *hb = (mesh_heartbeat_t *)data.data;
+                if (hb->rssi > nearest_child_rssi || nearest_child_rssi == -100) {
+                    nearest_child_rssi = hb->rssi;
+                    memcpy(&nearest_child_addr, &from, sizeof(mesh_addr_t));
+                    ESP_LOGI(TAG, "Child heartbeat: RSSI=%d dBm", nearest_child_rssi);
+                }
             }
-            
-            // Duplicate suppression for broadcast
-            if (is_duplicate(hdr->stream_id, seq)) {
-                ESP_LOGD(TAG, "Duplicate frame stream=%u seq=%u, dropping", hdr->stream_id, seq);
-                continue;
+        } else if (first_byte == NET_PKT_TYPE_PING) {
+            if (data.size >= sizeof(mesh_ping_t)) {
+                mesh_ping_t *ping = (mesh_ping_t *)data.data;
+                handle_ping(&from, ping);
             }
-            mark_seen(hdr->stream_id, seq);
-            
-            // Check TTL - drop if expired
-            if (hdr->ttl == 0) {
-                ESP_LOGD(TAG, "TTL expired for seq=%u, dropping", seq);
-                continue;
+        } else if (first_byte == NET_PKT_TYPE_PONG) {
+            if (data.size >= sizeof(mesh_ping_t)) {
+                mesh_ping_t *pong = (mesh_ping_t *)data.data;
+                handle_pong(pong);
             }
-            
-            // Decrement TTL and forward to children (tree broadcast)
-            hdr->ttl--;
-            forward_to_children(data.data, data.size, &from);
-            
-            // Call audio callback if registered (for RX nodes)
-            if (audio_rx_callback && data.size > NET_FRAME_HEADER_SIZE) {
-                uint8_t *payload = data.data + NET_FRAME_HEADER_SIZE;
-                uint16_t payload_len = ntohs(hdr->payload_len);
-                uint32_t timestamp = ntohl(hdr->timestamp);
-                audio_rx_callback(payload, payload_len, seq, timestamp);
-            }
-            
-            ESP_LOGD(TAG, "Audio frame type=%u stream=%u seq=%u ttl=%u received", 
-                     hdr->type, hdr->stream_id, seq, hdr->ttl);
-        } else if (hdr->type == NET_PKT_TYPE_HEARTBEAT) {
-            // Heartbeat messages - log for debugging
-            ESP_LOGD(TAG, "Heartbeat received");
-        } else if (hdr->type == NET_PKT_TYPE_STREAM_ANNOUNCE) {
-            // Stream announcement - log for debugging
+        } else if (first_byte == NET_PKT_TYPE_STREAM_ANNOUNCE) {
             ESP_LOGD(TAG, "Stream announcement received");
+        } else if (first_byte == NET_FRAME_MAGIC) {
+            // Audio frame with full header
+            if (data.size < NET_FRAME_HEADER_SIZE) {
+                continue;
+            }
+            
+            net_frame_header_t *hdr = (net_frame_header_t *)data.data;
+            if (hdr->version != NET_FRAME_VERSION) {
+                continue;
+            }
+            
+            uint16_t seq = ntohs(hdr->seq);
+            
+            if (hdr->type == NET_PKT_TYPE_AUDIO_RAW || hdr->type == NET_PKT_TYPE_AUDIO_OPUS) {
+                static uint32_t audio_frames_rx = 0;
+                audio_frames_rx++;
+                if ((audio_frames_rx % 100) == 1) {
+                    ESP_LOGI(TAG, "Audio frame RX #%lu: seq=%u size=%d",
+                             audio_frames_rx, seq, data.size);
+                }
+                
+                if (is_duplicate(hdr->stream_id, seq)) {
+                    continue;
+                }
+                mark_seen(hdr->stream_id, seq);
+                
+                if (hdr->ttl == 0) {
+                    continue;
+                }
+                
+                hdr->ttl--;
+                forward_to_children(data.data, data.size, &from);
+                
+                if (audio_rx_callback && data.size > NET_FRAME_HEADER_SIZE) {
+                    uint8_t *payload = data.data + NET_FRAME_HEADER_SIZE;
+                    uint16_t payload_len = ntohs(hdr->payload_len);
+                    uint32_t timestamp = ntohl(hdr->timestamp);
+                    audio_rx_callback(payload, payload_len, seq, timestamp);
+                }
+            }
         }
     }
+}
+
+// Handle incoming ping - respond with pong
+static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping) {
+    // Both root and children respond to pings
+    ESP_LOGD(TAG, "Ping received, sending pong");
+    send_pong(from, ntohl(ping->timestamp));
+}
+
+// Handle incoming pong - calculate RTT
+static void handle_pong(const mesh_ping_t *pong) {
+    uint32_t now_ms = esp_timer_get_time() / 1000;
+    uint32_t original_ts = ntohl(pong->timestamp);
+    
+    // Check if this is response to our ping (RX->root or root->child)
+    if (ping_pending && original_ts == last_ping_sent_ms) {
+        uint32_t rtt = now_ms - original_ts;
+        measured_latency_ms = rtt / 2;
+        ESP_LOGI(TAG, "Ping RTT: %lu ms, latency: %lu ms", rtt, measured_latency_ms);
+        ping_pending = false;
+    } else if (child_ping_pending && original_ts == last_child_ping_ms) {
+        uint32_t rtt = now_ms - original_ts;
+        nearest_child_latency_ms = rtt / 2;
+        ESP_LOGI(TAG, "Child ping RTT: %lu ms, latency: %lu ms", rtt, nearest_child_latency_ms);
+        child_ping_pending = false;
+    }
+}
+
+// Send pong response to a specific node
+static void send_pong(const mesh_addr_t *dest, uint32_t original_timestamp) {
+    mesh_ping_t pong;
+    pong.type = NET_PKT_TYPE_PONG;
+    pong.reserved[0] = 0;
+    pong.reserved[1] = 0;
+    pong.reserved[2] = 0;
+    pong.timestamp = htonl(original_timestamp);  // Echo back original timestamp
+    
+    mesh_data_t mesh_data = {
+        .data = (uint8_t *)&pong,
+        .size = sizeof(pong),
+        .proto = MESH_PROTO_BIN,
+        .tos = MESH_TOS_DEF
+    };
+    
+    esp_err_t err = esp_mesh_send(dest, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "Failed to send pong: %s", esp_err_to_name(err));
+    }
+}
+
+// Send ping to root (called by RX nodes)
+esp_err_t network_send_ping(void) {
+    if (is_mesh_root || !is_mesh_connected) {
+        return ESP_ERR_INVALID_STATE;  // Root doesn't ping itself
+    }
+    
+    if (ping_pending) {
+        return ESP_ERR_INVALID_STATE;  // Already waiting for response
+    }
+    
+    mesh_ping_t ping;
+    ping.type = NET_PKT_TYPE_PING;
+    ping.reserved[0] = 0;
+    ping.reserved[1] = 0;
+    ping.reserved[2] = 0;
+    
+    last_ping_sent_ms = esp_timer_get_time() / 1000;
+    ping.timestamp = htonl(last_ping_sent_ms);
+    
+    mesh_data_t mesh_data = {
+        .data = (uint8_t *)&ping,
+        .size = sizeof(ping),
+        .proto = MESH_PROTO_BIN,
+        .tos = MESH_TOS_DEF
+    };
+    
+    // Send to parent (which routes toward root)
+    esp_err_t err = esp_mesh_send(&mesh_parent_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    if (err == ESP_OK) {
+        ping_pending = true;
+        ESP_LOGI(TAG, "Ping sent to parent");
+    } else {
+        ESP_LOGW(TAG, "Ping send failed: %s", esp_err_to_name(err));
+    }
+    
+    return err;
 }
 
 // Initialize mesh network
@@ -727,11 +835,17 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
         .data = (uint8_t *)data,
         .size = len,
         .proto = MESH_PROTO_BIN,
-        .tos = MESH_TOS_DEF  // High priority for control
+        .tos = MESH_TOS_DEF
     };
     
-    // Use MESH_DATA_P2P for intra-mesh communication (standalone mesh)
-    esp_err_t err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P, NULL, 0);
+    esp_err_t err;
+    if (is_mesh_root) {
+        // Root broadcasts to all children
+        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    } else {
+        // Children send to parent (toward root)
+        err = esp_mesh_send(&mesh_parent_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    }
     
     if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
         ESP_LOGD(TAG, "Control send failed: %s", esp_err_to_name(err));
@@ -762,7 +876,11 @@ int network_get_rssi(void) {
 }
 
 uint32_t network_get_latency_ms(void) {
-    return last_latency_measurement;
+    return measured_latency_ms;  // RTT/2 from ping measurements
+}
+
+bool network_is_connected(void) {
+    return is_mesh_connected || is_mesh_root;
 }
 
 bool network_is_stream_ready(void) {
@@ -771,8 +889,58 @@ bool network_is_stream_ready(void) {
 }
 
 uint32_t network_get_connected_nodes(void) {
-    // This is an approximation - in true mesh, we'd need to query all nodes
-    return mesh_children_count + 1;
+    // Return number of other nodes in mesh (excluding self)
+    // Routing table contains all descendants (children, grandchildren, etc.)
+    return esp_mesh_get_routing_table_size();
+}
+
+int network_get_nearest_child_rssi(void) {
+    return nearest_child_rssi;
+}
+
+uint32_t network_get_nearest_child_latency_ms(void) {
+    return nearest_child_latency_ms;
+}
+
+esp_err_t network_ping_nearest_child(void) {
+    if (!is_mesh_root) {
+        return ESP_ERR_INVALID_STATE;  // Only root pings children
+    }
+    
+    if (child_ping_pending) {
+        return ESP_ERR_INVALID_STATE;  // Already waiting
+    }
+    
+    // Need at least one child to ping
+    int route_size = esp_mesh_get_routing_table_size();
+    if (route_size == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    mesh_ping_t ping;
+    ping.type = NET_PKT_TYPE_PING;
+    ping.reserved[0] = 0;
+    ping.reserved[1] = 0;
+    ping.reserved[2] = 0;
+    
+    last_child_ping_ms = esp_timer_get_time() / 1000;
+    ping.timestamp = htonl(last_child_ping_ms);
+    
+    mesh_data_t mesh_data = {
+        .data = (uint8_t *)&ping,
+        .size = sizeof(ping),
+        .proto = MESH_PROTO_BIN,
+        .tos = MESH_TOS_DEF
+    };
+    
+    // Send to nearest child (tracked from heartbeats)
+    esp_err_t err = esp_mesh_send(&nearest_child_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    if (err == ESP_OK) {
+        child_ping_pending = true;
+        ESP_LOGD(TAG, "Ping sent to nearest child");
+    }
+    
+    return err;
 }
 
 // Register callback for audio frame reception (used by RX nodes)
@@ -782,9 +950,4 @@ esp_err_t network_register_audio_callback(network_audio_callback_t callback) {
     return ESP_OK;
 }
 
-esp_err_t network_start_latency_measurement(void) {
-    // Mesh latency can be estimated from hop count
-    // For now, use a simple formula: 5ms per hop
-    last_latency_measurement = mesh_layer * 5;
-    return ESP_OK;
-}
+

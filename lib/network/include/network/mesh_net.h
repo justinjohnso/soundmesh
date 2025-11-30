@@ -33,11 +33,17 @@ uint8_t network_get_layer(void);
 uint32_t network_get_children_count(void);
 
 // Network status
-esp_err_t network_start_latency_measurement(void);
 int network_get_rssi(void);
-uint32_t network_get_latency_ms(void);
+uint32_t network_get_latency_ms(void);   // RTT/2 from ping measurements
 uint32_t network_get_connected_nodes(void);
 bool network_is_stream_ready(void);  // True when connected to mesh
+bool network_is_connected(void);     // True when connected to mesh (non-root) or root
+esp_err_t network_send_ping(void);   // Send ping to root (RX nodes only)
+
+// Root node: info about nearest child
+int network_get_nearest_child_rssi(void);
+uint32_t network_get_nearest_child_latency_ms(void);
+esp_err_t network_ping_nearest_child(void);  // Root pings nearest child
 
 // Network framing header (aligned with mesh-network-architecture.md)
 #define NET_FRAME_MAGIC 0xA5
@@ -49,7 +55,16 @@ typedef enum {
 	NET_PKT_TYPE_STREAM_ANNOUNCE = 3,
 	NET_PKT_TYPE_CONTROL = 0x10,
 	NET_PKT_TYPE_AUDIO_OPUS = 0x11,  // Opus-compressed audio frame
+	NET_PKT_TYPE_PING = 0x20,        // Latency measurement request
+	NET_PKT_TYPE_PONG = 0x21,        // Latency measurement response
 } net_pkt_type_t;
+
+// Ping/Pong packet for RTT measurement
+typedef struct __attribute__((packed)) {
+	uint8_t type;           // PING or PONG
+	uint8_t reserved[3];    // Padding for alignment
+	uint32_t timestamp;     // Sender's local timestamp (ms)
+} mesh_ping_t;
 
 // Audio frame header (14 bytes, aligned for mesh)
 // CRITICAL: This MUST match sizeof(net_frame_header_t)!

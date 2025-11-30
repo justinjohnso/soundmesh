@@ -23,11 +23,16 @@ static const char *TAG = "rx_main";
 
 static rx_status_t status = {
     .rssi = -100,
+    .hops = 0,
     .latency_ms = 0,
-    .hops = 1,
+    .buffer_pct = 0,
     .receiving_audio = false,
     .bandwidth_kbps = 0
 };
+
+// Bandwidth tracking (per-second rate, not cumulative)
+static uint32_t bytes_received_this_second = 0;
+static uint32_t last_bandwidth_update = 0;
 
 static display_view_t current_view = DISPLAY_VIEW_NETWORK;
 static adf_pipeline_handle_t rx_pipeline = NULL;
@@ -60,6 +65,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
         if (ret == ESP_OK) {
             status.receiving_audio = true;
             packets_received++;
+            bytes_received_this_second += len;  // Track bytes for bandwidth calc
             last_packet_time = xTaskGetTickCount();
             
             if ((packets_received & 0x7F) == 0) {
@@ -111,7 +117,6 @@ void app_main(void) {
     // WiFi/mesh stack consumes significant heap (~40KB)
     ESP_LOGI(TAG, "Starting mesh network...");
     ESP_ERROR_CHECK(network_init_mesh());
-    ESP_ERROR_CHECK(network_start_latency_measurement());
 
     // Register audio callback for mesh audio reception
     ESP_ERROR_CHECK(network_register_audio_callback(audio_rx_callback));
@@ -154,21 +159,33 @@ void app_main(void) {
             status.rssi = network_get_rssi();
             status.latency_ms = network_get_latency_ms();
             
-            // Get pipeline stats
+            // Send ping to measure latency (every stats update)
+            network_send_ping();
+            
+            // Hops = layer - 1 when connected (layer 1 = 0 hops to root)
+            uint8_t layer = network_get_layer();
+            if (network_is_connected() && layer > 0) {
+                status.hops = layer - 1;
+            } else {
+                status.hops = 0;
+            }
+            
+            // Calculate bandwidth rate (bytes this second * 8 / 1000 = kbps)
+            status.bandwidth_kbps = (bytes_received_this_second * 8) / 1000;
+            bytes_received_this_second = 0;
+            
+            // Get pipeline stats for buffer fill
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(rx_pipeline, &stats) == ESP_OK) {
-                // Estimate bandwidth: packets × ~100 bytes × 8 bits / 1000 = kbps
-                status.bandwidth_kbps = (packets_received * 100 * 8) / 1000;
+                status.buffer_pct = stats.buffer_fill_percent;
                 
-                // Log stats
                 float loss_pct = 0.0f;
                 if (packets_received + dropped_packets > 0) {
                     loss_pct = (100.0f * dropped_packets) / (packets_received + dropped_packets);
                 }
-                ESP_LOGI(TAG, "Stats: RX=%lu, DROP=%lu (%.1f%%), underrun=%lu, dec=%luus, buf=%u%%", 
+                ESP_LOGI(TAG, "Stats: RX=%lu, DROP=%lu (%.1f%%), ping=%lums, buf=%u%%", 
                          packets_received, dropped_packets, loss_pct,
-                         stats.buffer_underruns, stats.avg_decode_time_us,
-                         stats.buffer_fill_percent);
+                         status.latency_ms, stats.buffer_fill_percent);
             }
             
             last_stats_update = now;

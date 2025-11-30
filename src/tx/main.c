@@ -86,7 +86,6 @@ void app_main(void) {
     // Initialize network layer (ESP-WIFI-MESH)
     ESP_LOGI(TAG, "Starting mesh network...");
     ESP_ERROR_CHECK(network_init_mesh());
-    ESP_ERROR_CHECK(network_start_latency_measurement());
 
     // Initialize audio sources
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));

@@ -37,12 +37,16 @@ static combo_status_t status = {
     .input_mode = INPUT_MODE_AUX,
     .audio_active = false,
     .connected_nodes = 0,
-    .latency_ms = 10,
     .bandwidth_kbps = 0,
-    .rssi = 0,
     .tone_freq_hz = 440,
-    .output_volume = 1.0f
+    .output_volume = 1.0f,
+    .nearest_rssi = -100,
+    .nearest_latency_ms = 0
 };
+
+// Bandwidth tracking - track frames processed in last second
+static uint32_t frames_last_second = 0;
+static uint32_t last_frames_processed = 0;
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t tx_pipeline = NULL;
@@ -124,7 +128,6 @@ void app_main(void) {
     // WiFi/mesh stack consumes significant heap (~40KB)
     ESP_LOGI(TAG, "Starting mesh network...");
     ESP_ERROR_CHECK(network_init_mesh());
-    ESP_ERROR_CHECK(network_start_latency_measurement());
 
     // Initialize watchdog
     esp_err_t wdt_err = esp_task_wdt_init(&(esp_task_wdt_config_t){
@@ -196,19 +199,25 @@ void app_main(void) {
         // Stats update every 1000ms
         if (now_ms - last_stats_ms >= 1000) {
             status.connected_nodes = network_get_connected_nodes();
-            status.rssi = network_get_rssi();
-            status.latency_ms = network_get_latency_ms();
+            status.nearest_rssi = network_get_nearest_child_rssi();
+            status.nearest_latency_ms = network_get_nearest_child_latency_ms();
+            
+            // Ping nearest child for latency measurement
+            network_ping_nearest_child();
             
             // Get pipeline stats
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
-                // Estimate bandwidth from frames processed (Opus ~100 bytes/frame @ 100fps)
-                status.bandwidth_kbps = (stats.frames_processed * 100 * 8) / 1000;
+                // Calculate frames processed in last second (rate, not cumulative)
+                frames_last_second = stats.frames_processed - last_frames_processed;
+                last_frames_processed = stats.frames_processed;
                 
-                ESP_LOGI(TAG, "Stats: nodes=%lu, rssi=%d, frames=%lu, drops=%lu, enc=%luus",
-                         status.connected_nodes, status.rssi,
-                         stats.frames_processed, stats.frames_dropped,
-                         stats.avg_encode_time_us);
+                // Bandwidth: frames/sec × ~100 bytes/frame × 8 bits/byte / 1000 = kbps
+                status.bandwidth_kbps = (frames_last_second * 100 * 8) / 1000;
+                
+                ESP_LOGI(TAG, "Stats: nodes=%lu, nearest=%ddBm/%lums, frames=%lu, bw=%lukbps",
+                         status.connected_nodes, status.nearest_rssi, status.nearest_latency_ms,
+                         stats.frames_processed, status.bandwidth_kbps);
             }
             
             last_stats_ms = now_ms;

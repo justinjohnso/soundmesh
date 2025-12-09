@@ -14,8 +14,13 @@
 #include "control/buttons.h"
 #include "control/status.h"
 #include "network/mesh_net.h"
-#include "audio/i2s_audio.h"
 #include "audio/adf_pipeline.h"
+
+#ifdef CONFIG_USE_ES8388
+#include "audio/es8388_audio.h"
+#else
+#include "audio/i2s_audio.h"
+#endif
 #include <string.h>
 #include <netinet/in.h>
 
@@ -99,8 +104,14 @@ void app_main(void) {
     ESP_LOGI(TAG, "display_init() returned");
     ESP_ERROR_CHECK(buttons_init());
 
-    // Initialize audio output (UDA1334 or similar I2S DAC)
+    // Initialize audio output
+#ifdef CONFIG_USE_ES8388
+    ESP_LOGI(TAG, "Audio output: ES8388 headphone DAC");
+    ESP_ERROR_CHECK(es8388_audio_init(true));
+#else
+    ESP_LOGI(TAG, "Audio output: UDA1334 I2S DAC");
     ESP_ERROR_CHECK(i2s_audio_init());
+#endif
 
     // Create RX pipeline with Opus decoding BEFORE network init
     // Opus decoder needs ~12KB heap - allocate before WiFi/mesh consumes heap
@@ -130,15 +141,16 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "RX initialized, waiting for network...");
 
+    // Start the RX pipeline BEFORE waiting for network (for tone test / immediate audio)
+    ESP_LOGI(TAG, "Starting audio pipeline...");
+    ESP_ERROR_CHECK(adf_pipeline_start(rx_pipeline));
+
     // Wait for network to be stream-ready via event notification
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
     uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (notify_value > 0) {
-        ESP_LOGI(TAG, "Network ready - starting audio pipeline");
+        ESP_LOGI(TAG, "Network ready");
     }
-
-    // Start the RX pipeline
-    ESP_ERROR_CHECK(adf_pipeline_start(rx_pipeline));
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));

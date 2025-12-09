@@ -89,7 +89,9 @@ void app_main(void) {
 #endif
 
     // Initialize control layer
-    ESP_ERROR_CHECK(display_init());
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display init failed, continuing without display");
+    }
     ESP_ERROR_CHECK(buttons_init());
 
     // Initialize audio sources (tone generator, USB)

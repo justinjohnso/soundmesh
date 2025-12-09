@@ -174,9 +174,11 @@
 // Audio Output Configuration
 // ============================================================================
 
-// RX output volume scaling (0.0-1.0) - reduces level to prevent clipping on DACs
+// RX output volume scaling (0.0+) - amplifies/reduces level for DAC output
 // UDA1334 and similar I2S DACs have no hardware volume control
-#define RX_OUTPUT_VOLUME           0.5f   // 50% = -6dB (reduce if audio clips)
+// Increase if audio is too quiet, decrease if it clips (distorts)
+// Start at 2.0x to compensate for quiet Opus decoder output
+#define RX_OUTPUT_VOLUME           2.0f   // 200% = +6dB amplification
 
 // ============================================================================
 // Memory Monitoring Thresholds

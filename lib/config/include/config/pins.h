@@ -17,6 +17,7 @@
 // ============================================================================
 // I2S pins for UDA1334 DAC (RX only - receives from mesh network)
 // ============================================================================
+#define I2S_MCLK_IO            GPIO_NUM_1   // Master clock to UDA1334 (GPIO1/A0, not used by ES8388 in RX build)
 #define I2S_BCK_IO             GPIO_NUM_7
 #define I2S_WS_IO              GPIO_NUM_8
 #define I2S_DO_IO              GPIO_NUM_9

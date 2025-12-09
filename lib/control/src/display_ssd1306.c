@@ -173,6 +173,23 @@ esp_err_t display_init(void) {
     ESP_LOGI(TAG, "I2C pins: SDA=%d, SCL=%d, freq=%d Hz, addr=0x%02x", 
              I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, I2C_MASTER_FREQ_HZ, SSD1306_I2C_ADDR);
     
+    // Check I2C bus state before initialization (diagnostic)
+    gpio_config_t gpio_diag = {
+        .pin_bit_mask = (1ULL << I2C_MASTER_SCL_IO) | (1ULL << I2C_MASTER_SDA_IO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    if (gpio_config(&gpio_diag) == ESP_OK) {
+        uint8_t scl_pre = gpio_get_level(I2C_MASTER_SCL_IO);
+        uint8_t sda_pre = gpio_get_level(I2C_MASTER_SDA_IO);
+        ESP_LOGI(TAG, "I2C bus pre-init state: SCL=%d, SDA=%d", scl_pre, sda_pre);
+        if (scl_pre == 0 || sda_pre == 0) {
+            ESP_LOGW(TAG, "WARNING: I2C bus line(s) stuck LOW before init - check ES8388 driver, pull-ups, or display power");
+        }
+    }
+    
     // Initialize I2C
     i2c_config_t i2c_conf = {
     .mode = I2C_MODE_MASTER,

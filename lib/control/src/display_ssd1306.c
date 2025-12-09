@@ -2,6 +2,8 @@
 #include "config/pins.h"
 #include <esp_log.h>
 #include <driver/i2c.h>
+#include <driver/gpio.h>
+#include <freertos/task.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -13,6 +15,9 @@ static void display_update(void);
 
 // SSD1306 I2C address
 #define SSD1306_I2C_ADDR 0x3C
+
+// Display initialization status
+static bool display_initialized = false;
 
 // SSD1306 commands
 #define SSD1306_CMD_DISPLAY_OFF 0xAE
@@ -139,7 +144,11 @@ static const uint8_t font5x7[][5] = {
 // I2C write command
 static esp_err_t ssd1306_write_command(uint8_t cmd) {
     uint8_t data[2] = {0x00, cmd};  // 0x00 = command mode
-    return i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, data, 2, pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, data, 2, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C write command 0x%02x failed: %s", cmd, esp_err_to_name(ret));
+    }
+    return ret;
 }
 
 // I2C write data (static buffer to avoid malloc/free on every update)
@@ -151,12 +160,18 @@ static esp_err_t ssd1306_write_data(const uint8_t *data, size_t len) {
     i2c_tx_buffer[0] = 0x40;  // 0x40 = data mode
     memcpy(&i2c_tx_buffer[1], data, len);
     
-    return i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, i2c_tx_buffer, len + 1, pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, i2c_tx_buffer, len + 1, pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C write data (%zu bytes) failed: %s", len, esp_err_to_name(ret));
+    }
+    return ret;
 }
 
 // Initialize SSD1306
 esp_err_t display_init(void) {
     ESP_LOGI(TAG, "Initializing SSD1306 display...");
+    ESP_LOGI(TAG, "I2C pins: SDA=%d, SCL=%d, freq=%d Hz, addr=0x%02x", 
+             I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO, I2C_MASTER_FREQ_HZ, SSD1306_I2C_ADDR);
     
     // Initialize I2C
     i2c_config_t i2c_conf = {
@@ -167,20 +182,159 @@ esp_err_t display_init(void) {
     .scl_pullup_en = GPIO_PULLUP_ENABLE,
     .master.clk_speed = I2C_MASTER_FREQ_HZ,
     };
+    
+    ESP_LOGI(TAG, "Calling i2c_param_config with num=%d, sda=%d, scl=%d", 
+             I2C_MASTER_NUM, I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+    
     esp_err_t err;
     err = i2c_param_config(I2C_MASTER_NUM, &i2c_conf);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(err));
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "I2C param config failed: %s (0x%x). Attempting I2C recovery...", 
+                 esp_err_to_name(err), err);
+        // Try to delete existing driver and reinitialize
+        i2c_driver_delete(I2C_MASTER_NUM);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        err = i2c_param_config(I2C_MASTER_NUM, &i2c_conf);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "I2C param config still failed after recovery: %s", esp_err_to_name(err));
+            return ESP_FAIL;
+        }
     }
+    ESP_LOGI(TAG, "I2C param config OK");
+    
+    ESP_LOGI(TAG, "Calling i2c_driver_install");
     err = i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "I2C driver install failed: %s (0x%x). Bus may be stuck.", 
+                 esp_err_to_name(err), err);
+        // If driver install fails, try hardware reset by toggling SCL
+        gpio_config_t gpio_conf = {
+            .pin_bit_mask = (1ULL << I2C_MASTER_SCL_IO),
+            .mode = GPIO_MODE_OUTPUT_OD,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE
+        };
+        if (gpio_config(&gpio_conf) == ESP_OK) {
+            ESP_LOGI(TAG, "Attempting I2C bus recovery via SCL toggle...");
+            for (int i = 0; i < 9; i++) {
+                gpio_set_level(I2C_MASTER_SCL_IO, 0);
+                vTaskDelay(pdMS_TO_TICKS(10));
+                gpio_set_level(I2C_MASTER_SCL_IO, 1);
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            // Reconfigure SCL as I2C
+            gpio_conf.mode = GPIO_MODE_INPUT_OUTPUT_OD;
+            gpio_config(&gpio_conf);
+            
+            // Try driver install again
+            err = i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "I2C driver install failed even after bus recovery: %s", esp_err_to_name(err));
+                return ESP_FAIL;
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to configure SCL for recovery");
+            return ESP_FAIL;
+        }
     }
+    ESP_LOGI(TAG, "I2C driver installed OK");
     
     // Power-up delay (SSD1306 datasheet recommendation)
     vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "Power-up delay done, starting I2C test");
+    
+    // Test I2C communication with SSD1306 by sending a simple command
+    uint8_t test_data[2] = {0x00, 0xAE};  // Command mode, DISPLAY_OFF
+    esp_err_t test_err = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, test_data, 2, pdMS_TO_TICKS(100));
+    if (test_err != ESP_OK) {
+        ESP_LOGE(TAG, "I2C test write failed: %s (0x%x) - Attempting bus reset recovery", 
+                 esp_err_to_name(test_err), test_err);
+        
+        // Delete driver and perform full bus recovery
+        i2c_driver_delete(I2C_MASTER_NUM);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // Perform bit-banging bus recovery: 9 clock pulses + STOP condition
+        // This is the standard I2C bus recovery procedure (UM10204 Section 3.1.16)
+        gpio_config_t gpio_conf = {
+            .pin_bit_mask = (1ULL << I2C_MASTER_SCL_IO) | (1ULL << I2C_MASTER_SDA_IO),
+            .mode = GPIO_MODE_OUTPUT_OD,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE
+        };
+        if (gpio_config(&gpio_conf) == ESP_OK) {
+            ESP_LOGI(TAG, "Performing I2C bus bit-bang recovery (9 clock pulses + STOP)...");
+            
+            // Read initial line state
+            uint8_t scl = gpio_get_level(I2C_MASTER_SCL_IO);
+            uint8_t sda = gpio_get_level(I2C_MASTER_SDA_IO);
+            ESP_LOGI(TAG, "I2C bus state before recovery: SCL=%d, SDA=%d", scl, sda);
+            
+            // Release both lines initially
+            gpio_set_level(I2C_MASTER_SDA_IO, 1);
+            gpio_set_level(I2C_MASTER_SCL_IO, 1);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            
+            // 9 clock pulses: toggle SCL while holding SDA high
+            for (int i = 0; i < 9; i++) {
+                gpio_set_level(I2C_MASTER_SCL_IO, 0);
+                vTaskDelay(pdMS_TO_TICKS(5));
+                gpio_set_level(I2C_MASTER_SCL_IO, 1);
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+            
+            // Generate STOP condition: transition SDA from low to high while SCL is high
+            // This signals end of transaction and resets slave devices
+            gpio_set_level(I2C_MASTER_SDA_IO, 0);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            gpio_set_level(I2C_MASTER_SCL_IO, 1);  // SCL high
+            vTaskDelay(pdMS_TO_TICKS(5));
+            gpio_set_level(I2C_MASTER_SDA_IO, 1);  // SDA transitions high (STOP)
+            vTaskDelay(pdMS_TO_TICKS(10));
+            
+            scl = gpio_get_level(I2C_MASTER_SCL_IO);
+            sda = gpio_get_level(I2C_MASTER_SDA_IO);
+            ESP_LOGI(TAG, "I2C bus state after recovery: SCL=%d, SDA=%d", scl, sda);
+            
+            // Reconfigure as I2C (open-drain mode)
+            gpio_conf.mode = GPIO_MODE_INPUT_OUTPUT_OD;
+            gpio_config(&gpio_conf);
+            ESP_LOGI(TAG, "GPIO pins reconfigured as I2C");
+        } else {
+            ESP_LOGE(TAG, "Failed to configure GPIO for I2C recovery");
+        }
+        
+        // Reinstall driver
+        vTaskDelay(pdMS_TO_TICKS(50));
+        err = i2c_param_config(I2C_MASTER_NUM, &i2c_conf);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "I2C param config failed after recovery: %s", esp_err_to_name(err));
+            return ESP_FAIL;
+        }
+        
+        err = i2c_driver_install(I2C_MASTER_NUM, I2C_MODE_MASTER, 0, 0, 0);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "I2C driver install failed after recovery: %s", esp_err_to_name(err));
+            return ESP_FAIL;
+        }
+        
+        // Wait and retry the test write
+        vTaskDelay(pdMS_TO_TICKS(100));
+        test_err = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, test_data, 2, pdMS_TO_TICKS(100));
+        if (test_err != ESP_OK) {
+            ESP_LOGE(TAG, "CRITICAL: I2C test write failed after recovery: %s - SSD1306 at 0x%02x may not be responding or not connected", 
+                     esp_err_to_name(test_err), SSD1306_I2C_ADDR);
+            ESP_LOGE(TAG, "Display will be disabled. Check I2C wiring and continuity on GPIO5 (SDA) and GPIO6 (SCL)");
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "I2C test write successful after bus recovery!");
+    } else {
+        ESP_LOGI(TAG, "I2C test write successful - device is responding!");
+    }
+    
+    ESP_LOGI(TAG, "I2C test passed, starting init sequence");
     
     // SSD1306 initialization sequence for 128x32 display
     ssd1306_write_command(SSD1306_CMD_DISPLAY_OFF);
@@ -208,11 +362,16 @@ esp_err_t display_init(void) {
     ssd1306_write_command(SSD1306_CMD_ENTIRE_DISPLAY_ON_RESUME);
     ssd1306_write_command(SSD1306_CMD_NORMAL_DISPLAY);
     ssd1306_write_command(SSD1306_CMD_DISPLAY_ON);
+    ESP_LOGI(TAG, "Init sequence complete");
     
     display_clear();
-    display_update();  // Initial clear
+    ESP_LOGI(TAG, "Display buffer cleared");
     
-    ESP_LOGI(TAG, "SSD1306 display initialized (128x%d)", DISPLAY_HEIGHT);
+    display_update();  // Initial clear
+    ESP_LOGI(TAG, "Initial display update done");
+    
+    display_initialized = true;
+    ESP_LOGI(TAG, "SSD1306 display initialized (128x%d) - display_initialized = true", DISPLAY_HEIGHT);
     return ESP_OK;
 }
 
@@ -223,19 +382,69 @@ void display_clear(void) {
 
 // Update display from buffer (page-by-page to avoid large I2C writes)
 static void display_update(void) {
+    if (!display_initialized) {
+        ESP_LOGW(TAG, "display_update called but display not initialized!");
+        return;
+    }
+    
+    // Check if buffer has any non-zero data (every 5 seconds)
+    static uint32_t last_buffer_check = 0;
+    uint32_t now = xTaskGetTickCount();
+    if ((now - last_buffer_check) >= pdMS_TO_TICKS(5000)) {
+        uint32_t buffer_nonzero_count = 0;
+        for (int i = 0; i < DISPLAY_WIDTH * DISPLAY_PAGES; i++) {
+            if (display_buffer[i] != 0) buffer_nonzero_count++;
+        }
+        ESP_LOGI(TAG, "display_update: buffer has %lu non-zero bytes out of %u", 
+                 buffer_nonzero_count, DISPLAY_WIDTH * DISPLAY_PAGES);
+        last_buffer_check = now;
+    }
+    
     for (uint8_t page = 0; page < DISPLAY_PAGES; page++) {
         // Set column address range
-        ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
-        ssd1306_write_command(0);  // Start column
-        ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
+        esp_err_t err = ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set column addr start for page %u: %s", page, esp_err_to_name(err));
+            continue;
+        }
+        
+        err = ssd1306_write_command(0);  // Start column
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to write column start: %s", esp_err_to_name(err));
+            continue;
+        }
+        
+        err = ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to write column end: %s", esp_err_to_name(err));
+            continue;
+        }
         
         // Set page address range
-        ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
-        ssd1306_write_command(page);  // Start page
-        ssd1306_write_command(page);  // End page (same)
+        err = ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set page addr cmd: %s", esp_err_to_name(err));
+            continue;
+        }
+        
+        err = ssd1306_write_command(page);  // Start page
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to write page start %u: %s", page, esp_err_to_name(err));
+            continue;
+        }
+        
+        err = ssd1306_write_command(page);  // End page (same)
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to write page end %u: %s", page, esp_err_to_name(err));
+            continue;
+        }
         
         // Write one page (128 bytes)
-        ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
+        err = ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to write pixel data for page %u: %s", page, esp_err_to_name(err));
+            continue;
+        }
     }
 }
 
@@ -335,50 +544,70 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
 
 // Render RX display
 void display_render_rx(display_view_t view, const rx_status_t *status) {
-display_clear();
-
-static uint32_t animation_counter = 0;
-animation_counter++;
-
-if (view == DISPLAY_VIEW_NETWORK) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
-    display_draw_string(0, 0, buf);
-
-    snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
-    display_draw_string(0, 1, buf);
-
-    if (status->rssi == -100) {
-        display_draw_string(0, 2, "RSSI: -- dBm");
-    } else {
-        snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-        display_draw_string(0, 2, buf);
+    static uint32_t call_count = 0;
+    static uint32_t last_detailed_log = 0;
+    uint32_t now = xTaskGetTickCount();
+    
+    if (!display_initialized) {
+        if ((call_count++ & 0xFF) == 0) {  // Log once every ~256 calls to reduce spam
+            ESP_LOGW(TAG, "display_render_rx called but display not initialized! (count=%lu)", call_count);
+        }
+        return;
     }
-} else {
-    const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
-    display_draw_string(0, 0, state_str);
+    
+    call_count++;
+    
+    // Log every 50 calls (~5 seconds at 10Hz) with detailed info
+    if ((now - last_detailed_log) >= pdMS_TO_TICKS(5000)) {
+        ESP_LOGI(TAG, "display_render_rx: count=%lu, view=%d, rssi=%d, latency=%lu, receiving=%d", 
+                 call_count, view, status->rssi, status->latency_ms, status->receiving_audio);
+        last_detailed_log = now;
+    }
+    
+    display_clear();
+    
+    static uint32_t animation_counter = 0;
+    animation_counter++;
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
-    display_draw_string(0, 2, buf);
+    if (view == DISPLAY_VIEW_NETWORK) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
+        display_draw_string(0, 0, buf);
 
-    if (status->receiving_audio) {
-        for (int x = 0; x < DISPLAY_WIDTH; x++) {
-            float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-            int y = 16 + (int)(sinf(phase) * 10.0f);
-            if (y >= 0 && y < DISPLAY_HEIGHT) {
+        snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
+        display_draw_string(0, 1, buf);
+
+        if (status->rssi == -100) {
+            display_draw_string(0, 2, "RSSI: -- dBm");
+        } else {
+            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+            display_draw_string(0, 2, buf);
+        }
+    } else {
+        const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
+        display_draw_string(0, 0, state_str);
+
+        char buf[32];
+        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 2, buf);
+
+        if (status->receiving_audio) {
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+                int y = 16 + (int)(sinf(phase) * 10.0f);
+                if (y >= 0 && y < DISPLAY_HEIGHT) {
+                    display_draw_pixel(x, y);
+                }
+            }
+        } else {
+            int y = 16;
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 display_draw_pixel(x, y);
             }
         }
-    } else {
-        int y = 16;
-        for (int x = 0; x < DISPLAY_WIDTH; x++) {
-            display_draw_pixel(x, y);
-        }
     }
-}
 
-display_update();
+    display_update();
 }
 
 // Render COMBO display (identical to TX since combo is a TX node)

@@ -78,8 +78,13 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
 }
 
 void app_main(void) {
+    // FIRST THING: Log immediately to confirm app_main is running
+    putchar('!'); putchar('!'); putchar('!'); // Raw output
+    fflush(stdout);
+    
     esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "======================================");
+    ESP_LOGI(TAG, "*** APP_MAIN STARTED - RX beginning initialization ***");
     ESP_LOGI(TAG, "MeshNet Audio RX starting (Opus)...");
     ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
     ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames",
@@ -87,9 +92,11 @@ void app_main(void) {
     ESP_LOGI(TAG, "======================================");
 
     // Initialize control layer
+    ESP_LOGI(TAG, "About to call display_init()");
     if (display_init() != ESP_OK) {
         ESP_LOGW(TAG, "Display init failed, continuing without display");
     }
+    ESP_LOGI(TAG, "display_init() returned");
     ESP_ERROR_CHECK(buttons_init());
 
     // Initialize audio output (UDA1334 or similar I2S DAC)

@@ -733,25 +733,28 @@ static void rx_playback_task(void *arg)
              uxTaskGetStackHighWaterMark(NULL));
 
 #if RX_TEST_TONE_MODE
-    // Pure tone test - bypasses entire pipeline to verify I2S works
     ESP_LOGW(TAG, "*** TONE TEST MODE - bypassing audio pipeline ***");
     static int16_t tone_buffer[AUDIO_FRAME_SAMPLES];
-    const float freq = 440.0f;  // A4 note
-    const float amplitude = 8000.0f;  // ~25% of max to avoid clipping
+    const float freq = 440.0f;
+    const float amplitude = 8000.0f;
     uint32_t sample_offset = 0;
     
     while (pipeline->running) {
-        // Generate sine wave
         for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
             float t = (float)(sample_offset + i) / (float)AUDIO_SAMPLE_RATE;
             tone_buffer[i] = (int16_t)(amplitude * sinf(2.0f * M_PI * freq * t));
         }
         sample_offset += AUDIO_FRAME_SAMPLES;
         
-        // I2S write is blocking - this provides natural pacing
+#if defined(CONFIG_USE_ES8388)
+        for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+            stereo_frame[2 * i]     = tone_buffer[i];
+            stereo_frame[2 * i + 1] = tone_buffer[i];
+        }
+        es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
+#else
         i2s_audio_write_mono_as_stereo(tone_buffer, AUDIO_FRAME_SAMPLES);
-        
-        // Yield to prevent watchdog (I2S write should block ~20ms but add safety)
+#endif
         taskYIELD();
     }
     ESP_LOGI(TAG, "Tone test task exiting");
@@ -772,8 +775,12 @@ static void rx_playback_task(void *arg)
                 prefilled = true;
                 ESP_LOGI(TAG, "Playback prefilled (%zu bytes)", available);
             } else {
+#if defined(CONFIG_USE_ES8388)
+                es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
+#else
                 static int16_t prefill_silence[AUDIO_FRAME_SAMPLES] = {0};
                 i2s_audio_write_mono_as_stereo(prefill_silence, AUDIO_FRAME_SAMPLES);
+#endif
                 continue;
             }
         }
@@ -787,7 +794,6 @@ static void rx_playback_task(void *arg)
                ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES) {
             esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)mono_frame, AUDIO_FRAME_BYTES);
             if (ret == ESP_OK) {
-                // Debug: log first few playback frames
                 static uint32_t playback_count = 0;
                 playback_count++;
                 if (playback_count <= 5 || (playback_count % 100) == 0) {
@@ -795,8 +801,15 @@ static void rx_playback_task(void *arg)
                              playback_count, (int)mono_frame[0], (int)mono_frame[100], (int)mono_frame[500]);
                 }
                 
-                // Use the same mono-to-stereo helper that worked in the old version
+#if defined(CONFIG_USE_ES8388)
+                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                    stereo_frame[2 * i]     = mono_frame[i];
+                    stereo_frame[2 * i + 1] = mono_frame[i];
+                }
+                es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
+#else
                 i2s_audio_write_mono_as_stereo(mono_frame, AUDIO_FRAME_SAMPLES);
+#endif
                 frames_played++;
             } else {
                 break;
@@ -807,9 +820,12 @@ static void rx_playback_task(void *arg)
         if (frames_played == 0 && prefilled) {
             pipeline->stats.buffer_underruns++;
             prefilled = false;
-            // Play silence (static buffer is zero-initialized)
+#if defined(CONFIG_USE_ES8388)
+            es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
+#else
             static int16_t silence_mono[AUDIO_FRAME_SAMPLES] = {0};
             i2s_audio_write_mono_as_stereo(silence_mono, AUDIO_FRAME_SAMPLES);
+#endif
         }
         
         pipeline->stats.buffer_fill_percent = 

@@ -657,15 +657,10 @@ static void send_stream_announcement(void) {
 // Root timeout callback - fallback if mesh formation gets stuck
 // Primary root selection is via vote_percentage; this is a safety net
 // Called once by one-shot timer; actual readiness is handled by MESH_EVENT_ROOT_FIXED
-// IMPORTANT: Only TX/COMBO nodes should ever become root. RX nodes wait indefinitely.
+// All nodes can become root if no mesh exists after timeout (per mesh-network-architecture.md Scenario 2)
+// TX nodes prefer root (vote_percentage 0.7), RX nodes will become root if alone (and release lock for better TX)
 static void mesh_root_timeout_callback(void *arg) {
     if (!is_mesh_connected && !is_mesh_root) {
-        // RX nodes should NEVER become root - they wait indefinitely for TX/COMBO
-        if (my_node_role == NODE_ROLE_RX) {
-            ESP_LOGI(TAG, "RX node: still waiting for TX/COMBO root (will not force root)");
-            return;
-        }
-        
         ESP_LOGI(TAG, "Mesh formation fallback timeout (%d ms) - forcing root", 
                  MESH_FALLBACK_TIMEOUT_MS);
         

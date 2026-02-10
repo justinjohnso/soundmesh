@@ -400,7 +400,6 @@ void display_clear(void) {
 // Update display from buffer (page-by-page to avoid large I2C writes)
 static void display_update(void) {
     if (!display_initialized) {
-        ESP_LOGW(TAG, "display_update called but display not initialized!");
         return;
     }
     

@@ -126,12 +126,15 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "TX initialized, waiting for network...");
 
-    // Wait for network to be ready
+    // Wait for network to be ready (event-driven, not polling)
+    // Use chunked waits to feed watchdog during mesh formation (can take 10+ seconds)
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
-    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (notify_value > 0) {
-        ESP_LOGI(TAG, "Network ready - starting audio pipeline");
+    uint32_t notify_value = 0;
+    while (notify_value == 0) {
+        notify_value = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));  // Wait 1 second at a time
+        esp_task_wdt_reset();  // Feed watchdog while waiting
     }
+    ESP_LOGI(TAG, "Network ready - starting audio pipeline");
 
     // Start the TX pipeline
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));

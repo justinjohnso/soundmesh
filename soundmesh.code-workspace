@@ -1,0 +1,39 @@
+{
+	"folders": [
+		{
+			"name": "soundmesh",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.h": "c",
+			"*.c": "c"
+		},
+		"files.exclude": {
+			"**/.pio": true,
+			"**/build": true,
+			"**/managed_components": true
+		},
+		"search.exclude": {
+			"**/.pio": true,
+			"**/build": true,
+			"**/managed_components": true
+		},
+		"C_Cpp.default.configurationProvider": "platformio.platformio-ide",
+		"C_Cpp.intelliSenseEngine": "disabled",
+		"terminal.integrated.env.osx": {
+			"PATH": "${env:HOME}/.platformio/penv/bin:${env:HOME}/.platformio/penv:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+		},
+		"stylelint.enable": false
+	},
+	"extensions": {
+		"recommendations": [
+			"platformio.platformio-ide",
+			"ms-vscode.cpptools"
+		],
+		"unwantedRecommendations": [
+			"ms-vscode.cpptools-extension-pack"
+		]
+	}
+}

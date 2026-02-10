@@ -27,16 +27,13 @@ static uint8_t my_stream_id = 1;  // Unique stream ID for this TX/COMBO node
 static bool is_mesh_connected = false;
 static bool is_mesh_root = false;
 static bool is_mesh_root_ready = false;  // Track when root is fully initialized
-static bool is_mesh_join_in_progress = false;  // Track when actively connecting to a parent
+
 static uint8_t mesh_layer = 0;
 static int mesh_children_count = 0;
 static mesh_addr_t mesh_parent_addr;
 static uint32_t measured_latency_ms = 0;       // RTT/2 from ping measurements
 static uint32_t last_ping_sent_ms = 0;         // Timestamp when last ping was sent
 static bool ping_pending = false;              // Waiting for pong response
-
-// Timer handle for fallback timeout (global so we can cancel it)
-static esp_timer_handle_t mesh_timeout_timer = NULL;
 
 // Nearest child tracking (for root node display)
 static int8_t nearest_child_rssi = -100;       // Best RSSI from any child
@@ -50,18 +47,12 @@ static TaskHandle_t heartbeat_task_handle = NULL;
 static TaskHandle_t waiting_task_handles[2] = {NULL, NULL};  // For startup notifications
 static int waiting_task_count = 0;
 
-// Fallback timeout for root election (same for all nodes)
-// Primary root preference is via vote_percentage, this is just a safety fallback
-// if mesh formation gets stuck
-#define MESH_FALLBACK_TIMEOUT_MS 10000
-
-// Event-driven mesh readiness flow:
-// 1. esp_timer one-shot timer enforces esp_mesh_fix_root(true) if no connection after 5 seconds
-// 2. MESH_EVENT_ROOT_FIXED or MESH_EVENT_PARENT_CONNECTED fires when node becomes ready
-// 3. Event handler configures static IP (if root) and sets is_mesh_root_ready = true
-// 4. Waiting tasks are notified via xTaskNotifyGive() - they wake up immediately
-// 5. Audio transmission begins immediately without polling delays
-// Fully event-driven: no polling loops, all state transitions via events/notifications
+// Event-driven mesh readiness flow (User Designated Root pattern):
+// 1. TX/COMBO: esp_mesh_set_type(MESH_ROOT) + esp_mesh_fix_root(true) before start
+// 2. RX: esp_mesh_fix_root(true) only - waits indefinitely for TX root
+// 3. MESH_EVENT_ROOT_FIXED (TX) or MESH_EVENT_PARENT_CONNECTED (RX) fires when ready
+// 4. Event handler sets is_mesh_root_ready = true
+// 5. Waiting tasks notified via xTaskNotifyGive() - audio starts immediately
 
 // Receive buffer for mesh packets (size defined in config/build.h)
 static uint8_t mesh_rx_buffer[MESH_RX_BUFFER_SIZE];
@@ -95,7 +86,6 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data);
 static void mesh_rx_task(void *arg);
 static void mesh_heartbeat_task(void *arg);
-static void mesh_root_timeout_callback(void *arg);  // Timer callback, not a task
 static bool is_duplicate(uint8_t stream_id, uint16_t seq);
 static void mark_seen(uint8_t stream_id, uint16_t seq);
 static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender);
@@ -168,6 +158,19 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
+            // For designated root: ROOT_FIXED won't fire if type was set before start
+            // Mark root as ready immediately since mesh AP is now broadcasting
+            if (my_node_role == NODE_ROLE_TX && esp_mesh_is_root()) {
+                is_mesh_root = true;
+                is_mesh_root_ready = true;
+                mesh_layer = 0;
+                ESP_LOGI(TAG, "Designated root ready: mesh AP broadcasting on channel %d", MESH_CHANNEL);
+                for (int i = 0; i < waiting_task_count; i++) {
+                    if (waiting_task_handles[i] != NULL) {
+                        xTaskNotifyGive(waiting_task_handles[i]);
+                    }
+                }
+            }
             break;
             
         case MESH_EVENT_STOPPED:
@@ -180,13 +183,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             memcpy(&mesh_parent_addr, &connected->connected, sizeof(mesh_addr_t));
             is_mesh_connected = true;
             is_mesh_root_ready = true;  // Child nodes are immediately ready
-            is_mesh_join_in_progress = false;  // Done joining
             mesh_layer = esp_mesh_get_layer();
-            
-            // Stop the fallback timeout - we're connected
-            if (mesh_timeout_timer) {
-                esp_timer_stop(mesh_timeout_timer);
-            }
             
             ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
             
@@ -201,12 +198,12 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         
         case MESH_EVENT_PARENT_DISCONNECTED:
             // For root node, "parent" is the external router - which we don't use
-            // Only log disconnection for non-root nodes (actual mesh disconnection)
-            if (!is_mesh_root) {
+            // Use esp_mesh_is_root() (live check) instead of cached flag to avoid
+            // race during startup where ROOT_FIXED hasn't fired yet
+            if (!esp_mesh_is_root()) {
                 ESP_LOGI(TAG, "Parent disconnected");
                 is_mesh_connected = false;
             }
-            // Root nodes ignore this - they have no real parent in standalone mesh
             break;
             
         case MESH_EVENT_CHILD_CONNECTED: {
@@ -231,12 +228,6 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                          my_node_role == NODE_ROLE_TX ? "TX/COMBO" : "RX");
                 is_mesh_root = true;
                 mesh_layer = 0;
-                is_mesh_join_in_progress = false;  // No longer joining
-                
-                // Stop the fallback timeout - we're root now
-                if (mesh_timeout_timer) {
-                    esp_timer_stop(mesh_timeout_timer);
-                }
                 
                 // Mark root as ready - mesh AP is automatically configured by the stack
                 is_mesh_root_ready = true;
@@ -293,20 +284,14 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             break;
         
         case MESH_EVENT_FIND_NETWORK: {
-            // Mesh has found a candidate parent network - join attempt is starting
-            // This fires BEFORE WiFi auth/assoc, so we can detect mid-connection state
             mesh_event_find_network_t *evt = (mesh_event_find_network_t *)event_data;
-            is_mesh_join_in_progress = true;
             ESP_LOGI(TAG, "Found network on channel %d - join in progress", evt->channel);
             break;
         }
         
         case MESH_EVENT_SCAN_DONE: {
-            // Scan complete - if we found candidates, keep join_in_progress true
             mesh_event_scan_done_t *scan = (mesh_event_scan_done_t *)event_data;
             ESP_LOGD(TAG, "Scan done: found %d APs", (int)scan->number);
-            // Don't clear is_mesh_join_in_progress here - let PARENT_CONNECTED or 
-            // timeout handle it. The node may still be mid-connection.
             break;
         }
         
@@ -327,6 +312,11 @@ static void mesh_rx_task(void *arg) {
     
     ESP_LOGI(TAG, "Mesh RX task started");
     
+    // Wait for mesh to start before calling esp_mesh_recv()
+    while (!is_mesh_root_ready && !is_mesh_connected) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
     while (1) {
         // Set up receive buffer
         data.data = mesh_rx_buffer;
@@ -336,8 +326,11 @@ static void mesh_rx_task(void *arg) {
         err = esp_mesh_recv(&from, &data, portMAX_DELAY, &flag, NULL, 0);
         
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Mesh receive error: %s", esp_err_to_name(err));
-            // Continue immediately - blocking receive handles waiting
+            if (err == ESP_ERR_MESH_NOT_START) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            } else {
+                ESP_LOGW(TAG, "Mesh receive error: %s", esp_err_to_name(err));
+            }
             continue;
         }
         
@@ -540,7 +533,6 @@ esp_err_t network_init_mesh(void) {
     ESP_ERROR_CHECK(esp_mesh_init());
     
     // Register mesh event handler
-    // MESH_EVENT_FIND_NETWORK is used to detect mid-connection state for fallback timeout
     ESP_ERROR_CHECK(esp_event_handler_register(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler, NULL));
     
     // Get the mesh netif - we'll configure static IP if node becomes root
@@ -588,64 +580,30 @@ esp_err_t network_init_mesh(void) {
     // Set maximum layer depth
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
     
-    // Root preference via vote_percentage (the proper ESP-MESH way!)
-    // vote_percentage is a THRESHOLD, not a weight:
-    // LOWER threshold = EASIER to become root (node accepts root role more readily)
-    // HIGHER threshold = HARDER to become root (node resists becoming root)
-    // 
-    // TX/COMBO nodes should preferentially become root (audio source at network center)
-    // RX nodes should avoid becoming root unless no TX is available
+    // User Designated Root Node pattern (ESP-IDF official approach)
+    // TX/COMBO nodes are always the root - no election, no scanning delay
+    // RX nodes wait indefinitely to join the designated root
     if (my_node_role == NODE_ROLE_TX) {
-        ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(0.7));
-        ESP_LOGI(TAG, "Vote threshold: 0.7 (TX - prefer becoming root)");
-    } else {
-        ESP_ERROR_CHECK(esp_mesh_set_vote_percentage(0.95));
-        ESP_LOGI(TAG, "Vote threshold: 0.95 (RX - avoid becoming root)");
+        ESP_ERROR_CHECK(esp_mesh_set_type(MESH_ROOT));
+        ESP_LOGI(TAG, "Designated root: TX/COMBO node set as MESH_ROOT");
     }
-    
-    // Don't fix root initially - let timeout task handle it
-    // This allows natural mesh formation if another node is nearby
-    ESP_ERROR_CHECK(esp_mesh_fix_root(false));
-     
-     // Configure root election attempts BEFORE starting mesh
-     // Use shorter scan to allow timeout-based root election within 5 seconds
-     mesh_attempts_t attempts = {
-         .scan = 3,     // Scan 3 times (faster progression to timeout fallback)
-         .vote = 100,   // Reasonable vote count (will proceed to next step)
-         .fail = 60,    // Keep default fail threshold
-         .monitor_ie = 3  // Keep default IE monitoring
-     };
-     ESP_ERROR_CHECK(esp_mesh_set_attempts(&attempts));
+    ESP_ERROR_CHECK(esp_mesh_fix_root(true));
       
       // Disable WiFi power save for better real-time performance
       ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
       
-      // Start mesh - this begins the network search
-       // Timeout timer below will enforce root after 5 seconds if no connection
-       ESP_ERROR_CHECK(esp_mesh_start());
-      
-      ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
-      
-      // Start receive task (stack size from config/build.h)
+      // Create tasks BEFORE mesh start so they can receive notifications
+      // from MESH_EVENT_STARTED (fires synchronously during esp_mesh_start)
       xTaskCreate(mesh_rx_task, "mesh_rx", MESH_RX_TASK_STACK, NULL, MESH_RX_TASK_PRIO, NULL);
-      
-      // Start heartbeat task (stack size from config/build.h)
       xTaskCreate(mesh_heartbeat_task, "mesh_hb", HEARTBEAT_TASK_STACK, NULL, HEARTBEAT_TASK_PRIO, &heartbeat_task_handle);
       
-      // Create fallback timer for root forcing
-      // This is a safety net - primary root selection is via vote_percentage
-      // Timer fires after 10s if mesh formation hasn't completed
-      // Timer handle is global so we can cancel/extend it from event handlers
-      const esp_timer_create_args_t timeout_timer_args = {
-          .callback = &mesh_root_timeout_callback,
-          .name = "mesh_timeout",
-          .dispatch_method = ESP_TIMER_TASK
-      };
-      ESP_ERROR_CHECK(esp_timer_create(&timeout_timer_args, &mesh_timeout_timer));
-      ESP_ERROR_CHECK(esp_timer_start_once(mesh_timeout_timer, MESH_FALLBACK_TIMEOUT_MS * 1000));
+      // Register heartbeat task for startup notification
+      network_register_startup_notification(heartbeat_task_handle);
       
-      ESP_LOGI(TAG, "Root fallback timeout: %d ms (vote_percentage handles preference)", 
-               MESH_FALLBACK_TIMEOUT_MS);
+      // Start mesh - TX immediately becomes root, RX scans for the TX root
+      ESP_ERROR_CHECK(esp_mesh_start());
+      
+      ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
       
       return ESP_OK;
 }
@@ -689,52 +647,6 @@ static void send_stream_announcement(void) {
         ESP_LOGI(TAG, "Stream announced: ID=%u, %uHz, %u-bit, %uch, %ums frames", 
                  announce.stream_id, (unsigned int)AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, 
                  AUDIO_CHANNELS_MONO, (unsigned int)AUDIO_FRAME_MS);
-    }
-}
-
-// Root timeout callback - fallback if mesh formation gets stuck
-// Primary root selection is via vote_percentage; this is a safety net
-// Called once by one-shot timer; actual readiness is handled by MESH_EVENT_ROOT_FIXED
-// IMPORTANT: Only TX/COMBO nodes should ever become root. RX nodes wait indefinitely.
-static void mesh_root_timeout_callback(void *arg) {
-    // Snapshot state to avoid races with event handlers
-    bool connected = is_mesh_connected;
-    bool root = is_mesh_root;
-    bool joining = is_mesh_join_in_progress;
-    
-    if (!connected && !root && !joining) {
-        // RX nodes should NEVER become root - they wait indefinitely for TX/COMBO
-        if (my_node_role == NODE_ROLE_RX) {
-            ESP_LOGI(TAG, "RX node: still waiting for TX/COMBO root (will not force root)");
-            return;
-        }
-        
-        ESP_LOGI(TAG, "Mesh formation fallback timeout (%d ms) - forcing root", 
-                 MESH_FALLBACK_TIMEOUT_MS);
-        
-        // Set this node as mesh root
-        // Order matters: set type FIRST, then fix it
-        esp_err_t err = esp_mesh_set_type(MESH_ROOT);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set mesh type to ROOT: %s", esp_err_to_name(err));
-            return;
-        }
-        
-        err = esp_mesh_fix_root(true);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to fix root: %s", esp_err_to_name(err));
-        }
-    } else if (joining) {
-        // Connection in progress - extend timeout to give it a chance to complete
-        const uint32_t GRACE_MS = 5000;
-        ESP_LOGI(TAG, "Fallback timeout but join in progress - extending by %u ms", (unsigned)GRACE_MS);
-        
-        if (mesh_timeout_timer) {
-            esp_timer_start_once(mesh_timeout_timer, GRACE_MS * 1000);
-        }
-    } else {
-        ESP_LOGD(TAG, "Mesh connection established before fallback timeout (connected=%d, root=%d)", 
-                 connected, root);
     }
 }
 
@@ -836,16 +748,29 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
                  backoff_level);
     }
     
-    // SIMPLIFIED BROADCAST: Single esp_mesh_send() call instead of per-child loop
-    // ESP-MESH handles tree distribution internally via its forwarding mechanism
-    // This drastically reduces TX queue pressure (1 send vs N sends per frame)
     if (is_mesh_root) {
-        // ROOT: Use P2P broadcast to inject into mesh tree
-        // NULL destination with P2P flag broadcasts to all descendants
-        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+        // ROOT: Send downstream to each descendant via P2P
+        // Use MESH_DATA_P2P for standalone mesh (no external router/DS)
+        // MESH_DATA_FROMDS is for root-to-DS bridging which doesn't apply here
+        mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
+        int route_table_size = 0;
+        esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
+        
+        for (int i = 0; i < route_table_size; i++) {
+            esp_err_t send_err = esp_mesh_send(&route_table[i], &mesh_data, 
+                                                MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+            if (send_err == ESP_ERR_MESH_QUEUE_FULL) {
+                any_queue_full = true;
+            } else if (send_err != ESP_OK) {
+                err = send_err;
+            }
+        }
+        if (!any_queue_full && route_table_size > 0) {
+            err = ESP_OK;
+        }
     } else {
-        // CHILD: Send upstream to parent, who forwards via tree
-        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
+        // CHILD: Send upstream to parent via P2P
+        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
     }
     
     if (err == ESP_OK) {

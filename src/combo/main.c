@@ -23,6 +23,7 @@
 #include "audio/usb_audio.h"
 #include "audio/adf_pipeline.h"
 #include "network/mesh_net.h"
+#include "control/serial_dashboard.h"
 
 #ifdef CONFIG_USE_ES8388
 #include "audio/es8388_audio.h"
@@ -40,8 +41,7 @@ static combo_status_t status = {
     .bandwidth_kbps = 0,
     .tone_freq_hz = 440,
     .output_volume = 1.0f,
-    .nearest_rssi = -100,
-    .nearest_latency_ms = 0
+    .nearest_rssi = -100
 };
 
 // Bandwidth tracking
@@ -144,6 +144,7 @@ void app_main(void) {
     }
 
     ESP_LOGI(TAG, "COMBO initialized, waiting for network...");
+    dashboard_init();
 
     // Wait for network to be ready (event-driven, not polling)
     // Use chunked waits to feed watchdog during mesh formation (can take 10+ seconds)
@@ -154,6 +155,7 @@ void app_main(void) {
         esp_task_wdt_reset();  // Feed watchdog while waiting
     }
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
+    dashboard_log("Network ready");
 
     // Start the TX pipeline
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
@@ -179,14 +181,14 @@ void app_main(void) {
             button_event_t btn_event = buttons_poll();
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
                 current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
-                ESP_LOGI(TAG, "View changed to %d", current_view);
+                dashboard_log("View: %d", current_view);
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
                 status.input_mode = (status.input_mode + 1) % 3;
                 adf_input_mode_t adf_mode = (status.input_mode == INPUT_MODE_TONE) ? ADF_INPUT_MODE_TONE :
                                             (status.input_mode == INPUT_MODE_USB) ? ADF_INPUT_MODE_USB :
                                             ADF_INPUT_MODE_AUX;
                 adf_pipeline_set_input_mode(tx_pipeline, adf_mode);
-                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+                dashboard_log("Input: %d", status.input_mode);
             }
         }
         
@@ -199,10 +201,6 @@ void app_main(void) {
         if (now_ms - last_stats_ms >= 1000) {
             status.connected_nodes = network_get_connected_nodes();
             status.nearest_rssi = network_get_nearest_child_rssi();
-            status.nearest_latency_ms = network_get_nearest_child_latency_ms();
-            
-            // Ping nearest child for latency measurement
-            network_ping_nearest_child();
             
             // Get pipeline stats
             adf_pipeline_stats_t stats;
@@ -213,11 +211,11 @@ void app_main(void) {
                 uint32_t tx_bytes = network_get_tx_bytes_and_reset();
                 status.bandwidth_kbps = (tx_bytes * 8) / 1000;
                 
-                ESP_LOGI(TAG, "Stats: nodes=%lu, nearest=%ddBm/%lums, frames=%lu, bw=%lukbps",
-                         status.connected_nodes, status.nearest_rssi, status.nearest_latency_ms,
-                         stats.frames_processed, status.bandwidth_kbps);
+                dashboard_log("TX: %lu frames, %lu nodes, %lukbps",
+                             stats.frames_processed, status.connected_nodes, status.bandwidth_kbps);
             }
             
+            dashboard_render_combo(&status);
             last_stats_ms = now_ms;
         }
 

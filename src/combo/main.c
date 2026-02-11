@@ -99,7 +99,11 @@ void app_main(void) {
 
 #ifdef CONFIG_USE_ES8388
     // Initialize ES8388 with DAC enabled for headphone monitor
-    ESP_ERROR_CHECK(es8388_audio_init(true));
+    if (es8388_audio_init(true) != ESP_OK) {
+        ESP_LOGW(TAG, "ES8388 init failed — check wiring (SDA=%d, SCL=%d, addr=0x10)",
+                 I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+        ESP_LOGW(TAG, "Continuing without audio");
+    }
 #else
     ESP_ERROR_CHECK(adc_audio_init());
     ESP_ERROR_CHECK(i2s_audio_init());

@@ -94,7 +94,11 @@ void app_main(void) {
 
 #ifdef CONFIG_USE_ES8388
     // TX mode: ES8388 ADC only (no DAC output)
-    ESP_ERROR_CHECK(es8388_audio_init(false));
+    if (es8388_audio_init(false) != ESP_OK) {
+        ESP_LOGW(TAG, "ES8388 init failed — check wiring (SDA=%d, SCL=%d, addr=0x10)",
+                 I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+        ESP_LOGW(TAG, "Continuing without audio input");
+    }
 #else
     ESP_ERROR_CHECK(adc_audio_init());
 #endif

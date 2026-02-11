@@ -170,6 +170,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         xTaskNotifyGive(waiting_task_handles[i]);
                     }
                 }
+                // Root doesn't need self-organized scanning either
+                esp_mesh_set_self_organized(false, false);
+                esp_wifi_scan_stop();
             }
             break;
             
@@ -193,6 +196,12 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                     xTaskNotifyGive(waiting_task_handles[i]);
                 }
             }
+            
+            // Disable self-organized mode to stop periodic parent monitoring scans
+            // These scans pause the radio for ~300ms and cause audio dropouts
+            esp_mesh_set_self_organized(false, false);
+            esp_wifi_scan_stop();
+            ESP_LOGI(TAG, "Self-organized disabled (no more parent scans during streaming)");
             break;
         }
         
@@ -203,6 +212,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             if (!esp_mesh_is_root()) {
                 ESP_LOGI(TAG, "Parent disconnected");
                 is_mesh_connected = false;
+                // Re-enable self-organized mode so mesh can scan and rejoin
+                esp_mesh_set_self_organized(true, true);
+                ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
             }
             break;
             
@@ -346,7 +358,7 @@ static void mesh_rx_task(void *arg) {
                 if (hb->rssi > nearest_child_rssi || nearest_child_rssi == -100) {
                     nearest_child_rssi = hb->rssi;
                     memcpy(&nearest_child_addr, &from, sizeof(mesh_addr_t));
-                    ESP_LOGI(TAG, "Child heartbeat: RSSI=%d dBm", nearest_child_rssi);
+                    ESP_LOGD(TAG, "Child heartbeat: RSSI=%d dBm", nearest_child_rssi);
                 }
             }
         } else if (first_byte == NET_PKT_TYPE_PING) {
@@ -377,7 +389,7 @@ static void mesh_rx_task(void *arg) {
             if (hdr->type == NET_PKT_TYPE_AUDIO_RAW || hdr->type == NET_PKT_TYPE_AUDIO_OPUS) {
                 static uint32_t audio_frames_rx = 0;
                 audio_frames_rx++;
-                if ((audio_frames_rx % 100) == 1) {
+                if ((audio_frames_rx % 500) == 1) {
                     ESP_LOGI(TAG, "Audio frame RX #%lu: seq=%u size=%d",
                              audio_frames_rx, seq, data.size);
                 }
@@ -396,9 +408,24 @@ static void mesh_rx_task(void *arg) {
                 
                 if (audio_rx_callback && data.size > NET_FRAME_HEADER_SIZE) {
                     uint8_t *payload = data.data + NET_FRAME_HEADER_SIZE;
-                    uint16_t payload_len = ntohs(hdr->payload_len);
+                    uint16_t total_payload_len = ntohs(hdr->payload_len);
                     uint32_t timestamp = ntohl(hdr->timestamp);
-                    audio_rx_callback(payload, payload_len, seq, timestamp);
+                    uint8_t frame_count = hdr->reserved;
+                    
+                    if (frame_count <= 1) {
+                        audio_rx_callback(payload, total_payload_len, seq, timestamp);
+                    } else {
+                        // Unpack batched Opus frames: [len_hi][len_lo][data...]...
+                        size_t offset = 0;
+                        for (uint8_t f = 0; f < frame_count && offset + 2 <= total_payload_len; f++) {
+                            uint16_t frame_len = (payload[offset] << 8) | payload[offset + 1];
+                            offset += 2;
+                            if (frame_len > 0 && offset + frame_len <= total_payload_len) {
+                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp);
+                                offset += frame_len;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -421,12 +448,12 @@ static void handle_pong(const mesh_ping_t *pong) {
     if (ping_pending && original_ts == last_ping_sent_ms) {
         uint32_t rtt = now_ms - original_ts;
         measured_latency_ms = rtt / 2;
-        ESP_LOGI(TAG, "Ping RTT: %lu ms, latency: %lu ms", rtt, measured_latency_ms);
+        ESP_LOGD(TAG, "Ping RTT: %lu ms, latency: %lu ms", rtt, measured_latency_ms);
         ping_pending = false;
     } else if (child_ping_pending && original_ts == last_child_ping_ms) {
         uint32_t rtt = now_ms - original_ts;
         nearest_child_latency_ms = rtt / 2;
-        ESP_LOGI(TAG, "Child ping RTT: %lu ms, latency: %lu ms", rtt, nearest_child_latency_ms);
+        ESP_LOGD(TAG, "Child ping RTT: %lu ms, latency: %lu ms", rtt, nearest_child_latency_ms);
         child_ping_pending = false;
     }
 }
@@ -700,6 +727,7 @@ static uint32_t success_streak = 0;          // Consecutive successes for gradua
 static uint32_t total_drops = 0;
 static uint32_t total_sent = 0;
 static uint32_t skip_counter = 0;
+static int64_t last_qfull_us = 0;
 
 // Rate limiting thresholds - tuned for 25fps on ESP-MESH (40ms frames)
 // At backoff_level N, send every (N+1) frames (0=all, 1=half, 2=third)
@@ -738,7 +766,7 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     
     // Debug: log stats periodically (every 64 packets at 25fps = ~2.5 seconds)
     static uint16_t send_count = 0;
-    if ((++send_count % 64) == 0) {
+    if ((++send_count & 0x7F) == 0) {
         int route_table_size = 0;
         mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
         esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
@@ -780,21 +808,32 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     }
     
     // Update backoff state based on queue status
-    // Key insight: increase quickly on failure, decrease slowly on sustained success
     if (any_queue_full || err == ESP_ERR_MESH_QUEUE_FULL) {
-        success_streak = 0;  // Reset success counter
+        last_qfull_us = esp_timer_get_time();
+        success_streak = 0;
         if (backoff_level < RATE_LIMIT_MAX_LEVEL) {
             backoff_level++;
             ESP_LOGW(TAG, "Mesh TX backoff increased to level %lu (sending every %lu frames)", 
                      backoff_level, backoff_level + 1);
         }
     } else {
-        // Gradual recovery: require sustained success before reducing backoff
-        success_streak++;
-        if (success_streak >= RATE_LIMIT_RECOVERY_STREAK && backoff_level > 0) {
+        // Time-based recovery: if no queue-full for 1 second, recover one level
+        int64_t now = esp_timer_get_time();
+        if (backoff_level > 0 && (now - last_qfull_us) > 1000000) {
             backoff_level--;
-            success_streak = 0;  // Reset for next level
-            ESP_LOGI(TAG, "Mesh TX backoff decreased to level %lu", backoff_level);
+            last_qfull_us = now;  // Rate-limit recovery to once per second
+            ESP_LOGI(TAG, "Mesh TX backoff recovered to level %lu", backoff_level);
+        }
+    }
+
+    // Reset backoff when no children to send to
+    if (is_mesh_root) {
+        mesh_addr_t check_table[MESH_ROUTE_TABLE_SIZE];
+        int check_size = 0;
+        esp_mesh_get_routing_table(check_table, sizeof(check_table), &check_size);
+        if (check_size == 0 && backoff_level > 0) {
+            backoff_level = 0;
+            success_streak = 0;
         }
     }
     

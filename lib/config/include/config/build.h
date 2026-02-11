@@ -33,7 +33,7 @@
 // ---- High-Level Codec/Pipeline Frame (Opus frame == PCM frame) ----
 // This is the frame size Opus encodes/decodes per call.
 // Changing this affects Opus latency and packets-per-second.
-#define AUDIO_FRAME_MS             20   // 20ms = 50 fps (reduced from 40ms to fix stack overflow)
+#define AUDIO_FRAME_MS             20   // 20ms = 50 fps capture/encode (proven clean for local output)
 
 // Derived: samples and bytes per codec frame
 #define AUDIO_FRAME_SAMPLES        ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)  // 1920
@@ -84,6 +84,10 @@
 #define UDP_PORT               3333      // Legacy fallback
 #define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
 
+// Mesh packet batching: combine N Opus frames per mesh packet to reduce pps
+// 20ms frames at 50fps → batch 2 → 25 mesh packets/sec (within ESP-MESH limit)
+#define MESH_FRAMES_PER_PACKET     2
+
 // USB networking (CDC-ECM) - v0.3
 #define USB_ECM_IP_ADDR        "10.48.0.1"
 #define USB_ECM_NETMASK        "255.255.255.0"
@@ -95,8 +99,8 @@
 // ============================================================================
 
 // Buffer depths in codec frames
-#define PCM_BUFFER_FRAMES          4    // 4 × 20ms = 80ms PCM buffer
-#define OPUS_BUFFER_FRAMES         8    // 8 × 20ms = 160ms compressed (cheap in RAM)
+#define PCM_BUFFER_FRAMES          6    // 6 × 20ms = 120ms PCM buffer
+#define OPUS_BUFFER_FRAMES         10   // 10 × 20ms = 200ms compressed (cheap in RAM)
 
 // Derived: buffer sizes in bytes
 #define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_MONO * PCM_BUFFER_FRAMES)  // 7680 (4×1920)
@@ -106,9 +110,8 @@
 #define OPUS_BUFFER_SIZE           (OPUS_BUFFER_ITEM_MAX * OPUS_BUFFER_FRAMES)  // 4112
 
 // Jitter buffer (in codec frames)
-// With 20ms frames, need more frames for same latency headroom
-#define JITTER_BUFFER_FRAMES       3    // 3 × 20ms = 60ms max depth
-#define JITTER_PREFILL_FRAMES      2    // 2 × 20ms = 40ms startup latency
+#define JITTER_BUFFER_FRAMES       6    // 6 × 20ms = 120ms max depth
+#define JITTER_PREFILL_FRAMES      3    // 3 × 20ms = 60ms startup latency
 
 // Derived: jitter thresholds in bytes
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)

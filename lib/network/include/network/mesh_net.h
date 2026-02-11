@@ -62,11 +62,11 @@ typedef enum {
 	NET_PKT_TYPE_PONG = 0x21,        // Latency measurement response
 } net_pkt_type_t;
 
-// Ping/Pong packet for RTT measurement
+// Ping/Pong packet for RTT measurement (game-style sequence ID)
 typedef struct __attribute__((packed)) {
 	uint8_t type;           // PING or PONG
 	uint8_t reserved[3];    // Padding for alignment
-	uint32_t timestamp;     // Sender's local timestamp (ms)
+	uint32_t ping_id;       // Sequence number (echoed back in PONG)
 } mesh_ping_t;
 
 // Audio frame header (14 bytes, aligned for mesh)

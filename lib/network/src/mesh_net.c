@@ -33,17 +33,25 @@ static uint8_t mesh_layer = 0;
 static int mesh_children_count = 0;
 static mesh_addr_t mesh_parent_addr;
 static uint32_t measured_latency_ms = 0;       // RTT/2 from ping measurements
-static uint32_t last_ping_sent_ms = 0;         // Timestamp when last ping was sent
 static bool ping_pending = false;              // Waiting for pong response
 
 // Nearest child tracking (for root node display)
 static int8_t nearest_child_rssi = -100;       // Best RSSI from any child
 static uint32_t nearest_child_latency_ms = 0;  // RTT/2 to nearest child
 static mesh_addr_t nearest_child_addr;         // Address of nearest child
-static uint32_t last_child_ping_ms = 0;
 static bool child_ping_pending = false;
 static int64_t last_ping_sent_us = 0;
 static int64_t last_child_ping_sent_us = 0;
+
+// Root address cache for P2P child→root communication
+static mesh_addr_t cached_root_addr;
+static bool have_root_addr = false;
+
+// Game-style ping sequence counters
+static uint32_t ping_seq = 0;           // RX→root ping sequence
+static uint32_t child_ping_seq = 0;     // Root→child ping sequence
+static uint32_t pending_ping_id = 0;    // Expected pong ping_id (RX side)
+static uint32_t pending_child_ping_id = 0;  // Expected pong ping_id (root side)
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -94,7 +102,7 @@ static void mark_seen(uint8_t stream_id, uint16_t seq);
 static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender);
 static void send_heartbeat(void);
 static void send_stream_announcement(void);
-static void send_pong(const mesh_addr_t *dest, uint32_t original_timestamp);
+static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
 
@@ -177,6 +185,8 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 // Root doesn't need self-organized scanning either
                 esp_mesh_set_self_organized(false, false);
                 esp_wifi_scan_stop();
+                esp_wifi_disconnect();
+                esp_log_level_set("wifi", ESP_LOG_ERROR);
             }
             break;
             
@@ -187,12 +197,13 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             
         case MESH_EVENT_PARENT_CONNECTED: {
             mesh_event_connected_t *connected = (mesh_event_connected_t *)event_data;
-            memcpy(&mesh_parent_addr, &connected->connected, sizeof(mesh_addr_t));
+            memcpy(mesh_parent_addr.addr, connected->connected.bssid, 6);
             is_mesh_connected = true;
             is_mesh_root_ready = true;  // Child nodes are immediately ready
             mesh_layer = esp_mesh_get_layer();
             
             ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
+            ESP_LOGI(TAG, "Parent BSSID: " MACSTR, MAC2STR(connected->connected.bssid));
             
             // Notify all waiting tasks - stream is ready
             for (int i = 0; i < waiting_task_count; i++) {
@@ -216,6 +227,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             if (!esp_mesh_is_root()) {
                 ESP_LOGI(TAG, "Parent disconnected");
                 is_mesh_connected = false;
+                have_root_addr = false;
                 // Re-enable self-organized mode so mesh can scan and rejoin
                 esp_mesh_set_self_organized(true, true);
                 ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
@@ -263,8 +275,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             
         case MESH_EVENT_ROOT_ADDRESS: {
             mesh_event_root_address_t *root_addr = (mesh_event_root_address_t *)event_data;
-            ESP_LOGI(TAG, "Root address event received: " MACSTR, MAC2STR(root_addr->addr));
-            // Root is already marked ready when ROOT_FIXED fired, this is just informational
+            memcpy(cached_root_addr.addr, root_addr->addr, 6);
+            have_root_addr = true;
+            ESP_LOGI(TAG, "Root addr cached: " MACSTR, MAC2STR(cached_root_addr.addr));
             break;
         }
             
@@ -445,37 +458,41 @@ static void mesh_rx_task(void *arg) {
 
 // Handle incoming ping - respond with pong
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping) {
-    // Both root and children respond to pings
-    ESP_LOGI(TAG, "Ping received, sending pong");
-    send_pong(from, ntohl(ping->timestamp));
+    uint32_t id = ntohl(ping->ping_id);
+    ESP_LOGI(TAG, "PING from " MACSTR " id=%lu (root=%d)", 
+             MAC2STR(from->addr), id, is_mesh_root);
+    send_pong(from, id);
 }
 
 // Handle incoming pong - calculate RTT
 static void handle_pong(const mesh_ping_t *pong) {
     int64_t now_us = esp_timer_get_time();
-    uint32_t original_ts = ntohl(pong->timestamp);
+    uint32_t id = ntohl(pong->ping_id);
     
-    if (ping_pending && original_ts == last_ping_sent_ms) {
+    if (ping_pending && id == pending_ping_id) {
         int64_t rtt_us = now_us - last_ping_sent_us;
-        measured_latency_ms = (uint32_t)((rtt_us + 1000) / 2000);
+        measured_latency_ms = (uint32_t)(rtt_us / 2000);
         ping_pending = false;
-        ESP_LOGI(TAG, "Ping RTT: %lld us, latency: %lu ms", rtt_us, measured_latency_ms);
-    } else if (child_ping_pending && original_ts == last_child_ping_ms) {
+        ESP_LOGI(TAG, "Ping RTT: %lld us → %lu ms", rtt_us, measured_latency_ms);
+    } else if (child_ping_pending && id == pending_child_ping_id) {
         int64_t rtt_us = now_us - last_child_ping_sent_us;
-        nearest_child_latency_ms = (uint32_t)((rtt_us + 1000) / 2000);
+        nearest_child_latency_ms = (uint32_t)(rtt_us / 2000);
         child_ping_pending = false;
-        ESP_LOGI(TAG, "Child ping RTT: %lld us, latency: %lu ms", rtt_us, nearest_child_latency_ms);
+        ESP_LOGI(TAG, "Child RTT: %lld us → %lu ms", rtt_us, nearest_child_latency_ms);
+    } else {
+        ESP_LOGW(TAG, "PONG unmatched id=%lu (expect ping=%lu child=%lu)", 
+                 id, pending_ping_id, pending_child_ping_id);
     }
 }
 
 // Send pong response to a specific node
-static void send_pong(const mesh_addr_t *dest, uint32_t original_timestamp) {
+static void send_pong(const mesh_addr_t *dest, uint32_t ping_id) {
     mesh_ping_t pong;
     pong.type = NET_PKT_TYPE_PONG;
     pong.reserved[0] = 0;
     pong.reserved[1] = 0;
     pong.reserved[2] = 0;
-    pong.timestamp = htonl(original_timestamp);  // Echo back original timestamp
+    pong.ping_id = htonl(ping_id);
     
     mesh_data_t mesh_data = {
         .data = (uint8_t *)&pong,
@@ -484,16 +501,25 @@ static void send_pong(const mesh_addr_t *dest, uint32_t original_timestamp) {
         .tos = MESH_TOS_DEF
     };
     
-    esp_err_t err = esp_mesh_send(dest, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to send pong: %s", esp_err_to_name(err));
+    esp_err_t err;
+    if (is_mesh_root) {
+        err = esp_mesh_send(dest, &mesh_data, MESH_DATA_P2P, NULL, 0);
+    } else if (have_root_addr) {
+        err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P, NULL, 0);
+    } else {
+        ESP_LOGW(TAG, "Cannot send pong: no root addr");
+        return;
     }
+    ESP_LOGI(TAG, "PONG sent (root=%d, id=%lu): %s", is_mesh_root, ping_id, esp_err_to_name(err));
 }
 
 // Send ping to root (called by RX nodes)
 esp_err_t network_send_ping(void) {
     if (is_mesh_root || !is_mesh_connected) {
-        return ESP_ERR_INVALID_STATE;  // Root doesn't ping itself
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!have_root_addr) {
+        return ESP_ERR_INVALID_STATE;
     }
     
     if (ping_pending) {
@@ -505,15 +531,17 @@ esp_err_t network_send_ping(void) {
         }
     }
     
+    ping_seq++;
+    pending_ping_id = ping_seq;
+    
     mesh_ping_t ping;
     ping.type = NET_PKT_TYPE_PING;
     ping.reserved[0] = 0;
     ping.reserved[1] = 0;
     ping.reserved[2] = 0;
+    ping.ping_id = htonl(ping_seq);
     
     last_ping_sent_us = esp_timer_get_time();
-    last_ping_sent_ms = (uint32_t)(last_ping_sent_us / 1000);
-    ping.timestamp = htonl(last_ping_sent_ms);
     
     mesh_data_t mesh_data = {
         .data = (uint8_t *)&ping,
@@ -523,12 +551,12 @@ esp_err_t network_send_ping(void) {
     };
     
     ping_pending = true;
-    esp_err_t err = esp_mesh_send(&mesh_parent_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    esp_err_t err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P, NULL, 0);
     if (err != ESP_OK) {
         ping_pending = false;
         ESP_LOGW(TAG, "Ping send failed: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "Ping sent to root (ts=%lu)", last_ping_sent_ms);
+        ESP_LOGI(TAG, "PING sent to root id=%lu", ping_seq);
     }
     
     return err;
@@ -883,7 +911,7 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
         .tos = MESH_TOS_DEF
     };
     
-    esp_err_t err;
+    esp_err_t err = ESP_OK;
     if (is_mesh_root) {
         // Root: iterate routing table and send to each descendant (P2P)
         // esp_mesh_send(NULL) with MESH_DATA_P2P is invalid for root
@@ -902,8 +930,11 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
             }
         }
     } else {
-        // Children send to parent (toward root)
-        err = esp_mesh_send(&mesh_parent_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+        if (have_root_addr) {
+            err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+        } else {
+            err = ESP_ERR_INVALID_STATE;
+        }
     }
     
     if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
@@ -960,6 +991,21 @@ uint32_t network_get_tx_bytes_and_reset(void) {
 }
 
 int network_get_nearest_child_rssi(void) {
+    if (!is_mesh_root) return -100;
+    
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK || sta_list.num == 0) {
+        return -100;
+    }
+    
+    int8_t best_rssi = -100;
+    for (int i = 0; i < sta_list.num; i++) {
+        if (sta_list.sta[i].rssi > best_rssi) {
+            best_rssi = sta_list.sta[i].rssi;
+            memcpy(nearest_child_addr.addr, sta_list.sta[i].mac, 6);
+        }
+    }
+    nearest_child_rssi = best_rssi;
     return nearest_child_rssi;
 }
 
@@ -969,7 +1015,7 @@ uint32_t network_get_nearest_child_latency_ms(void) {
 
 esp_err_t network_ping_nearest_child(void) {
     if (!is_mesh_root) {
-        return ESP_ERR_INVALID_STATE;  // Only root pings children
+        return ESP_ERR_INVALID_STATE;
     }
     
     if (child_ping_pending) {
@@ -981,21 +1027,32 @@ esp_err_t network_ping_nearest_child(void) {
         }
     }
     
-    // Need at least one child to ping
-    int route_size = esp_mesh_get_routing_table_size();
-    if (route_size == 0) {
+    mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
+    int route_size = 0;
+    esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_size);
+    
+    mesh_addr_t *target = NULL;
+    for (int i = 0; i < route_size; i++) {
+        if (memcmp(&route_table[i], my_sta_mac, 6) != 0) {
+            target = &route_table[i];
+            break;
+        }
+    }
+    if (!target) {
         return ESP_ERR_NOT_FOUND;
     }
+    
+    child_ping_seq++;
+    pending_child_ping_id = child_ping_seq;
     
     mesh_ping_t ping;
     ping.type = NET_PKT_TYPE_PING;
     ping.reserved[0] = 0;
     ping.reserved[1] = 0;
     ping.reserved[2] = 0;
+    ping.ping_id = htonl(child_ping_seq);
     
     last_child_ping_sent_us = esp_timer_get_time();
-    last_child_ping_ms = (uint32_t)(last_child_ping_sent_us / 1000);
-    ping.timestamp = htonl(last_child_ping_ms);
     
     mesh_data_t mesh_data = {
         .data = (uint8_t *)&ping,
@@ -1005,9 +1062,12 @@ esp_err_t network_ping_nearest_child(void) {
     };
     
     child_ping_pending = true;
-    esp_err_t err = esp_mesh_send(&nearest_child_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+    esp_err_t err = esp_mesh_send(target, &mesh_data, MESH_DATA_P2P, NULL, 0);
     if (err != ESP_OK) {
         child_ping_pending = false;
+        ESP_LOGW(TAG, "Child ping failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "PING sent to child id=%lu", child_ping_seq);
     }
     
     return err;

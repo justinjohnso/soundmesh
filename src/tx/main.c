@@ -22,6 +22,7 @@
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
 #include "audio/adf_pipeline.h"
+#include "control/serial_dashboard.h"
 
 #ifdef CONFIG_USE_ES8388
 #include "audio/es8388_audio.h"
@@ -125,6 +126,7 @@ void app_main(void) {
     }
 
     ESP_LOGI(TAG, "TX initialized, waiting for network...");
+    dashboard_init();
 
     // Wait for network to be ready (event-driven, not polling)
     // Use chunked waits to feed watchdog during mesh formation (can take 10+ seconds)
@@ -135,6 +137,7 @@ void app_main(void) {
         esp_task_wdt_reset();  // Feed watchdog while waiting
     }
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
+    dashboard_log("Network ready");
 
     // Start the TX pipeline
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
@@ -161,11 +164,11 @@ void app_main(void) {
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
                 current_view = (current_view == DISPLAY_VIEW_NETWORK) ?
                               DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
-                ESP_LOGI(TAG, "View changed to %s",
+                dashboard_log("View changed to %s",
                         current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
                 status.input_mode = (status.input_mode + 1) % 3;
-                ESP_LOGI(TAG, "Input mode changed to %d", status.input_mode);
+                dashboard_log("Input mode changed to %d", status.input_mode);
             }
         }
         
@@ -185,12 +188,12 @@ void app_main(void) {
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
                 status.bandwidth_kbps = (stats.frames_processed * 100 * 8) / 1000;
                 
-                ESP_LOGI(TAG, "Stats: nodes=%lu, rssi=%d, frames=%lu, drops=%lu, enc=%luus",
-                         status.connected_nodes, status.rssi,
+                dashboard_log("TX: %lu frames, %lu drops, enc=%luus",
                          stats.frames_processed, stats.frames_dropped,
                          stats.avg_encode_time_us);
             }
             
+            dashboard_render_tx(&status);
             last_stats_ms = now_ms;
         }
 

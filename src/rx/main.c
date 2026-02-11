@@ -28,7 +28,6 @@ static const char *TAG = "rx_main";
 
 static rx_status_t status = {
     .rssi = -100,
-    .hops = 0,
     .latency_ms = 0,
     .buffer_pct = 0,
     .receiving_audio = false,
@@ -39,7 +38,7 @@ static rx_status_t status = {
 static uint32_t bytes_received_this_second = 0;
 static uint32_t last_bandwidth_update = 0;
 
-static display_view_t current_view = DISPLAY_VIEW_NETWORK;
+static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t rx_pipeline = NULL;
 
 // Packet tracking for statistics
@@ -158,10 +157,8 @@ void app_main(void) {
         // Handle button events
         button_event_t btn_event = buttons_poll();
         if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
-            current_view = (current_view == DISPLAY_VIEW_NETWORK) ? 
-                          DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
-            ESP_LOGI(TAG, "View changed to %s", 
-                    current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
+            current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
+            ESP_LOGI(TAG, "View changed to %d", current_view);
         }
         
         // Check for audio stream timeout
@@ -178,14 +175,6 @@ void app_main(void) {
             // Send ping to measure latency (every stats update)
             network_send_ping();
             
-            // Hops = layer - 1 when connected (layer 1 = 0 hops to root)
-            uint8_t layer = network_get_layer();
-            if (network_is_connected() && layer > 0) {
-                status.hops = layer - 1;
-            } else {
-                status.hops = 0;
-            }
-            
             // Calculate bandwidth rate (bytes this second * 8 / 1000 = kbps)
             status.bandwidth_kbps = (bytes_received_this_second * 8) / 1000;
             bytes_received_this_second = 0;
@@ -199,6 +188,7 @@ void app_main(void) {
                 if (packets_received + dropped_packets > 0) {
                     loss_pct = (100.0f * dropped_packets) / (packets_received + dropped_packets);
                 }
+                status.loss_pct = loss_pct;
                 ESP_LOGI(TAG, "Stats: RX=%lu, DROP=%lu (%.1f%%), ping=%lums, buf=%u%%", 
                          packets_received, dropped_packets, loss_pct,
                          status.latency_ms, stats.buffer_fill_percent);

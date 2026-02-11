@@ -1,5 +1,6 @@
 #include "control/display.h"
 #include "config/pins.h"
+#include "config/build.h"
 #include <esp_log.h>
 #include <driver/i2c.h>
 #include <driver/gpio.h>
@@ -7,6 +8,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <esp_timer.h>
+#include <esp_heap_caps.h>
 
 static const char *TAG = "display";
 
@@ -495,6 +498,28 @@ static void display_draw_pixel(uint8_t x, uint8_t y) {
     display_buffer[page * DISPLAY_WIDTH + x] |= (1 << bit);
 }
 
+static void display_draw_signal_bars(uint8_t x, uint8_t y, int rssi) {
+    int bars = 0;
+    if (rssi > -80) bars = 1;
+    if (rssi > -70) bars = 2;
+    if (rssi > -60) bars = 3;
+    if (rssi > -50) bars = 4;
+    
+    for (int b = 0; b < 4; b++) {
+        int bar_height = (b + 1) * 2;
+        int bar_x = x + b * 4;
+        int bar_top = y + 8 - bar_height;
+        
+        for (int py = bar_top; py < y + 8; py++) {
+            for (int px = bar_x; px < bar_x + 3; px++) {
+                if (b < bars) {
+                    display_draw_pixel(px, py);
+                }
+            }
+        }
+    }
+}
+
 // Render TX display
 void display_render_tx(display_view_t view, const tx_status_t *status) {
     display_clear();
@@ -504,7 +529,7 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
 
     if (view == DISPLAY_VIEW_NETWORK) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "Connected: %lu", status->connected_nodes);
+        snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
         display_draw_string(0, 0, buf);
 
         snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
@@ -560,128 +585,176 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
 
 // Render RX display
 void display_render_rx(display_view_t view, const rx_status_t *status) {
-    static uint32_t call_count = 0;
-    static uint32_t last_detailed_log = 0;
-    uint32_t now = xTaskGetTickCount();
-    
-    if (!display_initialized) {
-        if ((call_count++ & 0xFF) == 0) {  // Log once every ~256 calls to reduce spam
-            ESP_LOGW(TAG, "display_render_rx called but display not initialized! (count=%lu)", call_count);
-        }
-        return;
-    }
-    
-    call_count++;
-    
-    // Log every 50 calls (~5 seconds at 10Hz) with detailed info
-    if ((now - last_detailed_log) >= pdMS_TO_TICKS(5000)) {
-        ESP_LOGD(TAG, "display_render_rx: count=%lu, view=%d, rssi=%d, latency=%lu, receiving=%d", 
-                 call_count, view, status->rssi, status->latency_ms, status->receiving_audio);
-        last_detailed_log = now;
-    }
+    if (!display_initialized) return;
     
     display_clear();
     
     static uint32_t animation_counter = 0;
     animation_counter++;
 
-    if (view == DISPLAY_VIEW_NETWORK) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
-        display_draw_string(0, 0, buf);
+    display_draw_signal_bars(112, 0, status->rssi);
 
-        snprintf(buf, sizeof(buf), "Hops: %lu", status->hops);
-        display_draw_string(0, 1, buf);
-
-        if (status->rssi == -100) {
-            display_draw_string(0, 2, "RSSI: -- dBm");
-        } else {
-            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-            display_draw_string(0, 2, buf);
-        }
-    } else {
-        const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
-        display_draw_string(0, 0, state_str);
-
-        char buf[32];
-        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 2, buf);
-
+    if (view == DISPLAY_VIEW_AUDIO) {
         if (status->receiving_audio) {
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 16 + (int)(sinf(phase) * 10.0f);
+                int y = 24 + (int)(sinf(phase) * 6.0f);
                 if (y >= 0 && y < DISPLAY_HEIGHT) {
                     display_draw_pixel(x, y);
                 }
             }
         } else {
-            int y = 16;
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                display_draw_pixel(x, y);
+                display_draw_pixel(x, 24);
             }
         }
+
+        const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
+        display_draw_string(0, 0, state_str);
+
+        char buf[22];
+        snprintf(buf, sizeof(buf), "Opus %dk %dkHz",
+                 OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 3, buf);
+    } else if (view == DISPLAY_VIEW_NETWORK) {
+        char buf[22];
+
+        if (status->rssi == -100) {
+            display_draw_string(0, 0, "RSSI: --");
+        } else {
+            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+            display_draw_string(0, 0, buf);
+        }
+
+        if (status->latency_ms > 0) {
+            snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
+        } else {
+            snprintf(buf, sizeof(buf), "Ping: --");
+        }
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
+        display_draw_string(0, 2, buf);
+    } else {
+        char buf[22];
+        
+        uint32_t total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
+        uint32_t free_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        uint32_t ram_pct = (total > 0) ? ((total - free_mem) * 100 / total) : 0;
+        snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
+        display_draw_string(0, 0, buf);
+        
+        uint8_t buf_danger = (status->buffer_pct <= 100) ? (100 - status->buffer_pct) : 0;
+        snprintf(buf, sizeof(buf), "Buffer: %u%%", buf_danger);
+        display_draw_string(0, 1, buf);
+        
+        uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        uint32_t hours = uptime_s / 3600;
+        uint32_t mins = (uptime_s % 3600) / 60;
+        uint32_t secs = uptime_s % 60;
+        snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
+        display_draw_string(0, 3, buf);
     }
 
     display_update();
 }
 
-// Render COMBO display (identical to TX since combo is a TX node)
+// Render COMBO display
 void display_render_combo(display_view_t view, const combo_status_t *status) {
+    if (!display_initialized) return;
+    
     display_clear();
 
     static uint32_t animation_counter = 0;
     animation_counter++;
 
-    if (view == DISPLAY_VIEW_NETWORK) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Nodes: %lu", status->connected_nodes);
-        display_draw_string(0, 0, buf);
-
-        if (status->connected_nodes > 0) {
-            snprintf(buf, sizeof(buf), "Nearest: %d dBm", status->nearest_rssi);
-            display_draw_string(0, 1, buf);
-            snprintf(buf, sizeof(buf), "Ping: %lu ms", status->nearest_latency_ms);
-            display_draw_string(0, 2, buf);
-        } else {
-            display_draw_string(0, 1, "Nearest: --");
-            display_draw_string(0, 2, "Ping: --");
-        }
-    } else {
-        const char *mode_str = "Unknown";
-        if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
-        else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
-        else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
-
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Source: %s", mode_str);
-        display_draw_string(0, 0, buf);
-
-        if (status->input_mode == INPUT_MODE_TONE) {
-            snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
-            display_draw_string(0, 1, buf);
-        } else {
-            const char *status_str = status->audio_active ? "Streaming" : "Idle";
-            display_draw_string(0, 1, status_str);
-        }
-
-        snprintf(buf, sizeof(buf), "TX: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 2, buf);
-
+    if (view == DISPLAY_VIEW_AUDIO) {
         if (status->audio_active) {
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 16 + (int)(sinf(phase) * 10.0f);
+                int y = 24 + (int)(sinf(phase) * 6.0f);
                 if (y >= 0 && y < DISPLAY_HEIGHT) {
                     display_draw_pixel(x, y);
                 }
             }
         } else {
-            int y = 16;
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                display_draw_pixel(x, y);
+                display_draw_pixel(x, 24);
             }
         }
+
+        const char *mode_str = "Unknown";
+        if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
+        else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
+        else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
+        
+        char buf[22];
+        snprintf(buf, sizeof(buf), "Src: %s", mode_str);
+        display_draw_string(0, 0, buf);
+        
+        if (status->connected_nodes > 0) {
+            display_draw_signal_bars(112, 0, status->nearest_rssi);
+        }
+        
+        if (status->input_mode == INPUT_MODE_TONE) {
+            snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
+            display_draw_string(0, 1, buf);
+        } else {
+            snprintf(buf, sizeof(buf), "Opus %dk %dkHz",
+                     OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
+            display_draw_string(0, 1, buf);
+        }
+
+        snprintf(buf, sizeof(buf), "TX: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 3, buf);
+    } else if (view == DISPLAY_VIEW_NETWORK) {
+        char buf[24];
+
+        if (status->connected_nodes > 0) {
+            display_draw_signal_bars(112, 0, status->nearest_rssi);
+
+            if (status->nearest_rssi == -100) {
+                display_draw_string(0, 0, "RSSI: --");
+            } else {
+                snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->nearest_rssi);
+                display_draw_string(0, 0, buf);
+            }
+
+            if (status->nearest_latency_ms > 0) {
+                snprintf(buf, sizeof(buf), "RX Ping: %lu ms", status->nearest_latency_ms);
+            } else {
+                snprintf(buf, sizeof(buf), "RX Ping: --");
+            }
+            display_draw_string(0, 1, buf);
+
+            snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
+            display_draw_string(0, 2, buf);
+        } else {
+            display_draw_string(0, 0, "RSSI: --");
+            display_draw_string(0, 1, "RX Ping: --");
+            display_draw_string(0, 2, "Con. Nodes: 0");
+        }
+    } else {
+        char buf[22];
+        
+        uint32_t total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
+        uint32_t free_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        uint32_t ram_pct = (total > 0) ? ((total - free_mem) * 100 / total) : 0;
+        snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
+        display_draw_string(0, 0, buf);
+        
+        snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
+        display_draw_string(0, 1, buf);
+        
+        uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        uint32_t hours = uptime_s / 3600;
+        uint32_t mins = (uptime_s % 3600) / 60;
+        uint32_t secs = uptime_s % 60;
+        snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
+        display_draw_string(0, 3, buf);
     }
 
     display_update();

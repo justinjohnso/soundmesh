@@ -32,7 +32,7 @@ button_event_t buttons_poll(void) {
     static uint32_t last_log = 0;
     uint32_t now = xTaskGetTickCount();
     if ((now - last_log) > pdMS_TO_TICKS(5000)) {
-        ESP_LOGI(TAG, "Button GPIO=%d, level=%d, pressed=%d", BUTTON_GPIO, gpio_level, button_pressed);
+        ESP_LOGD(TAG, "Button GPIO=%d, level=%d, pressed=%d", BUTTON_GPIO, gpio_level, button_pressed);
         last_log = now;
     }
 

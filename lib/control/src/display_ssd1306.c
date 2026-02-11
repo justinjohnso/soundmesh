@@ -344,9 +344,8 @@ esp_err_t display_init(void) {
         vTaskDelay(pdMS_TO_TICKS(100));
         test_err = i2c_master_write_to_device(I2C_MASTER_NUM, SSD1306_I2C_ADDR, test_data, 2, pdMS_TO_TICKS(100));
         if (test_err != ESP_OK) {
-            ESP_LOGE(TAG, "CRITICAL: I2C test write failed after recovery: %s - SSD1306 at 0x%02x may not be responding or not connected", 
-                     esp_err_to_name(test_err), SSD1306_I2C_ADDR);
-            ESP_LOGE(TAG, "Display will be disabled. Check I2C wiring and continuity on GPIO5 (SDA) and GPIO6 (SCL)");
+            ESP_LOGW(TAG, "SSD1306 not found at 0x%02x after recovery - display disabled (I2C bus remains active for other devices)", 
+                     SSD1306_I2C_ADDR);
             return ESP_FAIL;
         }
         ESP_LOGI(TAG, "I2C test write successful after bus recovery!");
@@ -522,6 +521,7 @@ static void display_draw_signal_bars(uint8_t x, uint8_t y, int rssi) {
 
 // Render TX display
 void display_render_tx(display_view_t view, const tx_status_t *status) {
+    if (!display_initialized) return;
     display_clear();
 
     static uint32_t animation_counter = 0;
@@ -647,8 +647,7 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
         snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
         display_draw_string(0, 0, buf);
         
-        uint8_t buf_danger = (status->buffer_pct <= 100) ? (100 - status->buffer_pct) : 0;
-        snprintf(buf, sizeof(buf), "Buffer: %u%%", buf_danger);
+        snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
         display_draw_string(0, 1, buf);
         
         uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -723,19 +722,11 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
                 display_draw_string(0, 0, buf);
             }
 
-            if (status->nearest_latency_ms > 0) {
-                snprintf(buf, sizeof(buf), "RX Ping: %lu ms", status->nearest_latency_ms);
-            } else {
-                snprintf(buf, sizeof(buf), "RX Ping: --");
-            }
-            display_draw_string(0, 1, buf);
-
             snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
-            display_draw_string(0, 2, buf);
+            display_draw_string(0, 1, buf);
         } else {
             display_draw_string(0, 0, "RSSI: --");
-            display_draw_string(0, 1, "RX Ping: --");
-            display_draw_string(0, 2, "Con. Nodes: 0");
+            display_draw_string(0, 1, "Con. Nodes: 0");
         }
     } else {
         char buf[22];

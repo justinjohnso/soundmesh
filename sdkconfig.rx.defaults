@@ -1,5 +1,8 @@
+# Console & logging
+CONFIG_LOG_COLORS=n
+
 # I2S
 CONFIG_I2S_ENABLE_TX_CHANNEL=y
 
-# Stack size
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=131072
+# Stack size (8KB - main loop just polls buttons/display)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

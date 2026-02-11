@@ -42,7 +42,5 @@ typedef struct {
     uint32_t bandwidth_kbps;
     uint32_t tone_freq_hz;
     float output_volume;
-    // Nearest child info (for root display)
     int nearest_rssi;
-    uint32_t nearest_latency_ms;
 } combo_status_t;

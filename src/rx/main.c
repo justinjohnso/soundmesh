@@ -23,6 +23,8 @@
 #endif
 #include <string.h>
 #include <netinet/in.h>
+#include <esp_timer.h>
+#include "control/serial_dashboard.h"
 
 static const char *TAG = "rx_main";
 
@@ -48,6 +50,17 @@ static uint16_t last_seq = 0;
 static bool first_packet = true;
 static uint32_t last_packet_time = 0;
 
+// One-way latency estimation from audio frame timestamps
+// Root puts esp_timer ms in each frame header; we compare to our local clock.
+// Since clocks aren't synced, we track min(local - remote) over a sliding
+// window.  The minimum raw delta ≈ clock_offset + true one-way latency.
+// We report delta - min(delta) as the jitter-adjusted latency estimate,
+// and periodically reset min to adapt to clock drift.
+static int64_t min_raw_delta = INT64_MAX;   // Minimum (local_ms - remote_ms) seen in current window
+static uint32_t ewma_oneway_ms = 0;         // Smoothed latency estimate
+static uint32_t latency_window_start = 0;   // Tick count when current window started
+#define LATENCY_WINDOW_MS 10000             // Reset min every 10s to track drift
+
 // Audio callback for mesh network - called when audio frames are received
 static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp) {
     // Track sequence gaps for packet loss measurement
@@ -63,17 +76,41 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
     first_packet = false;
     last_seq = seq;
     
+    // One-way latency estimation from root's timestamp
+    // raw_delta = local_ms - remote_ms (includes unknown clock offset + true latency)
+    // min(raw_delta) over a window approximates the clock offset + best-case latency
+    // Reported value = raw_delta - min(raw_delta) ≈ network jitter above baseline
+    if (timestamp > 0) {
+        int64_t local_ms = (int64_t)(esp_timer_get_time() / 1000);
+        int64_t raw_delta = local_ms - (int64_t)timestamp;
+        
+        // Reset window periodically to adapt to clock drift
+        uint32_t now_ticks = xTaskGetTickCount();
+        if ((now_ticks - latency_window_start) > pdMS_TO_TICKS(LATENCY_WINDOW_MS)) {
+            min_raw_delta = raw_delta;
+            latency_window_start = now_ticks;
+        }
+        
+        if (raw_delta < min_raw_delta) {
+            min_raw_delta = raw_delta;
+        }
+        
+        uint32_t oneway = (uint32_t)(raw_delta - min_raw_delta);
+        ewma_oneway_ms = (ewma_oneway_ms * 9 + oneway) / 10;
+    }
+
     // Feed Opus data to the pipeline
     if (rx_pipeline) {
         esp_err_t ret = adf_pipeline_feed_opus(rx_pipeline, payload, len, seq, timestamp);
         if (ret == ESP_OK) {
             status.receiving_audio = true;
             packets_received++;
-            bytes_received_this_second += len;  // Track bytes for bandwidth calc
+            bytes_received_this_second += len;
             last_packet_time = xTaskGetTickCount();
             
             if ((packets_received & 0x7F) == 0) {
-                ESP_LOGI(TAG, "RX packet %lu (seq=%u, len=%zu)", packets_received, seq, len);
+                ESP_LOGI(TAG, "RX packet %lu (seq=%u, len=%zu, lat=%lums)", 
+                         packets_received, seq, len, ewma_oneway_ms);
             }
         } else {
             ESP_LOGW(TAG, "Pipeline buffer full, dropping packet seq=%u", seq);
@@ -103,7 +140,11 @@ void app_main(void) {
     // Initialize audio output
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio output: ES8388 headphone DAC");
-    ESP_ERROR_CHECK(es8388_audio_init(true));
+    if (es8388_audio_init(true) != ESP_OK) {
+        ESP_LOGW(TAG, "ES8388 init failed — check wiring (SDA=%d, SCL=%d, addr=0x10)", 
+                 I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+        ESP_LOGW(TAG, "Continuing without audio output");
+    }
 #else
     ESP_LOGI(TAG, "Audio output: UDA1334 I2S DAC");
     ESP_ERROR_CHECK(i2s_audio_init());
@@ -136,6 +177,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(network_register_audio_callback(audio_rx_callback));
 
     ESP_LOGI(TAG, "RX initialized, waiting for network...");
+    dashboard_init();
 
     // Start the RX pipeline BEFORE waiting for network (for tone test / immediate audio)
     ESP_LOGI(TAG, "Starting audio pipeline...");
@@ -146,6 +188,7 @@ void app_main(void) {
     uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (notify_value > 0) {
         ESP_LOGI(TAG, "Network ready");
+        dashboard_log("Network ready");
     }
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
@@ -158,7 +201,7 @@ void app_main(void) {
         button_event_t btn_event = buttons_poll();
         if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
             current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
-            ESP_LOGI(TAG, "View changed to %d", current_view);
+            dashboard_log("View: %d", current_view);
         }
         
         // Check for audio stream timeout
@@ -170,10 +213,7 @@ void app_main(void) {
         uint32_t now = xTaskGetTickCount();
         if ((now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
             status.rssi = network_get_rssi();
-            status.latency_ms = network_get_latency_ms();
-            
-            // Send ping to measure latency (every stats update)
-            network_send_ping();
+            status.latency_ms = ewma_oneway_ms;
             
             // Calculate bandwidth rate (bytes this second * 8 / 1000 = kbps)
             status.bandwidth_kbps = (bytes_received_this_second * 8) / 1000;
@@ -189,11 +229,11 @@ void app_main(void) {
                     loss_pct = (100.0f * dropped_packets) / (packets_received + dropped_packets);
                 }
                 status.loss_pct = loss_pct;
-                ESP_LOGI(TAG, "Stats: RX=%lu, DROP=%lu (%.1f%%), ping=%lums, buf=%u%%", 
-                         packets_received, dropped_packets, loss_pct,
-                         status.latency_ms, stats.buffer_fill_percent);
+                dashboard_log("RX: %lu pkts, %lu drops (%.1f%%), buf=%u%%",
+                             packets_received, dropped_packets, loss_pct, stats.buffer_fill_percent);
             }
             
+            dashboard_render_rx(&status);
             last_stats_update = now;
         }
         

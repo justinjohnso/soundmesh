@@ -44,8 +44,7 @@ static combo_status_t status = {
     .nearest_latency_ms = 0
 };
 
-// Bandwidth tracking - track frames processed in last second
-static uint32_t frames_last_second = 0;
+// Bandwidth tracking
 static uint32_t last_frames_processed = 0;
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
@@ -179,10 +178,8 @@ void app_main(void) {
             last_button_ms = now_ms;
             button_event_t btn_event = buttons_poll();
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
-                current_view = (current_view == DISPLAY_VIEW_NETWORK) ?
-                              DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
-                ESP_LOGI(TAG, "View changed to %s",
-                        current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
+                current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
+                ESP_LOGI(TAG, "View changed to %d", current_view);
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
                 status.input_mode = (status.input_mode + 1) % 3;
                 adf_input_mode_t adf_mode = (status.input_mode == INPUT_MODE_TONE) ? ADF_INPUT_MODE_TONE :
@@ -210,12 +207,11 @@ void app_main(void) {
             // Get pipeline stats
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
-                // Calculate frames processed in last second (rate, not cumulative)
-                frames_last_second = stats.frames_processed - last_frames_processed;
                 last_frames_processed = stats.frames_processed;
                 
-                // Bandwidth: frames/sec × ~100 bytes/frame × 8 bits/byte / 1000 = kbps
-                status.bandwidth_kbps = (frames_last_second * 100 * 8) / 1000;
+                // Bandwidth from actual bytes sent over mesh
+                uint32_t tx_bytes = network_get_tx_bytes_and_reset();
+                status.bandwidth_kbps = (tx_bytes * 8) / 1000;
                 
                 ESP_LOGI(TAG, "Stats: nodes=%lu, nearest=%ddBm/%lums, frames=%lu, bw=%lukbps",
                          status.connected_nodes, status.nearest_rssi, status.nearest_latency_ms,

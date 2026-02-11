@@ -96,10 +96,9 @@ void app_main(void) {
              AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS);
     ESP_LOGI(TAG, "======================================");
 
-    // Display disabled on RX — may not be wired
-    // if (display_init() != ESP_OK) {
-    //     ESP_LOGW(TAG, "Display init failed, continuing without display");
-    // }
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display init failed, continuing without display");
+    }
     ESP_ERROR_CHECK(buttons_init());
 
     // Initialize audio output
@@ -208,12 +207,11 @@ void app_main(void) {
             last_stats_update = now;
         }
         
-        // Display disabled on RX — may not be wired
-        // static uint32_t last_display_update = 0;
-        // if ((now - last_display_update) >= pdMS_TO_TICKS(100)) {
-        //     display_render_rx(current_view, &status);
-        //     last_display_update = now;
-        // }
+        static uint32_t last_display_update = 0;
+        if ((now - last_display_update) >= pdMS_TO_TICKS(100)) {
+            display_render_rx(current_view, &status);
+            last_display_update = now;
+        }
         
         // Small delay to prevent tight loop
         vTaskDelay(pdMS_TO_TICKS(10));

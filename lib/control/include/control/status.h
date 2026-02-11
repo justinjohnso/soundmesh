@@ -10,8 +10,10 @@ typedef enum {
 } input_mode_t;
 
 typedef enum {
+    DISPLAY_VIEW_AUDIO,
     DISPLAY_VIEW_NETWORK,
-    DISPLAY_VIEW_AUDIO
+    DISPLAY_VIEW_INFO,
+    DISPLAY_VIEW_COUNT
 } display_view_t;
 
 typedef struct {
@@ -26,11 +28,11 @@ typedef struct {
 
 typedef struct {
     int rssi;
-    uint32_t hops;
-    uint32_t latency_ms;     // RTT/2 from ping measurements
-    uint8_t buffer_pct;      // Jitter buffer fill percentage (0-100)
+    uint32_t latency_ms;
+    uint8_t buffer_pct;
     bool receiving_audio;
     uint32_t bandwidth_kbps;
+    float loss_pct;
 } rx_status_t;
 
 typedef struct {

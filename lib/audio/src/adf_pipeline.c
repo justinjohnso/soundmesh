@@ -379,7 +379,7 @@ static void tx_capture_task(void *arg)
                     }
                     es8388_audio_write_stereo(stereo_frame, frames_read);
                     local_output_count++;
-                    if ((local_output_count % 500) == 0) {
+                    if ((local_output_count % 1000) == 0) {
                         ESP_LOGI(TAG, "Local output: %lu frames, mode=TONE", local_output_count);
                     }
                 }
@@ -413,8 +413,6 @@ static void tx_capture_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
                 break;
 #endif
-                // Simple blocking read for full frame
-                // I2S DMA should accumulate samples; we just wait for enough
                 ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
                 
                 if (ret != ESP_OK || frames_read == 0) {
@@ -428,32 +426,28 @@ static void tx_capture_task(void *arg)
                 }
                 no_data_count = 0;
                 
-                // If partial read, pad with zeros to avoid encoder issues
                 if (frames_read < AUDIO_FRAME_SAMPLES) {
                     memset(stereo_frame + (frames_read * 2), 0, 
                            (AUDIO_FRAME_SAMPLES - frames_read) * 2 * sizeof(int16_t));
                     frames_read = AUDIO_FRAME_SAMPLES;
                 }
                 
-                // Convert stereo to mono
                 for (size_t i = 0; i < frames_read; i++) {
                     mono_frame[i] = (stereo_frame[i * 2] + stereo_frame[i * 2 + 1]) / 2;
                 }
                 
-                // Debug: log first few captured frames to verify ES8388 input
                 static uint32_t capture_count = 0;
                 capture_count++;
-                if (capture_count <= 5 || (capture_count % 500) == 0) {
+                if (capture_count <= 5 || (capture_count % 1000) == 0) {
                     ESP_LOGI(TAG, "Capture #%lu: stereo[0]=%d stereo[1]=%d mono[0]=%d mono[100]=%d",
                              capture_count, (int)stereo_frame[0], (int)stereo_frame[1],
                              (int)mono_frame[0], (int)mono_frame[100]);
                 }
                 
-                // Local output for headphone monitoring (if enabled)
                 if (pipeline->enable_local_output) {
                     es8388_audio_write_stereo(stereo_frame, frames_read);
                     local_output_count++;
-                    if ((local_output_count % 500) == 0) {
+                    if ((local_output_count % 1000) == 0) {
                         ESP_LOGI(TAG, "Local output: %lu frames, mode=AUX", local_output_count);
                     }
                 }
@@ -478,25 +472,27 @@ static void tx_capture_task(void *arg)
  * Blocks waiting for notification from PCM buffer.
  * When notified, reads and encodes a frame, then sends to mesh.
  */
+// Batch buffer: accumulate MESH_FRAMES_PER_PACKET Opus frames before sending
+// Layout: [header][len1_hi][len1_lo][opus1...][len2_hi][len2_lo][opus2...]
+static uint8_t s_batch_buffer[NET_FRAME_HEADER_SIZE + MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES)];
+
 static void tx_encode_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
-    // Use static buffers instead of stack allocation (saves ~5KB stack)
     int16_t *pcm_frame = s_encode_pcm_frame;
     uint8_t *opus_frame = s_encode_opus_frame;
-    uint8_t *packet_buffer = s_encode_packet_buffer;
     
-    ESP_LOGI(TAG, "TX encode task started (event-driven), stack=%u",
-             uxTaskGetStackHighWaterMark(NULL));
+    uint8_t batch_count = 0;
+    size_t batch_payload_len = 0;
+    
+    ESP_LOGI(TAG, "TX encode task started (batch=%d), stack=%u",
+             MESH_FRAMES_PER_PACKET, uxTaskGetStackHighWaterMark(NULL));
     
     while (pipeline->running) {
-        // Block waiting for notification from capture task via ring buffer
-        // This is the event-driven core - no polling!
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
         
         if (!pipeline->running) break;
         
-        // Process all available frames
         while (ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES) {
             esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)pcm_frame, AUDIO_FRAME_BYTES);
             if (ret != ESP_OK) break;
@@ -520,31 +516,44 @@ static void tx_encode_task(void *arg)
                 continue;
             }
             
-            // Build network packet
-            net_frame_header_t *hdr = (net_frame_header_t *)packet_buffer;
-            hdr->magic = NET_FRAME_MAGIC;
-            hdr->version = NET_FRAME_VERSION;
-            hdr->type = NET_PKT_TYPE_AUDIO_OPUS;
-            hdr->stream_id = 1;
-            hdr->seq = htons(pipeline->tx_seq++);
-            hdr->timestamp = htonl((uint32_t)(esp_timer_get_time() / 1000));
-            hdr->payload_len = htons((uint16_t)opus_len);
-            hdr->ttl = 6;
-            hdr->reserved = 0;
+            // Append to batch: [len_hi][len_lo][opus_data...]
+            uint8_t *dst = s_batch_buffer + NET_FRAME_HEADER_SIZE + batch_payload_len;
+            dst[0] = (opus_len >> 8) & 0xFF;
+            dst[1] = opus_len & 0xFF;
+            memcpy(dst + 2, opus_frame, opus_len);
+            batch_payload_len += 2 + opus_len;
+            batch_count++;
             
-            memcpy(packet_buffer + NET_FRAME_HEADER_SIZE, opus_frame, opus_len);
-            
-            ret = network_send_audio(packet_buffer, NET_FRAME_HEADER_SIZE + opus_len);
-            if (ret == ESP_OK) {
-                pipeline->stats.frames_processed++;
-            } else if (ret != ESP_ERR_MESH_DISCONNECTED && ret != ESP_ERR_INVALID_STATE) {
-                pipeline->stats.frames_dropped++;
-            }
-            
-            if ((pipeline->tx_seq & 0x7F) == 0) {
-                ESP_LOGI(TAG, "TX: seq=%u, opus_len=%d, enc_time=%luus",
-                         pipeline->tx_seq, opus_len, 
-                         (unsigned long)pipeline->stats.avg_encode_time_us);
+            // Send when batch is full
+            if (batch_count >= MESH_FRAMES_PER_PACKET) {
+                net_frame_header_t *hdr = (net_frame_header_t *)s_batch_buffer;
+                hdr->magic = NET_FRAME_MAGIC;
+                hdr->version = NET_FRAME_VERSION;
+                hdr->type = NET_PKT_TYPE_AUDIO_OPUS;
+                hdr->stream_id = 1;
+                hdr->seq = htons(pipeline->tx_seq);
+                hdr->timestamp = htonl((uint32_t)(esp_timer_get_time() / 1000));
+                hdr->payload_len = htons((uint16_t)batch_payload_len);
+                hdr->ttl = 6;
+                hdr->reserved = batch_count;  // Store frame count in reserved byte
+                
+                ret = network_send_audio(s_batch_buffer, NET_FRAME_HEADER_SIZE + batch_payload_len);
+                if (ret == ESP_OK) {
+                    pipeline->stats.frames_processed += batch_count;
+                } else if (ret != ESP_ERR_MESH_DISCONNECTED && ret != ESP_ERR_INVALID_STATE) {
+                    pipeline->stats.frames_dropped += batch_count;
+                }
+                
+                pipeline->tx_seq += batch_count;
+                
+                if ((pipeline->tx_seq & 0xFF) == 0) {
+                    ESP_LOGI(TAG, "TX: seq=%u, batch=%u, payload=%u, enc=%luus",
+                             pipeline->tx_seq, batch_count, (unsigned)batch_payload_len,
+                             (unsigned long)pipeline->stats.avg_encode_time_us);
+                }
+                
+                batch_count = 0;
+                batch_payload_len = 0;
             }
         }
     }
@@ -678,7 +687,7 @@ static void rx_decode_task(void *arg)
             if (samples_decoded < 0) {
                 static uint32_t decode_error_count = 0;
                 decode_error_count++;
-                if ((decode_error_count % 100) == 1) {
+                if ((decode_error_count % 500) == 1) {
                     ESP_LOGW(TAG, "Opus decode failed: %s (item_size=%u, opus_len=%u, first_bytes=%02x%02x%02x%02x, errors=%lu)",
                              opus_strerror(samples_decoded), (unsigned)item_size, opus_len,
                              first_bytes[0], first_bytes[1], first_bytes[2], first_bytes[3], decode_error_count);
@@ -773,7 +782,11 @@ static void rx_playback_task(void *arg)
         if (!prefilled) {
             if (available >= prefill_bytes) {
                 prefilled = true;
-                ESP_LOGI(TAG, "Playback prefilled (%zu bytes)", available);
+                static uint32_t prefill_count = 0;
+                prefill_count++;
+                if (prefill_count <= 3 || (prefill_count % 50) == 0) {
+                    ESP_LOGI(TAG, "Playback prefilled #%lu (%zu bytes)", prefill_count, available);
+                }
             } else {
 #if defined(CONFIG_USE_ES8388)
                 es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
@@ -796,9 +809,17 @@ static void rx_playback_task(void *arg)
             if (ret == ESP_OK) {
                 static uint32_t playback_count = 0;
                 playback_count++;
-                if (playback_count <= 5 || (playback_count % 100) == 0) {
-                    ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d s[500]=%d",
-                             playback_count, (int)mono_frame[0], (int)mono_frame[100], (int)mono_frame[500]);
+                
+                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                    int32_t scaled = (int32_t)(mono_frame[i] * RX_OUTPUT_VOLUME);
+                    if (scaled > 32767) scaled = 32767;
+                    else if (scaled < -32768) scaled = -32768;
+                    mono_frame[i] = (int16_t)scaled;
+                }
+                
+                if (playback_count <= 5 || (playback_count % 500) == 0) {
+                    ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d",
+                             playback_count, (int)mono_frame[0], (int)mono_frame[100]);
                 }
                 
 #if defined(CONFIG_USE_ES8388)

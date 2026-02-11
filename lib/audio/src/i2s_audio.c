@@ -74,7 +74,7 @@ esp_err_t i2s_audio_write_mono_as_stereo(const int16_t *mono_samples, size_t num
     &bytes_written, portMAX_DELAY);
     
     write_count++;
-    if ((write_count % 100) == 1) {
+    if ((write_count % 500) == 1) {
         ESP_LOGI(TAG, "I2S write #%lu: ret=%d, bytes_written=%zu, samples[0]=%d samples[1]=%d", 
                  write_count, ret, bytes_written, (int)stereo_buffer[0], (int)stereo_buffer[1]);
     }

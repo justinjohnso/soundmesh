@@ -575,7 +575,7 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
     
     // Log every 50 calls (~5 seconds at 10Hz) with detailed info
     if ((now - last_detailed_log) >= pdMS_TO_TICKS(5000)) {
-        ESP_LOGI(TAG, "display_render_rx: count=%lu, view=%d, rssi=%d, latency=%lu, receiving=%d", 
+        ESP_LOGD(TAG, "display_render_rx: count=%lu, view=%d, rssi=%d, latency=%lu, receiving=%d", 
                  call_count, view, status->rssi, status->latency_ms, status->receiving_audio);
         last_detailed_log = now;
     }

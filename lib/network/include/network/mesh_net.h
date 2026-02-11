@@ -40,6 +40,9 @@ bool network_is_stream_ready(void);  // True when connected to mesh
 bool network_is_connected(void);     // True when connected to mesh (non-root) or root
 esp_err_t network_send_ping(void);   // Send ping to root (RX nodes only)
 
+// TX bandwidth measurement
+uint32_t network_get_tx_bytes_and_reset(void);  // Returns bytes sent since last call
+
 // Root node: info about nearest child
 int network_get_nearest_child_rssi(void);
 uint32_t network_get_nearest_child_latency_ms(void);

@@ -650,6 +650,9 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
         snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
         display_draw_string(0, 1, buf);
         
+        snprintf(buf, sizeof(buf), "Batt: %u%%", status->battery_pct);
+        display_draw_string(0, 2, buf);
+        
         uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
         uint32_t hours = uptime_s / 3600;
         uint32_t mins = (uptime_s % 3600) / 60;

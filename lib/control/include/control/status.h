@@ -24,6 +24,7 @@ typedef struct {
     uint32_t bandwidth_kbps;
     int rssi;
     uint32_t tone_freq_hz;
+    uint8_t battery_pct;
 } tx_status_t;
 
 typedef struct {
@@ -33,6 +34,7 @@ typedef struct {
     bool receiving_audio;
     uint32_t bandwidth_kbps;
     float loss_pct;
+    uint8_t battery_pct;
 } rx_status_t;
 
 typedef struct {
@@ -43,4 +45,5 @@ typedef struct {
     uint32_t tone_freq_hz;
     float output_volume;
     int nearest_rssi;
+    uint8_t battery_pct;
 } combo_status_t;

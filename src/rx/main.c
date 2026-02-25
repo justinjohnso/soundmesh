@@ -241,6 +241,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting audio pipeline...");
     ESP_ERROR_CHECK(adf_pipeline_start(rx_pipeline));
 
+    // Show searching screen while waiting for mesh connection
+    display_show_message("Searching for", "transmitter...");
+
     // Wait for network to be stream-ready via event notification
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
     uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);

@@ -664,6 +664,15 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
     display_update();
 }
 
+// Show a simple two-line message (e.g. startup/searching screens)
+void display_show_message(const char *line1, const char *line2) {
+    if (!display_initialized) return;
+    display_clear();
+    if (line1) display_draw_string(0, 1, line1);
+    if (line2) display_draw_string(0, 2, line2);
+    display_update();
+}
+
 // Render COMBO display
 void display_render_combo(display_view_t view, const combo_status_t *status) {
     if (!display_initialized) return;

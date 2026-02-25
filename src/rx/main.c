@@ -24,9 +24,44 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <esp_timer.h>
+#include <esp_adc/adc_oneshot.h>
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
 #include "control/serial_dashboard.h"
 
 static const char *TAG = "rx_main";
+
+static adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_cali_handle_t adc_cali_handle = NULL;
+static int32_t battery_mv_ewma = 0;  // EWMA-smoothed voltage in mV
+
+static uint8_t battery_read_percent(void) {
+    if (!adc_handle) return 0;
+    
+    int raw = 0, voltage_mv = 0, sum = 0;
+    for (int i = 0; i < 16; i++) {
+        adc_oneshot_read(adc_handle, BATTERY_ADC_CHANNEL, &raw);
+        if (adc_cali_handle) {
+            adc_cali_raw_to_voltage(adc_cali_handle, raw, &voltage_mv);
+            sum += voltage_mv;
+        } else {
+            sum += raw;
+        }
+    }
+    int32_t sample_mv = (sum / 16) * BATTERY_DIVIDER_RATIO;
+    
+    // Heavy EWMA smoothing: alpha ≈ 1/16, settles over ~15 seconds
+    if (battery_mv_ewma == 0) {
+        battery_mv_ewma = sample_mv;  // seed on first read
+    } else {
+        battery_mv_ewma = (battery_mv_ewma * 15 + sample_mv) / 16;
+    }
+    
+    if (battery_mv_ewma >= BATTERY_VOLTAGE_FULL_MV) return 100;
+    if (battery_mv_ewma <= BATTERY_VOLTAGE_EMPTY_MV) return 0;
+    return (uint8_t)((battery_mv_ewma - BATTERY_VOLTAGE_EMPTY_MV) * 100 
+                     / (BATTERY_VOLTAGE_FULL_MV - BATTERY_VOLTAGE_EMPTY_MV));
+}
 
 static rx_status_t status = {
     .rssi = -100,
@@ -137,6 +172,29 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(buttons_init());
 
+    // Initialize battery ADC
+    adc_oneshot_unit_init_cfg_t adc_cfg = { .unit_id = ADC_UNIT_1 };
+    if (adc_oneshot_new_unit(&adc_cfg, &adc_handle) == ESP_OK) {
+        adc_oneshot_chan_cfg_t chan_cfg = {
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        adc_oneshot_config_channel(adc_handle, BATTERY_ADC_CHANNEL, &chan_cfg);
+        
+        adc_cali_curve_fitting_config_t cali_cfg = {
+            .unit_id = ADC_UNIT_1,
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &adc_cali_handle) != ESP_OK) {
+            ESP_LOGW(TAG, "ADC calibration not available, battery readings may be inaccurate");
+            adc_cali_handle = NULL;
+        }
+        ESP_LOGI(TAG, "Battery ADC initialized on GPIO%d", BATTERY_ADC_GPIO);
+    } else {
+        ESP_LOGW(TAG, "Battery ADC init failed, battery monitoring disabled");
+    }
+
     // Initialize audio output
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio output: ES8388 headphone DAC");
@@ -218,6 +276,8 @@ void app_main(void) {
             // Calculate bandwidth rate (bytes this second * 8 / 1000 = kbps)
             status.bandwidth_kbps = (bytes_received_this_second * 8) / 1000;
             bytes_received_this_second = 0;
+            
+            status.battery_pct = battery_read_percent();
             
             // Get pipeline stats for buffer fill
             adf_pipeline_stats_t stats;

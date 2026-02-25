@@ -191,6 +191,17 @@
 #define MIN_STACK_HEADROOM_WORDS     256          // ~1KB safety margin
 
 // ============================================================================
+// Battery Monitoring
+// Requires external voltage divider: BAT+ → R1 → GPIO4 → R2 → GND
+// Use equal resistors (100K-1M). Higher = less drain.
+// ============================================================================
+#define BATTERY_ADC_GPIO           4            // A3 on XIAO ESP32-S3 (GPIO4)
+#define BATTERY_ADC_CHANNEL        ADC_CHANNEL_3
+#define BATTERY_VOLTAGE_FULL_MV    4200         // Fully charged LiPo
+#define BATTERY_VOLTAGE_EMPTY_MV   3300         // Empty LiPo (safe cutoff)
+#define BATTERY_DIVIDER_RATIO      2            // 1:1 divider = multiply by 2
+
+// ============================================================================
 // Configuration Sanity Checks (compile-time)
 // ============================================================================
 

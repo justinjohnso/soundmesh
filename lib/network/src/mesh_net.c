@@ -21,7 +21,7 @@ typedef enum {
 } node_role_t;
 
 static node_role_t my_node_role = NODE_ROLE_RX;  // Set during init
-static uint8_t my_stream_id = 1;  // Unique stream ID for this TX/COMBO node
+static uint8_t my_stream_id = 1;  // Unique stream ID derived from MAC hash
 static uint8_t my_sta_mac[6] = {0};  // Own STA MAC for routing table self-filtering
 
 // Mesh state
@@ -182,10 +182,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         xTaskNotifyGive(waiting_task_handles[i]);
                     }
                 }
-                // Root doesn't need self-organized scanning either
-                esp_mesh_set_self_organized(false, false);
-                esp_wifi_scan_stop();
-                esp_wifi_disconnect();
+                // Don't disable self-organized or call esp_wifi_disconnect() here —
+                // doing so immediately at start can prevent children from joining.
+                // Self-organized will be disabled after first child connects.
                 esp_log_level_set("wifi", ESP_LOG_ERROR);
             }
             break;
@@ -238,6 +237,16 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             int new_count = esp_mesh_get_routing_table_size();
             ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
             mesh_children_count = new_count;
+            // Now that a child has joined, disable root's self-organized scanning
+            // to avoid radio pauses that cause audio dropouts.
+            // Also disconnect STA to stop futile "MESHNET_DISABLED" connection attempts.
+            // (Moved here from MESH_EVENT_STARTED to avoid racing with children joining)
+            if (is_mesh_root) {
+                esp_mesh_set_self_organized(false, false);
+                esp_wifi_scan_stop();
+                esp_wifi_disconnect();
+                ESP_LOGI(TAG, "Root: self-organized disabled, STA disconnected (child connected)");
+            }
             break;
         }
         
@@ -312,6 +321,11 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             }
             break;
         
+        case MESH_EVENT_NO_PARENT_FOUND:
+            ESP_LOGW(TAG, "No parent found — retrying scan (channel=%d, mesh_id=%s)", 
+                     MESH_CHANNEL, MESH_ID);
+            break;
+
         case MESH_EVENT_FIND_NETWORK: {
             mesh_event_find_network_t *evt = (mesh_event_find_network_t *)event_data;
             ESP_LOGI(TAG, "Found network on channel %d - join in progress", evt->channel);
@@ -577,7 +591,10 @@ esp_err_t network_init_mesh(void) {
     
     // Save own MAC for routing table self-filtering and stream ID
     esp_read_mac(my_sta_mac, ESP_MAC_WIFI_STA);
-    my_stream_id = my_sta_mac[5];  // Use last byte of MAC as stream ID
+    // Derive stream_id from full MAC via XOR fold — uses all 6 bytes instead of just MAC[5]
+    my_stream_id = my_sta_mac[0] ^ my_sta_mac[1] ^ my_sta_mac[2] ^
+                   my_sta_mac[3] ^ my_sta_mac[4] ^ my_sta_mac[5];
+    ESP_LOGI(TAG, "Node MAC: " MACSTR ", stream_id=0x%02X", MAC2STR(my_sta_mac), my_stream_id);
     
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -597,7 +614,8 @@ esp_err_t network_init_mesh(void) {
     // Initialize WiFi
     wifi_init_config_t wifi_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
+    // Use RAM storage to prevent stale NVS WiFi state from blocking mesh join
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_start());
     
     // Initialize mesh
@@ -635,7 +653,7 @@ esp_err_t network_init_mesh(void) {
     mesh_config.router.ssid_len = strlen("MESHNET_DISABLED");
     mesh_config.router.password[0] = '\0';
     mesh_config.router.allow_router_switch = false;
-    mesh_config.router.bssid[0] = 0xFF;  // Invalid BSSID to prevent connection
+    memset(mesh_config.router.bssid, 0, 6);  // Zero BSSID — no external router
     
     // Mesh AP configuration
     // CRITICAL: Use strcpy with +1 for null terminator, not memcpy!
@@ -645,8 +663,9 @@ esp_err_t network_init_mesh(void) {
     
     ESP_ERROR_CHECK(esp_mesh_set_config(&mesh_config));
     
-    // Enable self-organized mode (automatic root election)
-    ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, false));
+    // Enable self-organized mode with parent selection for RX nodes
+    // select_parent=true ensures RX immediately begins scanning for the root
+    ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_RX));
     
     // Set maximum layer depth
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));

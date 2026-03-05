@@ -241,28 +241,32 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting audio pipeline...");
     ESP_ERROR_CHECK(adf_pipeline_start(rx_pipeline));
 
-    // Show searching screen while waiting for mesh connection
-    display_show_message("Searching for", "transmitter...");
-
-    // Wait for network to be stream-ready via event notification
+    // Register for network ready notification (non-blocking — we poll in the main loop)
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
-    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (notify_value > 0) {
-        ESP_LOGI(TAG, "Network ready");
-        dashboard_log("Network ready");
-    }
+    bool network_ready = false;
 
-    ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
-    ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    ESP_LOGI(TAG, "Entering main loop, waiting for network...");
 
     uint32_t last_stats_update = xTaskGetTickCount();
     
     while (1) {
-        // Handle button events
+        // Handle button events (always, even before network is ready)
         button_event_t btn_event = buttons_poll();
         if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
             current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
             dashboard_log("View: %d", current_view);
+        }
+
+        // Check for network ready notification (non-blocking)
+        if (!network_ready) {
+            uint32_t notify_value = ulTaskNotifyTake(pdTRUE, 0);
+            if (notify_value > 0) {
+                network_ready = true;
+                ESP_LOGI(TAG, "Network ready");
+                dashboard_log("Network ready");
+                ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
+                ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+            }
         }
         
         // Check for audio stream timeout
@@ -272,7 +276,7 @@ void app_main(void) {
         
         // Update network stats every second
         uint32_t now = xTaskGetTickCount();
-        if ((now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
+        if (network_ready && (now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
             status.rssi = network_get_rssi();
             status.latency_ms = ewma_oneway_ms;
             
@@ -302,7 +306,11 @@ void app_main(void) {
         
         static uint32_t last_display_update = 0;
         if ((now - last_display_update) >= pdMS_TO_TICKS(100)) {
-            display_render_rx(current_view, &status);
+            if (!network_ready && current_view != DISPLAY_VIEW_INFO) {
+                display_show_message("Searching for", "transmitter...");
+            } else {
+                display_render_rx(current_view, &status);
+            }
             last_display_update = now;
         }
         

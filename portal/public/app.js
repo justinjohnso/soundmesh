@@ -1,7 +1,19 @@
 (function () {
   'use strict';
 
-  const state = { ts: 0, self: '', nodes: [] };
+  const state = {
+    ts: 0,
+    self: '',
+    nodes: [],
+    heapKb: null,
+    core0LoadPct: null,
+    latencyMs: null,
+    netIf: 'usb_ncm (10.48.0.1)',
+    buildLabel: '--',
+    meshState: 'Mesh --',
+    bpm: null,
+    fftBins: null
+  };
   let ws = null;
   let wsAttempts = 0;
   let reconnectTimer = null;
@@ -40,6 +52,10 @@
     return `${h}h ${String(m).padStart(2, '0')}m ${String(r).padStart(2, '0')}s`;
   }
 
+  function numOrNA(value, suffix = '') {
+    return typeof value === 'number' && Number.isFinite(value) ? `${value}${suffix}` : 'N/A';
+  }
+
   function updateGlobalReadouts() {
     const nodes = state.nodes || [];
     const root = nodes.find((n) => n.root) || nodes[0] || null;
@@ -48,19 +64,20 @@
 
     $('stat-nodes').textContent = String(nodes.length);
     $('stat-streaming').textContent = `${streaming}/${nodes.length || 0}`;
-    $('stat-health').textContent = stale === 0 ? 'Mesh OK' : `${stale} stale`;
+    $('stat-health').textContent = state.meshState || (stale === 0 ? 'Mesh OK' : `${stale} stale`);
 
     $('footer-mesh-nodes').textContent = String(nodes.length);
-    $('footer-state').textContent = stale === 0 ? 'Mesh OK' : 'Mesh Degraded';
+    $('footer-state').textContent = state.meshState || (stale === 0 ? 'Mesh OK' : 'Mesh Degraded');
+    $('footer-netif').textContent = state.netIf || 'usb_ncm (10.48.0.1)';
+    $('build-label').textContent = state.buildLabel ? `${state.buildLabel} v1.0.1` : 'TX v1.0.1';
 
     const uptime = root ? root.uptime : 0;
     $('uptime-value').textContent = formatUptime(uptime);
 
-    const bpm = 126 + Math.round(Math.sin(Date.now() / 1200) * Math.min(4, Math.max(1, streaming)));
-    $('bpm-value').textContent = String(bpm);
+    $('bpm-value').textContent = numOrNA(state.bpm);
 
-    if (typeof state.core0Load === 'number') $('core0-load').textContent = String(state.core0Load);
-    if (typeof state.heapKb === 'number') $('heap-free').textContent = String(state.heapKb);
+    $('core0-load').textContent = numOrNA(state.core0LoadPct);
+    $('heap-free').textContent = numOrNA(state.heapKb);
   }
 
   function renderSelectedNode() {
@@ -225,16 +242,34 @@
       fftCtx.stroke();
     });
 
+    const fftBins = Array.isArray(state.fftBins) ? state.fftBins : null;
     const streamFactor = Math.max(1, (state.nodes || []).filter((n) => n.streaming).length);
+    const avgRssi = (state.nodes || []).length
+      ? (state.nodes.reduce((acc, n) => acc + (n.rssi || -70), 0) / state.nodes.length)
+      : -70;
     for (let i = 0; i < bars; i++) {
-      const norm = i / (bars - 1);
-      const spectralPeak = Math.exp(-Math.pow((norm - 0.38) * 4.0, 2));
-      const wobble = (Math.sin(t * 6 + i * 0.55) + 1) * 0.22;
-      const noise = (Math.sin(t * 2.4 + i * 1.7) + 1) * 0.05;
-      const amp = Math.min(0.98, (spectralPeak * 0.68 + wobble + noise) * (0.82 + streamFactor * 0.06));
+      let amp;
+      if (fftBins && typeof fftBins[i] === 'number') {
+        amp = Math.max(0, Math.min(1, fftBins[i]));
+      } else {
+        // Proxy visualization from live network state until real FFT bins are available.
+        const norm = i / (bars - 1);
+        const peak = Math.exp(-Math.pow((norm - 0.42) * 4.0, 2));
+        const rssiFactor = Math.max(0.2, Math.min(1.0, (avgRssi + 95) / 45));
+        const shimmer = (Math.sin(t * 5 + i * 0.38) + 1) * 0.10;
+        amp = Math.min(0.95, peak * 0.75 * rssiFactor + shimmer + streamFactor * 0.025);
+      }
       const barH = innerH * amp;
       fftCtx.fillStyle = '#76ff03';
       fftCtx.fillRect(pad + i * barW + 1, h - pad - barH, Math.max(1, barW - 2), barH);
+    }
+
+    if (!fftBins) {
+      fftCtx.fillStyle = 'rgba(233,236,239,0.68)';
+      fftCtx.font = '10px "IBM Plex Mono", monospace';
+      fftCtx.textAlign = 'right';
+      fftCtx.textBaseline = 'top';
+      fftCtx.fillText('FFT telemetry unavailable (proxy view)', w - pad, pad);
     }
   }
 
@@ -313,6 +348,13 @@
     setConnState('reconnecting', 'Demo Mode');
     const root = 'A3:F2:01:02:03:04';
     state.self = root;
+    state.heapKb = 92;
+    state.core0LoadPct = null;
+    state.latencyMs = 12;
+    state.buildLabel = 'TX';
+    state.meshState = 'Mesh OK';
+    state.bpm = null;
+    state.fftBins = null;
     state.nodes = [
       { mac: root, role: 'TX', root: true, layer: 0, rssi: 0, children: 2, streaming: true, parent: null, uptime: 390000, stale: false },
       { mac: 'B1:C4:05:06:07:08', role: 'RX', root: false, layer: 1, rssi: -58, children: 1, streaming: true, parent: root, uptime: 380000, stale: false },

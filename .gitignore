@@ -33,3 +33,6 @@ sdkconfig.combo
 # AMP AI
 
 .aider*
+
+# Worktrees
+.worktrees

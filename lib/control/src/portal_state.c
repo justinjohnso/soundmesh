@@ -4,6 +4,7 @@
 #include <esp_timer.h>
 #include <esp_mac.h>
 #include <esp_mesh.h>
+#include <esp_heap_caps.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -123,6 +124,22 @@ static bool is_zero_mac(const uint8_t *mac) {
     return true;
 }
 
+static const char *portal_build_label(void) {
+#if defined(CONFIG_COMBO_BUILD)
+    return "COMBO";
+#elif defined(CONFIG_TX_BUILD)
+    return "TX";
+#elif defined(CONFIG_RX_BUILD)
+    return "RX";
+#else
+    return "UNKNOWN";
+#endif
+}
+
+static const char *portal_mesh_state(void) {
+    return network_is_connected() ? "Mesh OK" : "Mesh Degraded";
+}
+
 int portal_state_serialize_json(char *buf, size_t buf_size) {
     portal_state_update_self();
     portal_state_expire_stale();
@@ -130,10 +147,19 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
     char self_mac_str[18];
     mac_to_str(state.self_mac, self_mac_str);
     
-    int off = snprintf(buf, buf_size,
-        "{\"ts\":%lld,\"self\":\"%s\",\"nodes\":[",
+    int off = snprintf(
+        buf,
+        buf_size,
+        "{\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,\"core0LoadPct\":null,"
+        "\"latencyMs\":%lu,\"netIf\":\"%s\",\"buildLabel\":\"%s\","
+        "\"meshState\":\"%s\",\"bpm\":null,\"fftBins\":null,\"nodes\":[",
         (long long)(esp_timer_get_time() / 1000),
-        self_mac_str);
+        self_mac_str,
+        (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
+        (unsigned long)network_get_latency_ms(),
+        "usb_ncm (10.48.0.1)",
+        portal_build_label(),
+        portal_mesh_state());
     
     for (int i = 0; i < state.node_count && off < (int)buf_size - 200; i++) {
         portal_node_t *n = &state.nodes[i];

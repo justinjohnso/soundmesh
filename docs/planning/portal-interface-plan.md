@@ -2,17 +2,18 @@
 
 **Date:** March 18, 2026  
 **Status:** MVP Plan  
-**Goal:** USB captive portal providing a "window into the network" with live topology map and data flow visualization
+**Goal:** USB captive portal providing a "window into the network" with a high-density, three-column telemetry dashboard (Astro-based) for topology, audio analysis, and stream flow visibility
 
 ---
 
 ## Overview
 
-When a computer is plugged into a SoundMesh node via USB, the device exposes a USB network interface (CDC-NCM). A captive portal auto-opens (best-effort) or the user navigates to `http://10.48.0.1/`. A lightweight web UI shows:
+When a computer is plugged into a SoundMesh node via USB, the device exposes a USB network interface (CDC-NCM). A captive portal auto-opens (best-effort) or the user navigates to `http://10.48.0.1/`. A lightweight Astro-rendered web UI shows:
 
-1. **Network Map** — Live topology visualization with a "you are here" marker for the connected node
-2. **Node Status** — Role, RSSI, layer, children, streaming state for every node in the mesh
-3. **Data Flow** — Animated visualization of audio data flowing between nodes
+1. **Audio Analysis Pane** — BPM, log-frequency FFT bars, and uptime
+2. **Network Map Pane** — Live topology visualization with a "you are here" marker for the connected node
+3. **Telemetry Pane** — Node status plus global stream and system health
+4. **Data Flow** — Animated visualization of audio data flowing between nodes
 
 ### Scope: Root Node Only (MVP)
 
@@ -45,7 +46,7 @@ The portal runs **only on TX/COMBO builds** (the mesh root). Rationale:
 │    │   ├── DHCP server (10.48.0.0/24)                       │
 │    │   └── DNS server (UDP/53, catch-all → 10.48.0.1)       │
 │    ├── esp_http_server                                       │
-│    │   ├── Static files from SPIFFS (index.html, app.js)    │
+│    │   ├── Static files from SPIFFS (Astro build output)     │
 │    │   ├── Captive portal probe handlers                    │
 │    │   └── WebSocket endpoint (/ws)                         │
 │    └── Portal state aggregator                               │
@@ -64,7 +65,7 @@ Mesh nodes (heartbeats every 2s)
     → Portal state cache (keyed by MAC, 32 nodes max)
     → 1 Hz JSON snapshot serialization
     → WebSocket push to connected browser
-    → Canvas 2D renders network map + data flow animation
+    → Astro dashboard shell + Canvas 2D layer render map + flow
 ```
 
 ---
@@ -355,51 +356,67 @@ lib/network/src/mesh_net.c                       [MODIFY] — Populate new heart
 
 ---
 
-## Phase 4: Web UI — Network Map + Data Flow
+## Phase 4: Web UI — Astro Telemetry Dashboard
 
 **Duration:** 3–4 days  
-**Goal:** Interactive network map with "you are here" marker and animated data flow
+**Goal:** Interactive three-column dashboard with TE-style visual language, deterministic topology map, and animated data flow
 
 ### 4.1 Technology Choice
 
-**Canvas 2D API** (no external libraries) for the network map visualization.
+**Astro (static-site generation)** is the canonical frontend framework for maintainability, with a minimal client-side runtime.
 
-**Why Canvas over SVG or D3.js:**
-- Smallest JS payload (zero dependencies)
-- Better for animation (animated data flow pulses)
-- Fine for ≤32 nodes
-- Works on all mobile browsers
-- No framework runtime overhead on ESP32 SPIFFS
+**Rendering model:**
+- Astro renders the dashboard shell and static layout at build time.
+- A lightweight client module drives the real-time WebSocket telemetry updates.
+- Canvas 2D remains the rendering surface for topology/data-flow animation.
 
-**Build tooling:** Vanilla HTML/JS/CSS. No build step needed for MVP. If the UI grows, add Vite later.
+**Why Astro + Canvas:**
+- Maintains a predictable project structure as UI complexity grows
+- Preserves low runtime overhead by shipping mostly static HTML/CSS
+- Keeps animation performance by using Canvas for moving elements
+- Supports clear separation of layout, visual theme tokens, and realtime rendering logic
+
+**Build tooling:** Astro build pipeline outputs static assets, then assets are gzip-compressed into `data/` for SPIFFS serving.
 
 ### 4.2 UI Layout
 
-Single-page application with a full-screen network map and an overlay status panel.
+Single-page, high-density telemetry dashboard with a global header, three-column body, and global footer.
 
 ```
-┌──────────────────────────────────────────┐
-│  SoundMesh Portal          ● Connected   │  ← Header bar
-├──────────────────────────────────────────┤
-│                                          │
-│              ┌──────┐                    │
-│              │ ROOT │ ◄── "YOU ARE HERE" │
-│              │ TX   │     marker         │
-│              └──┬───┘                    │
-│           ┌─────┼─────┐                 │
-│        ┌──┴──┐     ┌──┴──┐             │
-│        │ RX1 │     │ RX2 │  Layer 1    │
-│        └──┬──┘     └─────┘             │
-│        ┌──┴──┐                          │
-│        │ RX3 │              Layer 2    │
-│        └─────┘                          │
-│                                          │
-│  ◄ animated dots = audio data flow ►    │
-│                                          │
-├──────────────────────────────────────────┤
-│  Nodes: 4  │  Streaming  │  Mesh OK     │  ← Status bar
-└──────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ [SOUNDMESH PORTAL]    ● Connected | Core 0 Load: 14% | Heap: 92 KB Free   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ LEFT: AUDIO ANALYSIS │ CENTER: TOPOLOGY + FLOW │ RIGHT: NODE/STREAM STATE │
+│ BPM + LOG FFT + Uptime│ deterministic mesh map   │ selected node telemetry  │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Mesh Nodes: 12 | Net IF: usb_ncm (10.48.0.1) | State: Mesh OK             │
+│ ● WS Active | 1 Hz Push | Build: TX v1.0.1                                 │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 4.2.1 Visual Design Tokens (Canonical)
+
+- **Background:** matte charcoal `#121212`
+- **RX/status accent:** system green `#76FF03`
+- **Root TX accent:** TE blue `#2196F3`
+- **Text and separators:** muted off-white
+- **Typography:** compact monospaced font for labels and telemetry values
+- **Framing:** thin single-pixel pane borders
+
+### 4.2.2 Pane Responsibilities
+
+- **Left pane (Audio Analysis):**
+  - Large BPM readout (`126 BPM` style)
+  - Log-frequency FFT (20 Hz → 20 kHz) with log-spaced grid lines
+  - 24–32 constant-width bars in `#76FF03`
+  - Uptime display (`1h 03m 41s` style)
+- **Center pane (Topology + Data Flow):**
+  - Deterministic layered network map
+  - "You are here" marker for connected node
+  - Animated flow pulses along parent→child edges
+- **Right pane (Telemetry Detail):**
+  - Selected node metadata (role, layer, RSSI, children, streaming, uptime, parent)
+  - Stream and mesh health indicators mirroring footer state
 
 ### 4.3 Network Map — Deterministic Layout
 
@@ -438,9 +455,9 @@ When a node has `streaming: true`, animate dots/pulses along the edges from TX t
 
 **Implementation:** `requestAnimationFrame()` loop at 30 fps, update particle positions along edge paths.
 
-### 4.5 Node Detail Panel
+### 4.5 Node Detail Panel (Right Pane)
 
-Tap/click a node to show a detail panel:
+Tap/click a node to populate the right-side telemetry panel:
 
 ```
 ┌─────────────────────┐
@@ -456,9 +473,9 @@ Tap/click a node to show a detail panel:
 └─────────────────────┘
 ```
 
-### 4.6 Connection Status Indicator
+### 4.6 Connection Status Indicators
 
-Top-right corner shows WebSocket connection state:
+Header and footer expose connection/runtime state:
 - 🟢 **Connected** — receiving data
 - 🟡 **Reconnecting** — WebSocket lost, auto-retry every 2 seconds
 - 🔴 **Disconnected** — no connection
@@ -468,15 +485,27 @@ Auto-reconnect logic in JS with exponential backoff (2s → 4s → 8s → max 30
 ### 4.7 File Structure
 
 ```
-portal/                                     [NEW] — Web UI source
-├── index.html                               — Single page, inline critical CSS
-├── app.js                                   — Canvas rendering + WebSocket client
-├── app.css                                  — Styles (minimal)
-└── build.sh                                 — Copy/gzip assets to data/ for SPIFFS
-data/                                       [NEW] — SPIFFS image source (build output)
-├── index.html.gz                            — Gzipped for serving
-├── app.js.gz
-└── app.css.gz
+portal/                                     [NEW] — Astro UI source
+├── src/
+│   ├── pages/
+│   │   └── index.astro                      — Dashboard shell (header/body/footer)
+│   ├── components/
+│   │   ├── PortalHeader.astro
+│   │   ├── AudioAnalysisPane.astro
+│   │   ├── TopologyPane.astro
+│   │   ├── TelemetryPane.astro
+│   │   └── PortalFooter.astro
+│   ├── styles/
+│   │   └── portal.css                        — TE palette, mono type, pane framing
+│   └── scripts/
+│       └── portal-client.js                  — WS client + Canvas draw/update loop
+├── public/                                   — Static assets (icons/fonts if needed)
+├── astro.config.mjs
+└── package.json
+data/                                       [GENERATED] — SPIFFS image source from Astro build
+├── index.html.gz
+├── assets/*.js.gz
+└── assets/*.css.gz
 ```
 
 ### 4.8 Verification
@@ -484,10 +513,15 @@ data/                                       [NEW] — SPIFFS image source (build
 ```bash
 # With firmware flashed and USB connected:
 # Open http://10.48.0.1/ in browser
+# Verify: header shows [SOUNDMESH PORTAL], connection LED, Core 0 load, and heap
+# Verify: three-column layout renders (Audio Analysis, Topology, Telemetry)
+# Verify: left pane shows BPM, log-frequency FFT bars (20Hz-20kHz), and uptime
+# Verify: Root TX uses TE blue (#2196F3), RX/status uses system green (#76FF03)
+# Verify: pane borders are 1px and typography is monospaced/compact
 # Verify: network map renders with all connected nodes
 # Verify: "you are here" marker highlights the connected node
 # Verify: animated dots flow along edges when audio is streaming
-# Verify: tapping a node shows detail panel
+# Verify: tapping a node updates right telemetry pane details
 # Verify: adding/removing a node updates map within 3 seconds
 # Verify: UI works on mobile browser (responsive)
 ```
@@ -519,12 +553,17 @@ board_build.spiffs_data_path = data
 **Build workflow:**
 ```bash
 # 1. Build web UI (from portal/ directory)
-cd portal && bash build.sh    # gzips assets into data/
+cd portal
+pnpm install
+pnpm run build               # Astro build -> dist/
 
-# 2. Upload SPIFFS image
+# 2. Export + gzip dist assets into ../data/ for SPIFFS
+pnpm run export:spiffs
+
+# 3. Upload SPIFFS image
 pio run -e tx -t uploadfs
 
-# 3. Build and flash firmware
+# 4. Build and flash firmware
 pio run -e tx -t upload
 ```
 
@@ -570,7 +609,7 @@ All portal tasks on **Core 0** (alongside networking), keeping Core 1 clean for 
 pio run -e tx && pio run -e rx && pio run -e combo
 
 # Flash TX with portal
-cd portal && bash build.sh
+cd portal && pnpm install && pnpm run build && pnpm run export:spiffs
 pio run -e tx -t uploadfs
 pio run -e tx -t upload
 
@@ -598,7 +637,7 @@ pio run -e rx -t upload
 | 1 | Phase 1 | USB CDC-NCM + esp_netif + DHCP + DNS | 2–3 days |
 | 2 | Phase 2 | HTTP server + SPIFFS serving + captive portal probes | 1–2 days |
 | 3 | Phase 3 | Extend heartbeat + state cache + WebSocket push | 2–3 days |
-| 4 | Phase 4 | Network map Canvas UI + data flow animation | 3–4 days |
+| 4 | Phase 4 | Astro dashboard UI + Canvas topology/flow rendering | 3–4 days |
 | 5 | Phase 5 | Integration, build system, testing | 1–2 days |
 
 **Total estimated duration: 9–14 days**
@@ -616,10 +655,12 @@ lib/control/src/usb_portal_dns.c                  — DNS catch-all (UDP/53)
 lib/control/src/portal_http.c                     — HTTP server + static files + captive portal
 lib/control/src/portal_state.c                    — State aggregation + JSON serialization
 lib/control/src/portal_ws.c                       — WebSocket endpoint + 1 Hz push
-portal/index.html                                 — Web UI single page
-portal/app.js                                     — Canvas map + WebSocket client
-portal/app.css                                    — Minimal styles
-portal/build.sh                                   — Gzip assets → data/
+portal/src/pages/index.astro                      — Dashboard page shell
+portal/src/components/*.astro                     — Header/panes/footer components
+portal/src/scripts/portal-client.js               — WS client + Canvas draw logic
+portal/src/styles/portal.css                      — TE visual system tokens/styles
+portal/astro.config.mjs                           — Astro build config
+portal/package.json                               — Frontend scripts (build + SPIFFS export)
 ```
 
 ### Modified Files
@@ -646,8 +687,8 @@ src/combo/main.c                                  — Call portal_init() after m
 - **Phase 3: Heartbeat callback** — `network_register_heartbeat_callback()` feeds heartbeats to portal state on root
 - **Phase 2: HTTP server** — `portal_http.c` with SPIFFS static file serving, gzip support, captive portal probe redirects, WebSocket endpoint with 1 Hz push task
 - **Phase 2: DNS catch-all** — `usb_portal_dns.c` responds to all A queries with 10.48.0.1
-- **Phase 4: Web UI** — `portal/` directory with Canvas 2D network map, dark theme, demo mode, animated data flow, responsive design (~6 KB gzipped total)
-- **Phase 5: Build system** — SPIFFS partition in `partitions.csv`, `build.sh` for gzipping assets, all three firmware variants build clean
+- **Phase 4: Web UI prototype** — `portal/` directory includes Canvas 2D prototype with dark theme, demo mode, and animated data flow
+- **Phase 5: Build system** — SPIFFS partition in `partitions.csv`, static asset gzip pipeline to `data/`, all three firmware variants build clean
 - **Phase 5: Conditional compilation** — Portal only initialized on TX/COMBO builds
 
 ### ⚠️ Pending: USB CDC-NCM Networking
@@ -659,6 +700,14 @@ The bundled ESP-IDF 5.1.x (`framework-espidf@3.40406.240122`) does not include t
 3. **Implement NCM manually** using TinyUSB's low-level `net_device.h` API — the USB device class support exists in the bundled TinyUSB, but requires writing the esp_netif bridge manually (~200 lines)
 
 The portal subsystem (`portal_init()`) currently registers the heartbeat callback and initializes state tracking, but skips USB network setup. All HTTP/DNS/WebSocket code is compiled and ready to activate.
+
+### ⚠️ Pending: Astro Migration + TE Visual Alignment
+- Migrate the current prototype frontend from flat static files to Astro project structure.
+- Implement canonical TE-style visual language:
+  - `#121212` background, `#76FF03` RX/status accents, `#2196F3` root TX accent
+  - compact monospaced typography and 1px pane framing
+  - three-column dashboard layout with explicit audio-analysis left pane
+- Preserve current low-overhead runtime behavior (static shell + lightweight WS/Canvas client).
 
 ---
 
@@ -691,6 +740,7 @@ The portal subsystem (`portal_init()`) currently registers the heartbeat callbac
 - [ESP-IDF WebSocket Support](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/protocols/esp_http_server.html#websocket-server)
 - [ESP-IDF SPIFFS](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/storage/spiffs.html)
 - [Canvas 2D API (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)
+- [Astro Framework](https://astro.build/)
 - [Captive Portal Detection (various OS)](https://en.wikipedia.org/wiki/Captive_portal#Detection)
 
 ---

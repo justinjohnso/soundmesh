@@ -33,3 +33,4 @@ sdkconfig.combo
 # AMP AI
 
 .aider*
+.vscode/c_cpp_properties.json

@@ -56,6 +56,7 @@ static uint32_t pending_ping_id = 0;    // Expected pong ping_id (RX side)
 static uint32_t pending_child_ping_id = 0;  // Expected pong ping_id (root side)
 static uint32_t no_parent_count = 0;    // RX diagnostics: failed join attempts
 static uint32_t scan_done_count = 0;    // RX diagnostics: completed scan cycles
+static uint32_t join_fail_count = 0;    // RX diagnostics: parent disconnects before full connect
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -127,6 +128,7 @@ static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
 static const char *wifi_disconnect_reason_to_str(uint8_t reason);
+static void trigger_rx_debug_scan(void);
 
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
@@ -145,6 +147,24 @@ static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
         case WIFI_REASON_AP_TSF_RESET: return "AP_TSF_RESET";
         case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
         default: return "OTHER";
+    }
+}
+
+static void trigger_rx_debug_scan(void) {
+    if (my_node_role != NODE_ROLE_RX || is_mesh_connected) {
+        return;
+    }
+
+    wifi_scan_config_t scan_cfg = {0};
+    scan_cfg.show_hidden = true;
+    scan_cfg.scan_type = WIFI_SCAN_TYPE_PASSIVE;
+    scan_cfg.scan_time.passive = 120;
+
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Debug scan trigger failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Triggered passive hidden scan for RX join diagnostics");
     }
 }
 
@@ -284,7 +304,13 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                     esp_mesh_set_self_organized(true, true);
                     ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
                 } else {
+                    join_fail_count++;
                     ESP_LOGI(TAG, "Join attempt failed before parent connect; continuing auto-join without forced reset");
+                    if ((join_fail_count % 5) == 0) {
+                        ESP_LOGW(TAG, "RX join still failing (count=%lu) - requesting diagnostic scan",
+                                 (unsigned long)join_fail_count);
+                        trigger_rx_debug_scan();
+                    }
                 }
             }
             break;
@@ -382,6 +408,9 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             no_parent_count++;
             ESP_LOGW(TAG, "No parent found (attempt=%lu) — retrying scan (channel=%d, mesh_id=%s, src_id=%s)",
                      (unsigned long)no_parent_count, MESH_CHANNEL, MESH_ID, g_src_id);
+            if ((no_parent_count % 3) == 0) {
+                trigger_rx_debug_scan();
+            }
             break;
 
         case MESH_EVENT_FIND_NETWORK: {

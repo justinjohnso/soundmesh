@@ -25,6 +25,11 @@ node_modules/
 __pycache__/
 *.pyc
 
+# Build-generated sdkconfig caches (regenerated from *.defaults)
+sdkconfig.tx
+sdkconfig.rx
+sdkconfig.combo
+
 # AMP AI
 
 .aider*

@@ -244,19 +244,28 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             break;
         }
         
-        case MESH_EVENT_PARENT_DISCONNECTED:
+        case MESH_EVENT_PARENT_DISCONNECTED: {
+            mesh_event_disconnected_t *disconnected = (mesh_event_disconnected_t *)event_data;
             // For root node, "parent" is the external router - which we don't use
             // Use esp_mesh_is_root() (live check) instead of cached flag to avoid
             // race during startup where ROOT_FIXED hasn't fired yet
             if (!esp_mesh_is_root()) {
-                ESP_LOGI(TAG, "Parent disconnected (join state reset, will rescan)");
+                bool was_connected = is_mesh_connected;
+                ESP_LOGW(TAG, "Parent disconnected: reason=%d, was_connected=%d, layer=%d",
+                         disconnected->reason, was_connected, esp_mesh_get_layer());
                 is_mesh_connected = false;
                 have_root_addr = false;
-                // Re-enable self-organized mode so mesh can scan and rejoin
-                esp_mesh_set_self_organized(true, true);
-                ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
+                // Only re-enable if we had previously disabled it after a real connection.
+                // During initial join attempts, forcing this repeatedly can cause churn.
+                if (was_connected) {
+                    esp_mesh_set_self_organized(true, true);
+                    ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
+                } else {
+                    ESP_LOGI(TAG, "Join attempt failed before parent connect; continuing auto-join without forced reset");
+                }
             }
             break;
+        }
             
         case MESH_EVENT_CHILD_CONNECTED: {
             int new_count = esp_mesh_get_routing_table_size();
@@ -372,6 +381,13 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             } else {
                 ESP_LOGD(TAG, "Scan done: found %d APs", (int)scan->number);
             }
+            break;
+        }
+        
+        case MESH_EVENT_LAYER_CHANGE: {
+            mesh_event_layer_change_t *layer_change = (mesh_event_layer_change_t *)event_data;
+            mesh_layer = layer_change->new_layer;
+            ESP_LOGI(TAG, "Layer changed: %d", mesh_layer);
             break;
         }
         

@@ -638,6 +638,30 @@ src/combo/main.c                                  — Call portal_init() after m
 
 ---
 
+## Implementation Status
+
+### ✅ Completed
+- **Phase 3: Heartbeat extension** — `mesh_heartbeat_t` extended with `self_mac[6]`, `parent_mac[6]`, `stream_active`
+- **Phase 3: Portal state cache** — `portal_state.c` aggregates heartbeats, serializes JSON snapshots, expires stale nodes
+- **Phase 3: Heartbeat callback** — `network_register_heartbeat_callback()` feeds heartbeats to portal state on root
+- **Phase 2: HTTP server** — `portal_http.c` with SPIFFS static file serving, gzip support, captive portal probe redirects, WebSocket endpoint with 1 Hz push task
+- **Phase 2: DNS catch-all** — `usb_portal_dns.c` responds to all A queries with 10.48.0.1
+- **Phase 4: Web UI** — `portal/` directory with Canvas 2D network map, dark theme, demo mode, animated data flow, responsive design (~6 KB gzipped total)
+- **Phase 5: Build system** — SPIFFS partition in `partitions.csv`, `build.sh` for gzipping assets, all three firmware variants build clean
+- **Phase 5: Conditional compilation** — Portal only initialized on TX/COMBO builds
+
+### ⚠️ Pending: USB CDC-NCM Networking
+The bundled ESP-IDF 5.1.x (`framework-espidf@3.40406.240122`) does not include the `tinyusb_net` NCM driver or the `esp_tinyusb` managed component with network class support. The `tusb_ncm` example was added in ESP-IDF 5.2+.
+
+**Options to complete USB networking:**
+1. **Upgrade to ESP-IDF 5.2+** via `platform = espressif32@~6.9.0` (or later) — easiest path, `esp_tinyusb` v1.5+ has NCM support built in
+2. **Add `espressif/esp_tinyusb` as managed component** — update `idf_component.yml` to `espressif/esp_tinyusb: "^1.5.0"`, requires compatible ESP-IDF version
+3. **Implement NCM manually** using TinyUSB's low-level `net_device.h` API — the USB device class support exists in the bundled TinyUSB, but requires writing the esp_netif bridge manually (~200 lines)
+
+The portal subsystem (`portal_init()`) currently registers the heartbeat callback and initializes state tracking, but skips USB network setup. All HTTP/DNS/WebSocket code is compiled and ready to activate.
+
+---
+
 ## Known Limitations (MVP)
 
 1. **Captive portal auto-open is best-effort** — OS behavior varies. Manual `http://10.48.0.1/` always works.

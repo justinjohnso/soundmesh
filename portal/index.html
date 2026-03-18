@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SoundMesh Portal</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;overflow:hidden;height:100vh}
+#header{position:fixed;top:0;left:0;right:0;height:44px;background:#16213e;display:flex;align-items:center;justify-content:space-between;padding:0 16px;z-index:10;border-bottom:1px solid #2a2a4a}
+#header h1{font-size:16px;font-weight:600;letter-spacing:.5px}
+#conn-status{display:flex;align-items:center;gap:6px;font-size:13px}
+#conn-dot{width:10px;height:10px;border-radius:50%;background:#ff4444;transition:background .3s}
+#canvas{display:block;position:fixed;top:44px;left:0;right:0;bottom:32px}
+#statusbar{position:fixed;bottom:0;left:0;right:0;height:32px;background:#16213e;display:flex;align-items:center;padding:0 16px;font-size:12px;gap:16px;z-index:10;border-top:1px solid #2a2a4a}
+.stat{opacity:.7}
+</style>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="header">
+  <h1>SoundMesh Portal</h1>
+  <div id="conn-status"><span id="conn-label">Disconnected</span><span id="conn-dot"></span></div>
+</div>
+<canvas id="canvas"></canvas>
+<div id="statusbar">
+  <span class="stat" id="stat-nodes">Nodes: 0</span>
+  <span class="stat" id="stat-streaming">Streaming: —</span>
+  <span class="stat" id="stat-health">Mesh: —</span>
+</div>
+<div id="detail-panel" class="panel-hidden">
+  <div id="panel-header">
+    <span id="panel-title">Node Details</span>
+    <button id="panel-close">&times;</button>
+  </div>
+  <div id="panel-body"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

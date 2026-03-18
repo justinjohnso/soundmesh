@@ -94,7 +94,11 @@ void derive_src_id(const uint8_t mac[6], char out_src_id[NETWORK_SRC_ID_LEN]) {
     if (!mac || !out_src_id) {
         return;
     }
+#if defined(CONFIG_RX_BUILD)
+    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "OUT_%02X%02X%02X", mac[0], mac[1], mac[2]);
+#else
     snprintf(out_src_id, NETWORK_SRC_ID_LEN, "SRC_%02X%02X%02X", mac[0], mac[1], mac[2]);
+#endif
 }
 
 const char *network_get_src_id(void) {

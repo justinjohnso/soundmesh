@@ -126,6 +126,27 @@ static void send_stream_announcement(void);
 static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
+static const char *wifi_disconnect_reason_to_str(uint8_t reason);
+
+static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_UNSPECIFIED: return "UNSPECIFIED";
+        case WIFI_REASON_AUTH_EXPIRE: return "AUTH_EXPIRE";
+        case WIFI_REASON_AUTH_LEAVE: return "AUTH_LEAVE";
+        case WIFI_REASON_ASSOC_EXPIRE: return "ASSOC_EXPIRE";
+        case WIFI_REASON_ASSOC_TOOMANY: return "ASSOC_TOOMANY";
+        case WIFI_REASON_NOT_AUTHED: return "NOT_AUTHED";
+        case WIFI_REASON_NOT_ASSOCED: return "NOT_ASSOCED";
+        case WIFI_REASON_ASSOC_LEAVE: return "ASSOC_LEAVE";
+        case WIFI_REASON_ASSOC_NOT_AUTHED: return "ASSOC_NOT_AUTHED";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "4WAY_TIMEOUT";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT: return "HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_CONNECTION_FAIL: return "CONNECTION_FAIL";
+        case WIFI_REASON_AP_TSF_RESET: return "AP_TSF_RESET";
+        case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
+        default: return "OTHER";
+    }
+}
 
 // Duplicate detection
 static bool is_duplicate(uint8_t stream_id, uint16_t seq) {
@@ -251,8 +272,10 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             // race during startup where ROOT_FIXED hasn't fired yet
             if (!esp_mesh_is_root()) {
                 bool was_connected = is_mesh_connected;
-                ESP_LOGW(TAG, "Parent disconnected: reason=%d, was_connected=%d, layer=%d",
-                         disconnected->reason, was_connected, esp_mesh_get_layer());
+                ESP_LOGW(TAG, "Parent disconnected: reason=%d(%s), was_connected=%d, layer=%d",
+                         disconnected->reason,
+                         wifi_disconnect_reason_to_str(disconnected->reason),
+                         was_connected, esp_mesh_get_layer());
                 is_mesh_connected = false;
                 have_root_addr = false;
                 // Only re-enable if we had previously disabled it after a real connection.

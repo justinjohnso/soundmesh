@@ -140,6 +140,8 @@ void app_main(void) {
         esp_task_wdt_reset();  // Feed watchdog while waiting
     }
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
+    ESP_LOGI(TAG, "TX STARTED - SRC_ID: %s, Root: %s",
+             network_get_src_id(), network_is_root() ? "YES" : "NO");
     dashboard_log("Network ready");
 
     // Initialize portal (USB networking + web UI)

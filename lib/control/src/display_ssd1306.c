@@ -594,39 +594,46 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
 
     display_draw_signal_bars(112, 0, status->rssi);
 
+    const char *state_str = status->connection_state[0] ? status->connection_state :
+                            (status->receiving_audio ? "Streaming" : "Waiting");
+
     if (view == DISPLAY_VIEW_AUDIO) {
+        char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        display_draw_string(0, 0, buf);
+
+        if (status->source_src_id[0]) {
+            snprintf(buf, sizeof(buf), "From:%s", status->source_src_id);
+        } else {
+            snprintf(buf, sizeof(buf), "Wait:%lus", status->state_elapsed_s);
+        }
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "Opus %dk %dkHz", OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
+        display_draw_string(0, 2, buf);
+
+        snprintf(buf, sizeof(buf), "RX:%lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 3, buf);
+
         if (status->receiving_audio) {
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 24 + (int)(sinf(phase) * 6.0f);
+                int y = 23 + (int)(sinf(phase) * 2.0f);
                 if (y >= 0 && y < DISPLAY_HEIGHT) {
                     display_draw_pixel(x, y);
                 }
             }
-        } else {
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                display_draw_pixel(x, 24);
-            }
         }
-
-        const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
-        display_draw_string(0, 0, state_str);
-
-        char buf[22];
-        snprintf(buf, sizeof(buf), "Opus %dk %dkHz",
-                 OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
-        display_draw_string(0, 1, buf);
-
-        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 3, buf);
     } else if (view == DISPLAY_VIEW_NETWORK) {
         char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        display_draw_string(0, 0, buf);
 
         if (status->rssi == -100) {
-            display_draw_string(0, 0, "RSSI: --");
+            display_draw_string(0, 1, "RSSI: --");
         } else {
             snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-            display_draw_string(0, 0, buf);
+            display_draw_string(0, 1, buf);
         }
 
         if (status->latency_ms > 0) {
@@ -634,17 +641,13 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
         } else {
             snprintf(buf, sizeof(buf), "Ping: --");
         }
-        display_draw_string(0, 1, buf);
+        display_draw_string(0, 2, buf);
 
         snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
-        display_draw_string(0, 2, buf);
+        display_draw_string(0, 3, buf);
     } else {
         char buf[22];
-        
-        uint32_t total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
-        uint32_t free_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-        uint32_t ram_pct = (total > 0) ? ((total - free_mem) * 100 / total) : 0;
-        snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
+        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
         display_draw_string(0, 0, buf);
         
         snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);

@@ -78,6 +78,22 @@ static uint32_t last_bandwidth_update = 0;
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t rx_pipeline = NULL;
 
+typedef enum {
+    RX_STATE_INIT = 0,
+    RX_STATE_MESH_JOINING,
+    RX_STATE_MESH_READY,
+    RX_STATE_WAITING_FOR_STREAM,
+    RX_STATE_STREAM_FOUND,
+    RX_STATE_STREAMING,
+    RX_STATE_STREAM_LOST,
+    RX_STATE_ERROR_NO_MESH
+} rx_connection_state_t;
+
+static rx_connection_state_t current_state = RX_STATE_INIT;
+static char receiving_from_src_id[NETWORK_SRC_ID_LEN] = {0};
+static int64_t state_change_time_ms = 0;
+static int64_t last_waiting_log_ms = 0;
+
 // Packet tracking for statistics
 static uint32_t packets_received = 0;
 static uint32_t dropped_packets = 0;
@@ -97,7 +113,47 @@ static uint32_t latency_window_start = 0;   // Tick count when current window st
 #define LATENCY_WINDOW_MS 10000             // Reset min every 10s to track drift
 
 // Audio callback for mesh network - called when audio frames are received
-static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp) {
+static const char *rx_state_to_string(rx_connection_state_t state) {
+    switch (state) {
+        case RX_STATE_INIT: return "Init";
+        case RX_STATE_MESH_JOINING: return "Mesh Joining";
+        case RX_STATE_MESH_READY: return "Mesh Ready";
+        case RX_STATE_WAITING_FOR_STREAM: return "Waiting";
+        case RX_STATE_STREAM_FOUND: return "Stream Found";
+        case RX_STATE_STREAMING: return "Streaming";
+        case RX_STATE_STREAM_LOST: return "Stream Lost";
+        case RX_STATE_ERROR_NO_MESH: return "No Mesh";
+        default: return "Unknown";
+    }
+}
+
+static void rx_set_connection_state(rx_connection_state_t next_state, const char *reason) {
+    if (current_state == next_state) {
+        return;
+    }
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    ESP_LOGI(TAG, "State: %s -> %s (%s)",
+             rx_state_to_string(current_state),
+             rx_state_to_string(next_state),
+             reason ? reason : "no reason");
+    current_state = next_state;
+    state_change_time_ms = now_ms;
+}
+
+static void update_rx_status_state_fields(int64_t now_ms) {
+    strlcpy(status.connection_state, rx_state_to_string(current_state), sizeof(status.connection_state));
+    status.state_elapsed_s = (state_change_time_ms > 0 && now_ms >= state_change_time_ms)
+                                 ? (uint32_t)((now_ms - state_change_time_ms) / 1000)
+                                 : 0;
+    if (receiving_from_src_id[0]) {
+        strlcpy(status.source_src_id, receiving_from_src_id, sizeof(status.source_src_id));
+    } else {
+        status.source_src_id[0] = '\0';
+    }
+}
+
+static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id) {
     // Track sequence gaps for packet loss measurement
     if (!first_packet) {
         uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
@@ -138,10 +194,25 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
     if (rx_pipeline) {
         esp_err_t ret = adf_pipeline_feed_opus(rx_pipeline, payload, len, seq, timestamp);
         if (ret == ESP_OK) {
+            bool was_receiving = status.receiving_audio;
             status.receiving_audio = true;
             packets_received++;
             bytes_received_this_second += len;
             last_packet_time = xTaskGetTickCount();
+
+            if (src_id && src_id[0] != '\0' &&
+                strncmp(receiving_from_src_id, src_id, sizeof(receiving_from_src_id)) != 0) {
+                strlcpy(receiving_from_src_id, src_id, sizeof(receiving_from_src_id));
+                ESP_LOGI(TAG, "Receiving stream from %s", receiving_from_src_id);
+            }
+
+            if (!was_receiving ||
+                current_state == RX_STATE_WAITING_FOR_STREAM ||
+                current_state == RX_STATE_STREAM_LOST ||
+                current_state == RX_STATE_MESH_READY) {
+                rx_set_connection_state(RX_STATE_STREAM_FOUND, "first audio frame");
+                rx_set_connection_state(RX_STATE_STREAMING, "audio flow active");
+            }
             
             if ((packets_received & 0x7F) == 0) {
                 ESP_LOGI(TAG, "RX packet %lu (seq=%u, len=%zu, lat=%lums)", 
@@ -166,6 +237,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames",
              AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS);
     ESP_LOGI(TAG, "======================================");
+    state_change_time_ms = esp_timer_get_time() / 1000;
+    last_waiting_log_ms = state_change_time_ms;
+    rx_set_connection_state(RX_STATE_INIT, "boot");
 
     if (display_init() != ESP_OK) {
         ESP_LOGW(TAG, "Display init failed, continuing without display");
@@ -229,6 +303,7 @@ void app_main(void) {
     // Initialize network layer (ESP-WIFI-MESH mode) - after audio pipeline
     // WiFi/mesh stack consumes significant heap (~40KB)
     ESP_LOGI(TAG, "Starting mesh network...");
+    rx_set_connection_state(RX_STATE_MESH_JOINING, "starting mesh");
     ESP_ERROR_CHECK(network_init_mesh());
 
     // Register audio callback for mesh audio reception
@@ -263,6 +338,8 @@ void app_main(void) {
             if (notify_value > 0) {
                 network_ready = true;
                 ESP_LOGI(TAG, "Network ready");
+                rx_set_connection_state(RX_STATE_MESH_READY, "mesh parent connected");
+                rx_set_connection_state(RX_STATE_WAITING_FOR_STREAM, "waiting for first stream");
                 dashboard_log("Network ready");
                 ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
                 ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -271,7 +348,29 @@ void app_main(void) {
         
         // Check for audio stream timeout
         if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(100)) {
-            status.receiving_audio = false;
+            if (status.receiving_audio) {
+                status.receiving_audio = false;
+                if (current_state == RX_STATE_STREAMING || current_state == RX_STATE_STREAM_FOUND) {
+                    rx_set_connection_state(RX_STATE_STREAM_LOST, "100ms+ silence timeout");
+                    receiving_from_src_id[0] = '\0';
+                    rx_set_connection_state(RX_STATE_WAITING_FOR_STREAM, "waiting for stream recovery");
+                }
+            }
+        }
+
+        bool mesh_connected = network_is_connected();
+        if (!mesh_connected) {
+            if (current_state != RX_STATE_INIT &&
+                current_state != RX_STATE_MESH_JOINING &&
+                current_state != RX_STATE_ERROR_NO_MESH) {
+                receiving_from_src_id[0] = '\0';
+                rx_set_connection_state(RX_STATE_ERROR_NO_MESH, "mesh disconnected");
+            }
+        } else if (current_state == RX_STATE_MESH_JOINING || current_state == RX_STATE_ERROR_NO_MESH) {
+            rx_set_connection_state(RX_STATE_MESH_READY, "mesh connected");
+            if (!status.receiving_audio) {
+                rx_set_connection_state(RX_STATE_WAITING_FOR_STREAM, "mesh ready, waiting for stream");
+            }
         }
         
         // Update network stats every second
@@ -304,13 +403,18 @@ void app_main(void) {
             last_stats_update = now;
         }
         
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        update_rx_status_state_fields(now_ms);
+
+        if (!status.receiving_audio && (now_ms - last_waiting_log_ms) >= 5000) {
+            ESP_LOGI(TAG, "Still waiting for stream (State: %s, elapsed: %lus)",
+                     rx_state_to_string(current_state), (unsigned long)status.state_elapsed_s);
+            last_waiting_log_ms = now_ms;
+        }
+
         static uint32_t last_display_update = 0;
         if ((now - last_display_update) >= pdMS_TO_TICKS(100)) {
-            if (!network_ready && current_view != DISPLAY_VIEW_INFO) {
-                display_show_message("Searching for", "transmitter...");
-            } else {
-                display_render_rx(current_view, &status);
-            }
+            display_render_rx(current_view, &status);
             last_display_update = now;
         }
         

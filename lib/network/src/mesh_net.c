@@ -11,6 +11,7 @@
 #include <string.h>
 #include <esp_timer.h>
 #include <lwip/ip4_addr.h>
+#include <stdio.h>
 
 static const char *TAG = "network_mesh";
 
@@ -23,6 +24,7 @@ typedef enum {
 static node_role_t my_node_role = NODE_ROLE_RX;  // Set during init
 static uint8_t my_stream_id = 1;  // Unique stream ID derived from MAC hash
 static uint8_t my_sta_mac[6] = {0};  // Own STA MAC for routing table self-filtering
+static char g_src_id[NETWORK_SRC_ID_LEN] = "SRC_000000";
 
 // Mesh state
 static bool is_mesh_connected = false;
@@ -88,8 +90,18 @@ static void mesh_id_from_string(const char *str, uint8_t *mesh_id) {
     }
 }
 
+void derive_src_id(const uint8_t mac[6], char out_src_id[NETWORK_SRC_ID_LEN]) {
+    if (!mac || !out_src_id) {
+        return;
+    }
+    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "SRC_%02X%02X%02X", mac[0], mac[1], mac[2]);
+}
+
+const char *network_get_src_id(void) {
+    return g_src_id;
+}
+
 // Audio callback for received frames
-typedef void (*network_audio_callback_t)(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp);
 static network_audio_callback_t audio_rx_callback = NULL;
 
 // Heartbeat callback for portal state
@@ -400,7 +412,7 @@ static void mesh_rx_task(void *arg) {
                 } else if (same_child) {
                     nearest_child_rssi = hb->rssi;
                 }
-                ESP_LOGI(TAG, "Child heartbeat: RSSI=%d dBm", nearest_child_rssi);
+                ESP_LOGI(TAG, "Child heartbeat: %s RSSI=%d dBm", hb->src_id, nearest_child_rssi);
                 
                 // Call portal heartbeat callback if registered
                 if (heartbeat_rx_callback) {
@@ -456,10 +468,10 @@ static void mesh_rx_task(void *arg) {
                     uint8_t *payload = data.data + NET_FRAME_HEADER_SIZE;
                     uint16_t total_payload_len = ntohs(hdr->payload_len);
                     uint32_t timestamp = ntohl(hdr->timestamp);
-                    uint8_t frame_count = hdr->reserved;
+                    uint8_t frame_count = hdr->frame_count;
                     
                     if (frame_count <= 1) {
-                        audio_rx_callback(payload, total_payload_len, seq, timestamp);
+                        audio_rx_callback(payload, total_payload_len, seq, timestamp, hdr->src_id);
                     } else {
                         // Unpack batched Opus frames: [len_hi][len_lo][data...]...
                         size_t offset = 0;
@@ -467,7 +479,7 @@ static void mesh_rx_task(void *arg) {
                             uint16_t frame_len = (payload[offset] << 8) | payload[offset + 1];
                             offset += 2;
                             if (frame_len > 0 && offset + frame_len <= total_payload_len) {
-                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp);
+                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp, hdr->src_id);
                                 offset += frame_len;
                             }
                         }
@@ -602,7 +614,9 @@ esp_err_t network_init_mesh(void) {
     // Derive stream_id from full MAC via XOR fold — uses all 6 bytes instead of just MAC[5]
     my_stream_id = my_sta_mac[0] ^ my_sta_mac[1] ^ my_sta_mac[2] ^
                    my_sta_mac[3] ^ my_sta_mac[4] ^ my_sta_mac[5];
-    ESP_LOGI(TAG, "Node MAC: " MACSTR ", stream_id=0x%02X", MAC2STR(my_sta_mac), my_stream_id);
+    derive_src_id(my_sta_mac, g_src_id);
+    ESP_LOGI(TAG, "Node MAC: " MACSTR ", stream_id=0x%02X, src_id=%s",
+             MAC2STR(my_sta_mac), my_stream_id, g_src_id);
     
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -718,6 +732,7 @@ static void send_heartbeat(void) {
     heartbeat.rssi = network_get_rssi();
     heartbeat.stream_active = (is_mesh_connected || is_mesh_root_ready) ? 1 : 0;
     memcpy(heartbeat.self_mac, my_sta_mac, 6);
+    memcpy(heartbeat.src_id, g_src_id, NETWORK_SRC_ID_LEN);
     if (is_mesh_root) {
         memset(heartbeat.parent_mac, 0, 6);
     } else {
@@ -1119,5 +1134,3 @@ esp_err_t network_register_heartbeat_callback(network_heartbeat_callback_t callb
     ESP_LOGI(TAG, "Heartbeat callback registered");
     return ESP_OK;
 }
-
-

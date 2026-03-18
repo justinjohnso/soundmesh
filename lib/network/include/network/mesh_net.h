@@ -12,8 +12,12 @@
 // ESP-WIFI-MESH Network API (v0.1)
 // ============================================================================
 
+#define NETWORK_SRC_ID_LEN 12
+
 // Network initialization
 esp_err_t network_init_mesh(void);
+void derive_src_id(const uint8_t mac[6], char out_src_id[NETWORK_SRC_ID_LEN]);
+const char *network_get_src_id(void);
 
 // Startup synchronization (event-driven, not polling)
 // Call this before your main loop to wait for network readiness via task notification
@@ -24,7 +28,7 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len);
 esp_err_t network_send_control(const uint8_t *data, size_t len);
 
 // Audio reception callback (for RX nodes)
-typedef void (*network_audio_callback_t)(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp);
+typedef void (*network_audio_callback_t)(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id);
 esp_err_t network_register_audio_callback(network_audio_callback_t callback);
 
 // Mesh topology queries
@@ -69,9 +73,9 @@ typedef struct __attribute__((packed)) {
 	uint32_t ping_id;       // Sequence number (echoed back in PONG)
 } mesh_ping_t;
 
-// Audio frame header (14 bytes, aligned for mesh)
+// Audio frame header (26 bytes, aligned for mesh)
 // CRITICAL: This MUST match sizeof(net_frame_header_t)!
-#define NET_FRAME_HEADER_SIZE 14
+#define NET_FRAME_HEADER_SIZE 26
 
 typedef struct __attribute__((packed)) {
 	uint8_t magic;          // 0xA5 (NET_FRAME_MAGIC)
@@ -82,7 +86,8 @@ typedef struct __attribute__((packed)) {
 	uint32_t timestamp;     // Sender timestamp in ms
 	uint16_t payload_len;   // Payload length in bytes (network byte order)
 	uint8_t ttl;            // Hop limit (decremented at each relay)
-	uint8_t reserved;       // Alignment padding
+	uint8_t frame_count;    // Number of Opus frames in payload batch
+	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3" + '\0'
 } net_frame_header_t;
 
 // Heartbeat packet (sent every 2 seconds by all nodes)
@@ -97,6 +102,7 @@ typedef struct __attribute__((packed)) {
 	uint8_t stream_active;  // 1 if currently streaming audio
 	uint8_t parent_mac[6];  // Parent node MAC for topology edges
 	uint8_t self_mac[6];    // Own MAC for identification
+	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3" + '\0'
 } mesh_heartbeat_t;
 
 // Portal state callback (for root to collect heartbeats)

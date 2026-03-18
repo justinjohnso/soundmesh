@@ -20,8 +20,8 @@
 #include "control/status.h"
 #include "network/mesh_net.h"
 #include "audio/tone_gen.h"
-#include "audio/usb_audio.h"
 #include "audio/adf_pipeline.h"
+#include "control/usb_portal.h"
 #include "control/serial_dashboard.h"
 
 #ifdef CONFIG_USE_ES8388
@@ -90,7 +90,6 @@ void app_main(void) {
 
     // Initialize audio sources
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
-    ESP_ERROR_CHECK(usb_audio_init());
 
 #ifdef CONFIG_USE_ES8388
     // TX mode: ES8388 ADC only (no DAC output)
@@ -142,6 +141,12 @@ void app_main(void) {
     }
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
     dashboard_log("Network ready");
+
+    // Initialize portal (USB networking + web UI)
+    esp_err_t portal_err = portal_init();
+    if (portal_err != ESP_OK) {
+        ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
+    }
 
     // Start the TX pipeline
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));

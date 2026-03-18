@@ -94,8 +94,14 @@ typedef struct __attribute__((packed)) {
 	uint32_t uptime_ms;     // Milliseconds since boot
 	uint16_t children_count; // Number of mesh children
 	int8_t rssi;            // RSSI to parent
-	uint8_t reserved;       // Padding
+	uint8_t stream_active;  // 1 if currently streaming audio
+	uint8_t parent_mac[6];  // Parent node MAC for topology edges
+	uint8_t self_mac[6];    // Own MAC for identification
 } mesh_heartbeat_t;
+
+// Portal state callback (for root to collect heartbeats)
+typedef void (*network_heartbeat_callback_t)(const uint8_t *self_mac, const mesh_heartbeat_t *hb);
+esp_err_t network_register_heartbeat_callback(network_heartbeat_callback_t callback);
 
 // Stream announcement (sent by TX/COMBO on startup and mode change)
 typedef struct __attribute__((packed)) {

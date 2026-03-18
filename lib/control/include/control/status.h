@@ -35,6 +35,9 @@ typedef struct {
     uint32_t bandwidth_kbps;
     float loss_pct;
     uint8_t battery_pct;
+    char connection_state[24];
+    char source_src_id[12];
+    uint32_t state_elapsed_s;
 } rx_status_t;
 
 typedef struct {

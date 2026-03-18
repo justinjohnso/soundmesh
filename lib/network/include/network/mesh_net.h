@@ -87,7 +87,7 @@ typedef struct __attribute__((packed)) {
 	uint16_t payload_len;   // Payload length in bytes (network byte order)
 	uint8_t ttl;            // Hop limit (decremented at each relay)
 	uint8_t frame_count;    // Number of Opus frames in payload batch
-	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3" + '\0'
+	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3"/"OUT_A1B2C3" + '\0'
 } net_frame_header_t;
 
 // Heartbeat packet (sent every 2 seconds by all nodes)
@@ -102,7 +102,7 @@ typedef struct __attribute__((packed)) {
 	uint8_t stream_active;  // 1 if currently streaming audio
 	uint8_t parent_mac[6];  // Parent node MAC for topology edges
 	uint8_t self_mac[6];    // Own MAC for identification
-	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3" + '\0'
+	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3"/"OUT_A1B2C3" + '\0'
 } mesh_heartbeat_t;
 
 // Portal state callback (for root to collect heartbeats)

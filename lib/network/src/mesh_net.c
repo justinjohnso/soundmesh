@@ -54,6 +54,8 @@ static uint32_t ping_seq = 0;           // RX→root ping sequence
 static uint32_t child_ping_seq = 0;     // Root→child ping sequence
 static uint32_t pending_ping_id = 0;    // Expected pong ping_id (RX side)
 static uint32_t pending_child_ping_id = 0;  // Expected pong ping_id (root side)
+static uint32_t no_parent_count = 0;    // RX diagnostics: failed join attempts
+static uint32_t scan_done_count = 0;    // RX diagnostics: completed scan cycles
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -189,6 +191,10 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
+            if (my_node_role == NODE_ROLE_RX) {
+                ESP_LOGI(TAG, "RX discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
+                         MESH_CHANNEL, MESH_ID, g_src_id);
+            }
             // For designated root: ROOT_FIXED won't fire if type was set before start
             // Mark root as ready immediately since mesh AP is now broadcasting
             if (my_node_role == NODE_ROLE_TX && esp_mesh_is_root()) {
@@ -243,7 +249,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             // Use esp_mesh_is_root() (live check) instead of cached flag to avoid
             // race during startup where ROOT_FIXED hasn't fired yet
             if (!esp_mesh_is_root()) {
-                ESP_LOGI(TAG, "Parent disconnected");
+                ESP_LOGI(TAG, "Parent disconnected (join state reset, will rescan)");
                 is_mesh_connected = false;
                 have_root_addr = false;
                 // Re-enable self-organized mode so mesh can scan and rejoin
@@ -341,19 +347,31 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             break;
         
         case MESH_EVENT_NO_PARENT_FOUND:
-            ESP_LOGW(TAG, "No parent found — retrying scan (channel=%d, mesh_id=%s)", 
-                     MESH_CHANNEL, MESH_ID);
+            no_parent_count++;
+            ESP_LOGW(TAG, "No parent found (attempt=%lu) — retrying scan (channel=%d, mesh_id=%s, src_id=%s)",
+                     (unsigned long)no_parent_count, MESH_CHANNEL, MESH_ID, g_src_id);
             break;
 
         case MESH_EVENT_FIND_NETWORK: {
             mesh_event_find_network_t *evt = (mesh_event_find_network_t *)event_data;
-            ESP_LOGI(TAG, "Found network on channel %d - join in progress", evt->channel);
+            if (evt->channel != MESH_CHANNEL) {
+                ESP_LOGW(TAG, "Found mesh on unexpected channel %d (expected %d) - join in progress",
+                         evt->channel, MESH_CHANNEL);
+            } else {
+                ESP_LOGI(TAG, "Found network on channel %d - join in progress", evt->channel);
+            }
             break;
         }
         
         case MESH_EVENT_SCAN_DONE: {
             mesh_event_scan_done_t *scan = (mesh_event_scan_done_t *)event_data;
-            ESP_LOGD(TAG, "Scan done: found %d APs", (int)scan->number);
+            scan_done_count++;
+            if (my_node_role == NODE_ROLE_RX) {
+                ESP_LOGI(TAG, "Scan done #%lu: found %d APs (connected=%d, layer=%d)",
+                         (unsigned long)scan_done_count, (int)scan->number, is_mesh_connected, esp_mesh_get_layer());
+            } else {
+                ESP_LOGD(TAG, "Scan done: found %d APs", (int)scan->number);
+            }
             break;
         }
         
@@ -668,6 +686,8 @@ esp_err_t network_init_mesh(void) {
     ESP_LOGI(TAG, "Mesh ID: %02X:%02X:%02X:%02X:%02X:%02X (\"%s\")", 
              mesh_id_bytes[0], mesh_id_bytes[1], mesh_id_bytes[2],
              mesh_id_bytes[3], mesh_id_bytes[4], mesh_id_bytes[5], MESH_ID);
+    ESP_LOGI(TAG, "Mesh config: role=%s channel=%d fixed_root=1 src_id=%s",
+             my_node_role == NODE_ROLE_TX ? "TX/COMBO" : "RX", MESH_CHANNEL, g_src_id);
     
     mesh_config.channel = MESH_CHANNEL;
     
@@ -790,10 +810,16 @@ static void mesh_heartbeat_task(void *arg) {
     
     // Wait for network readiness event via notification
     // Event handler will notify us when is_mesh_root_ready = true
-    uint32_t notify_value = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    if (notify_value > 0) {
-        ESP_LOGI(TAG, "Network ready - sending heartbeats");
+    uint32_t waited_ms = 0;
+    while (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)) == 0) {
+        waited_ms += 1000;
+        if (my_node_role == NODE_ROLE_RX && (waited_ms % 5000) == 0) {
+            ESP_LOGI(TAG, "Still waiting for mesh ready (%lus): connected=%d root_ready=%d no_parent=%lu scans=%lu",
+                     (unsigned long)(waited_ms / 1000), is_mesh_connected, is_mesh_root_ready,
+                     (unsigned long)no_parent_count, (unsigned long)scan_done_count);
+        }
     }
+    ESP_LOGI(TAG, "Network ready - sending heartbeats");
     
     // Send initial stream announcement (TX/COMBO only)
     send_stream_announcement();

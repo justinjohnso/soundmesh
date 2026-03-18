@@ -115,7 +115,7 @@ static const uint8_t font5x7[][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // \ (92)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ] (93)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ^ (94)
-    {0x00, 0x00, 0x00, 0x00, 0x00}, // _ (95)
+    {0x40, 0x40, 0x40, 0x40, 0x40}, // _ (95)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ` (96)
     {0x20, 0x54, 0x54, 0x54, 0x78}, // a
     {0x7F, 0x48, 0x44, 0x44, 0x38}, // b
@@ -600,20 +600,20 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
 
     if (view == DISPLAY_VIEW_AUDIO) {
         char buf[22];
-        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        snprintf(buf, sizeof(buf), "State:%.14s", state_str);
         display_draw_string(0, 0, buf);
 
         if (status->source_src_id[0]) {
-            snprintf(buf, sizeof(buf), "From:%s", status->source_src_id);
+            snprintf(buf, sizeof(buf), "From: %s", status->source_src_id);
         } else {
-            snprintf(buf, sizeof(buf), "Wait:%lus", status->state_elapsed_s);
+            snprintf(buf, sizeof(buf), "Wait: %lus", status->state_elapsed_s);
         }
         display_draw_string(0, 1, buf);
 
         snprintf(buf, sizeof(buf), "Opus %dk %dkHz", OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
         display_draw_string(0, 2, buf);
 
-        snprintf(buf, sizeof(buf), "RX:%lu kbps", status->bandwidth_kbps);
+        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
         display_draw_string(0, 3, buf);
 
         if (status->receiving_audio) {
@@ -753,17 +753,14 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
         snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
         display_draw_string(0, 0, buf);
         
-        snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
-        display_draw_string(0, 1, buf);
-
-        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
-        display_draw_string(0, 2, buf);
-        
         uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
         uint32_t hours = uptime_s / 3600;
         uint32_t mins = (uptime_s % 3600) / 60;
         uint32_t secs = uptime_s % 60;
         snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "ID: %.17s", network_get_src_id());
         display_draw_string(0, 3, buf);
     }
 

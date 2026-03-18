@@ -92,6 +92,9 @@ static void mesh_id_from_string(const char *str, uint8_t *mesh_id) {
 typedef void (*network_audio_callback_t)(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp);
 static network_audio_callback_t audio_rx_callback = NULL;
 
+// Heartbeat callback for portal state
+static network_heartbeat_callback_t heartbeat_rx_callback = NULL;
+
 // Forward declarations
 static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data);
@@ -398,6 +401,11 @@ static void mesh_rx_task(void *arg) {
                     nearest_child_rssi = hb->rssi;
                 }
                 ESP_LOGI(TAG, "Child heartbeat: RSSI=%d dBm", nearest_child_rssi);
+                
+                // Call portal heartbeat callback if registered
+                if (heartbeat_rx_callback) {
+                    heartbeat_rx_callback(from.addr, hb);
+                }
             }
         } else if (first_byte == NET_PKT_TYPE_PING) {
             if (data.size >= sizeof(mesh_ping_t)) {
@@ -708,7 +716,13 @@ static void send_heartbeat(void) {
     heartbeat.uptime_ms = esp_timer_get_time() / 1000;
     heartbeat.children_count = mesh_children_count;
     heartbeat.rssi = network_get_rssi();
-    heartbeat.reserved = 0;
+    heartbeat.stream_active = (is_mesh_connected || is_mesh_root_ready) ? 1 : 0;
+    memcpy(heartbeat.self_mac, my_sta_mac, 6);
+    if (is_mesh_root) {
+        memset(heartbeat.parent_mac, 0, 6);
+    } else {
+        memcpy(heartbeat.parent_mac, mesh_parent_addr.addr, 6);
+    }
     
     static uint32_t hb_count = 0;
     hb_count++;
@@ -1096,6 +1110,13 @@ esp_err_t network_ping_nearest_child(void) {
 esp_err_t network_register_audio_callback(network_audio_callback_t callback) {
     audio_rx_callback = callback;
     ESP_LOGI(TAG, "Audio callback registered");
+    return ESP_OK;
+}
+
+// Register callback for heartbeat reception (used by portal)
+esp_err_t network_register_heartbeat_callback(network_heartbeat_callback_t callback) {
+    heartbeat_rx_callback = callback;
+    ESP_LOGI(TAG, "Heartbeat callback registered");
     return ESP_OK;
 }
 

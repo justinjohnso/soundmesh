@@ -1,6 +1,7 @@
 #include "control/display.h"
 #include "config/pins.h"
 #include "config/build.h"
+#include "network/mesh_net.h"
 #include <esp_log.h>
 #include <driver/i2c.h>
 #include <driver/gpio.h>
@@ -647,7 +648,7 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
         display_draw_string(0, 3, buf);
     } else {
         char buf[22];
-        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
         display_draw_string(0, 0, buf);
         
         snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
@@ -754,6 +755,9 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
         
         snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
         display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
+        display_draw_string(0, 2, buf);
         
         uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
         uint32_t hours = uptime_s / 3600;

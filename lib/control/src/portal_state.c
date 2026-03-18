@@ -5,12 +5,23 @@
 #include <esp_mac.h>
 #include <esp_mesh.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char *TAG = "portal_state";
 
 static portal_state_t state;
+static bool s_core0_load_valid = false;
+static uint32_t s_core0_load_pct = 0;
+#if (configUSE_TRACE_FACILITY == 1) && (configGENERATE_RUN_TIME_STATS == 1)
+static bool s_core0_seeded = false;
+static uint32_t s_last_total_runtime = 0;
+static uint32_t s_last_core0_runtime = 0;
+static int64_t s_last_core0_sample_us = 0;
+#endif
 
 esp_err_t portal_state_init(void) {
     memset(&state, 0, sizeof(state));
@@ -140,22 +151,101 @@ static const char *portal_mesh_state(void) {
     return network_is_connected() ? "Mesh OK" : "Mesh Degraded";
 }
 
+static void portal_state_update_core0_load(void) {
+#if (configUSE_TRACE_FACILITY == 1) && (configGENERATE_RUN_TIME_STATS == 1)
+    const int64_t now_us = esp_timer_get_time();
+    if (s_last_core0_sample_us != 0 && (now_us - s_last_core0_sample_us) < 1000000) {
+        return;
+    }
+    s_last_core0_sample_us = now_us;
+
+    const UBaseType_t task_count = uxTaskGetNumberOfTasks();
+    if (task_count == 0) {
+        s_core0_load_valid = false;
+        return;
+    }
+
+    TaskStatus_t *tasks = calloc(task_count, sizeof(TaskStatus_t));
+    if (!tasks) {
+        s_core0_load_valid = false;
+        return;
+    }
+
+    uint32_t total_runtime = 0;
+    const UBaseType_t actual = uxTaskGetSystemState(tasks, task_count, &total_runtime);
+    if (actual == 0 || total_runtime == 0) {
+        free(tasks);
+        s_core0_load_valid = false;
+        return;
+    }
+
+    uint32_t core0_runtime = 0;
+    for (UBaseType_t i = 0; i < actual; i++) {
+        const uint32_t rt = tasks[i].ulRunTimeCounter;
+        if (tasks[i].xCoreID == 0) {
+            core0_runtime += rt;
+#if (portNUM_PROCESSORS > 1)
+        } else if (tasks[i].xCoreID == tskNO_AFFINITY) {
+            core0_runtime += rt / portNUM_PROCESSORS;
+#endif
+        }
+    }
+
+    free(tasks);
+
+    if (!s_core0_seeded) {
+        s_last_total_runtime = total_runtime;
+        s_last_core0_runtime = core0_runtime;
+        s_core0_seeded = true;
+        s_core0_load_valid = false;
+        return;
+    }
+
+    const uint32_t delta_total = total_runtime - s_last_total_runtime;
+    const uint32_t delta_core0 = core0_runtime - s_last_core0_runtime;
+    s_last_total_runtime = total_runtime;
+    s_last_core0_runtime = core0_runtime;
+
+    if (delta_total == 0) {
+        s_core0_load_valid = false;
+        return;
+    }
+
+    float pct = (100.0f * ((float)delta_core0 * (float)portNUM_PROCESSORS)) / (float)delta_total;
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 100.0f) pct = 100.0f;
+    s_core0_load_pct = (uint32_t)(pct + 0.5f);
+    s_core0_load_valid = true;
+#else
+    s_core0_load_valid = false;
+#endif
+}
+
 int portal_state_serialize_json(char *buf, size_t buf_size) {
     portal_state_update_self();
     portal_state_expire_stale();
+    portal_state_update_core0_load();
     
     char self_mac_str[18];
     mac_to_str(state.self_mac, self_mac_str);
     
+    char core0_load_str[16];
+    if (s_core0_load_valid) {
+        snprintf(core0_load_str, sizeof(core0_load_str), "%lu", (unsigned long)s_core0_load_pct);
+    } else {
+        snprintf(core0_load_str, sizeof(core0_load_str), "null");
+    }
+
     int off = snprintf(
         buf,
         buf_size,
-        "{\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,\"core0LoadPct\":null,"
+        "{\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,\"core0LoadPct\":%s,"
         "\"latencyMs\":%lu,\"netIf\":\"%s\",\"buildLabel\":\"%s\","
         "\"meshState\":\"%s\",\"bpm\":null,\"fftBins\":null,\"nodes\":[",
         (long long)(esp_timer_get_time() / 1000),
         self_mac_str,
         (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
+        core0_load_str,
         (unsigned long)network_get_latency_ms(),
         "usb_ncm (10.48.0.1)",
         portal_build_label(),

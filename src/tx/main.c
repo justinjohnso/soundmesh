@@ -145,7 +145,7 @@ void app_main(void) {
 
     // Start the TX pipeline
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
-    status.audio_active = true;
+    status.audio_active = false;
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -204,6 +204,10 @@ void app_main(void) {
         // Display update every 100ms
         if (now_ms - last_display_ms >= 100) {
             last_display_ms = now_ms;
+            adf_pipeline_stats_t stats;
+            if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
+                status.audio_active = stats.input_signal_present;
+            }
             display_render_tx(current_view, &status);
         }
     }

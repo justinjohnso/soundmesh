@@ -400,70 +400,57 @@ void display_clear(void) {
     memset(display_buffer, 0, sizeof(display_buffer));
 }
 
+// Re-send critical SSD1306 config commands that could be corrupted by I2C/MCLK EMI.
+// If EMI flips SEG_REMAP or COM_SCAN, the display mirrors/flips. Re-sending every
+// frame ensures self-correction within one refresh cycle (~100ms).
+static void display_reinforce_config(void) {
+    static uint32_t reinforce_counter = 0;
+    reinforce_counter++;
+    // Reinforce every 10th frame (~1s at 10Hz) to reduce I2C traffic
+    if ((reinforce_counter % 10) != 0) return;
+
+    ssd1306_write_command(SSD1306_CMD_MEMORY_MODE);
+    ssd1306_write_command(0x00);  // Horizontal addressing mode
+    ssd1306_write_command(SSD1306_CMD_SEG_REMAP | 0x01);  // Column 127 → SEG0
+    ssd1306_write_command(SSD1306_CMD_COM_SCAN_DEC);       // COM[N-1] → COM0
+    ssd1306_write_command(SSD1306_CMD_SET_START_LINE | 0x00);
+    ssd1306_write_command(SSD1306_CMD_SET_DISPLAY_OFFSET);
+    ssd1306_write_command(0x00);
+    ssd1306_write_command(SSD1306_CMD_NORMAL_DISPLAY);
+}
+
 // Update display from buffer (page-by-page to avoid large I2C writes)
 static void display_update(void) {
     if (!display_initialized) {
         return;
     }
-    
-    // Check if buffer has any non-zero data (every 5 seconds)
-    static uint32_t last_buffer_check = 0;
-    uint32_t now = xTaskGetTickCount();
-    if ((now - last_buffer_check) >= pdMS_TO_TICKS(5000)) {
-        uint32_t buffer_nonzero_count = 0;
-        for (int i = 0; i < DISPLAY_WIDTH * DISPLAY_PAGES; i++) {
-            if (display_buffer[i] != 0) buffer_nonzero_count++;
-        }
-        ESP_LOGI(TAG, "display_update: buffer has %lu non-zero bytes out of %u", 
-                 buffer_nonzero_count, DISPLAY_WIDTH * DISPLAY_PAGES);
-        last_buffer_check = now;
-    }
+
+    // Periodically re-send orientation/mode commands to recover from EMI corruption
+    display_reinforce_config();
     
     for (uint8_t page = 0; page < DISPLAY_PAGES; page++) {
         // Set column address range
         esp_err_t err = ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set column addr start for page %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(0);  // Start column
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write column start: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write column end: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         // Set page address range
         err = ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set page addr cmd: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(page);  // Start page
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write page start %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(page);  // End page (same)
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write page end %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         // Write one page (128 bytes)
-        err = ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write pixel data for page %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
     }
 }
 

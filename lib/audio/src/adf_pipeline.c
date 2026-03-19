@@ -16,6 +16,7 @@
 #include "audio/i2s_audio.h"
 #include "audio/ring_buffer.h"
 #include "audio/tone_gen.h"
+#include "audio/usb_audio.h"
 #include "network/mesh_net.h"
 #include "config/build.h"
 #include "config/pins.h"
@@ -54,6 +55,7 @@ struct adf_pipeline {
     SemaphoreHandle_t mutex;
     
     adf_pipeline_stats_t stats;
+    uint16_t input_silence_frames;
     
     uint16_t tx_seq;
     uint16_t last_rx_seq;
@@ -81,6 +83,43 @@ static void rx_decode_task(void *arg);
 static void rx_playback_task(void *arg);
 static esp_err_t init_opus_encoder(adf_pipeline_handle_t pipeline, uint32_t bitrate, uint8_t complexity);
 static esp_err_t init_opus_decoder(adf_pipeline_handle_t pipeline);
+static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count);
+static void tx_update_input_activity(adf_pipeline_handle_t pipeline, bool signal_present, uint16_t peak);
+
+static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count)
+{
+    uint16_t peak = 0;
+    if (!samples || sample_count == 0) return peak;
+
+    for (size_t i = 0; i < sample_count; i++) {
+        int32_t sample = samples[i];
+        if (sample < 0) sample = -sample;
+        if (sample > peak) {
+            peak = (uint16_t)sample;
+        }
+    }
+    return peak;
+}
+
+static void tx_update_input_activity(adf_pipeline_handle_t pipeline, bool signal_present, uint16_t peak)
+{
+    if (!pipeline) return;
+
+    pipeline->stats.input_peak = peak;
+
+    if (signal_present) {
+        pipeline->input_silence_frames = 0;
+        pipeline->stats.input_signal_present = true;
+        return;
+    }
+
+    if (pipeline->input_silence_frames < AUDIO_INPUT_ACTIVITY_HOLD_FRAMES) {
+        pipeline->input_silence_frames++;
+        return;
+    }
+
+    pipeline->stats.input_signal_present = false;
+}
 
 adf_pipeline_handle_t adf_pipeline_create(const adf_pipeline_config_t *config)
 {
@@ -371,6 +410,7 @@ static void tx_capture_task(void *arg)
             case ADF_INPUT_MODE_TONE:
                 tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
                 frames_read = AUDIO_FRAME_SAMPLES;
+                tx_update_input_activity(pipeline, true, 16000);
                 
                 if (pipeline->enable_local_output) {
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
@@ -387,6 +427,7 @@ static void tx_capture_task(void *arg)
                 break;
                 
             case ADF_INPUT_MODE_USB:
+                tx_update_input_activity(pipeline, usb_audio_is_active(), 0);
                 vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
                 continue;
                 
@@ -416,6 +457,7 @@ static void tx_capture_task(void *arg)
                 ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
                 
                 if (ret != ESP_OK || frames_read == 0) {
+                    tx_update_input_activity(pipeline, false, 0);
                     no_data_count++;
                     if ((no_data_count % 100) == 0) {
                         ESP_LOGW(TAG, "I2S read: ret=%d, frames=%u, no_data=%lu", 
@@ -435,6 +477,9 @@ static void tx_capture_task(void *arg)
                 for (size_t i = 0; i < frames_read; i++) {
                     mono_frame[i] = (stereo_frame[i * 2] + stereo_frame[i * 2 + 1]) / 2;
                 }
+
+                uint16_t peak = calculate_pcm_peak(mono_frame, frames_read);
+                tx_update_input_activity(pipeline, peak >= AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD, peak);
                 
                 static uint32_t capture_count = 0;
                 capture_count++;
@@ -496,6 +541,15 @@ static void tx_encode_task(void *arg)
         while (ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES) {
             esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)pcm_frame, AUDIO_FRAME_BYTES);
             if (ret != ESP_OK) break;
+
+            bool signal_present = pipeline->stats.input_signal_present;
+            if (pipeline->input_mode != ADF_INPUT_MODE_TONE && !signal_present) {
+                // No real input activity: consume PCM but skip encode/send to keep TX idle.
+                // Also clear any partial batch so stale pre-silence frames don't flush later.
+                batch_count = 0;
+                batch_payload_len = 0;
+                continue;
+            }
             
             int64_t start_us = esp_timer_get_time();
             

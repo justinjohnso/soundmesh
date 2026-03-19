@@ -72,6 +72,13 @@
 // Max Opus frame size with headroom (~320 bytes typical at 64kbps/40ms)
 #define OPUS_MAX_FRAME_BYTES       512
 
+// Input activity detection (TX/COMBO waveform gating)
+// Peak is measured on mono PCM samples (0..32767 absolute amplitude).
+#define AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD  600
+#define AUDIO_INPUT_ACTIVITY_HOLD_MS         300
+#define AUDIO_INPUT_ACTIVITY_HOLD_FRAMES \
+    ((AUDIO_INPUT_ACTIVITY_HOLD_MS + AUDIO_FRAME_MS - 1) / AUDIO_FRAME_MS)
+
 // ============================================================================
 // Network Configuration - ESP-WIFI-MESH
 // ============================================================================

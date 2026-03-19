@@ -1,0 +1,27 @@
+---
+import PortalHeader from '../components/PortalHeader.astro';
+import AudioAnalysisPane from '../components/AudioAnalysisPane.astro';
+import TopologyPane from '../components/TopologyPane.astro';
+import TelemetryPane from '../components/TelemetryPane.astro';
+import PortalFooter from '../components/PortalFooter.astro';
+const forceDemo = process.env.PORTAL_FORCE_DEMO === '1';
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SoundMesh Portal</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body data-force-demo={forceDemo ? '1' : '0'}>
+    <PortalHeader />
+    <main class="portal-grid">
+      <AudioAnalysisPane />
+      <TopologyPane />
+      <TelemetryPane />
+    </main>
+    <PortalFooter />
+    <script src="/app.js" defer></script>
+  </body>
+</html>

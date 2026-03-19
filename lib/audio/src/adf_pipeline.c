@@ -24,6 +24,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_mesh.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -256,16 +257,35 @@ esp_err_t adf_pipeline_start(adf_pipeline_handle_t pipeline)
     const BaseType_t AUDIO_CORE = 1;
     
     if (pipeline->type == ADF_PIPELINE_TX) {
+        BaseType_t ret;
+        
         // Create encode task FIRST so we can set it as consumer before capture starts
-        xTaskCreatePinnedToCore(tx_encode_task, "adf_enc", ENCODE_TASK_STACK,
+        ret = xTaskCreatePinnedToCore(tx_encode_task, "adf_enc", ENCODE_TASK_STACK,
                     pipeline, ENCODE_TASK_PRIO, &pipeline->encode_task, AUDIO_CORE);
+        if (ret != pdPASS || pipeline->encode_task == NULL) {
+            ESP_LOGE(TAG, "Failed to create TX encode task! free=%lu largest=%lu",
+                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            pipeline->running = false;
+            xSemaphoreGive(pipeline->mutex);
+            return ESP_ERR_NO_MEM;
+        }
         
         // Set encode task as consumer of PCM buffer (event-driven)
         ring_buffer_set_consumer(pipeline->pcm_buffer, pipeline->encode_task);
         
         // Now start capture task
-        xTaskCreatePinnedToCore(tx_capture_task, "adf_cap", CAPTURE_TASK_STACK, 
+        ret = xTaskCreatePinnedToCore(tx_capture_task, "adf_cap", CAPTURE_TASK_STACK, 
                     pipeline, CAPTURE_TASK_PRIO, &pipeline->capture_task, AUDIO_CORE);
+        if (ret != pdPASS || pipeline->capture_task == NULL) {
+            ESP_LOGE(TAG, "Failed to create TX capture task! free=%lu",
+                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            vTaskDelete(pipeline->encode_task);
+            pipeline->encode_task = NULL;
+            pipeline->running = false;
+            xSemaphoreGive(pipeline->mutex);
+            return ESP_ERR_NO_MEM;
+        }
         
         ESP_LOGI(TAG, "TX pipeline started on core %d (event-driven)", AUDIO_CORE);
     } else {

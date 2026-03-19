@@ -1053,6 +1053,8 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
         }
         if (!any_queue_full && route_table_size > 0) {
             err = ESP_OK;
+        } else if (route_table_size <= 1) {
+            err = ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
     } else {
         // CHILD: Send upstream to parent via P2P

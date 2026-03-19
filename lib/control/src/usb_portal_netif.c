@@ -6,6 +6,8 @@
 #include <esp_netif.h>
 #include <esp_event.h>
 #include <esp_heap_caps.h>
+#include <lwip/esp_netif_net_stack.h>
+#include <dhcpserver/dhcpserver_options.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <string.h>
@@ -15,39 +17,11 @@
 #include "network/mesh_net.h"
 
 /*
- * Forward-declare esp_tinyusb symbols we need.
- * PlatformIO lib/ code can't include managed component headers directly,
- * so we declare only the functions/types we call.
+ * Include esp_tinyusb managed component headers.
+ * PlatformIO needs -I flag in build_flags to find these.
  */
-
-// From tinyusb.h (esp_tinyusb managed component)
-typedef struct {
-    const void *device_descriptor;
-    const char **string_descriptor;
-    const void *configuration_descriptor;
-    bool external_phy;
-    bool self_powered;
-    int vbus_monitor_io;
-} tinyusb_config_t;
-extern esp_err_t tinyusb_driver_install(const tinyusb_config_t *config);
-
-// From tinyusb_net.h (esp_tinyusb managed component)
-typedef enum {
-    TINYUSB_USBDEV_0,
-} tinyusb_usbdev_t;
-
-typedef esp_err_t (*tinyusb_net_recv_cb_t)(void *buffer, uint16_t len, void *ctx);
-typedef void (*tinyusb_net_free_tx_cb_t)(void *buffer, void *ctx);
-
-typedef struct {
-    uint8_t mac_addr[6];
-    tinyusb_net_recv_cb_t on_recv_callback;
-    tinyusb_net_free_tx_cb_t free_tx_buffer;
-    void *user_context;
-} tinyusb_net_config_t;
-
-extern esp_err_t tinyusb_net_init(tinyusb_usbdev_t usb_dev, const tinyusb_net_config_t *cfg);
-extern esp_err_t tinyusb_net_send_sync(const void *buffer, uint16_t len, void *buff_free_arg, uint32_t timeout);
+#include "tinyusb.h"
+#include "tinyusb_net.h"
 
 static const char *TAG = "portal_usb";
 
@@ -63,16 +37,17 @@ esp_err_t portal_dns_start(void);
 // ============================================================================
 
 // Called by esp_tinyusb when USB host sends an Ethernet frame to us
+// Must copy buffer — original is owned by TinyUSB and freed after callback returns
 static esp_err_t usb_recv_callback(void *buffer, uint16_t len, void *ctx) {
     if (s_portal_netif && len > 0) {
-        esp_netif_receive(s_portal_netif, buffer, len, NULL);
+        void *buf_copy = malloc(len);
+        if (!buf_copy) {
+            return ESP_ERR_NO_MEM;
+        }
+        memcpy(buf_copy, buffer, len);
+        esp_netif_receive(s_portal_netif, buf_copy, len, NULL);
     }
     return ESP_OK;
-}
-
-// Called by esp_tinyusb when TX buffer can be freed
-static void usb_free_tx_buffer(void *buffer, void *ctx) {
-    // tinyusb_net_send_sync copies internally; nothing to free
 }
 
 // esp_netif transmit: lwIP → USB host
@@ -83,9 +58,9 @@ static esp_err_t portal_netif_transmit(void *h, void *buffer, size_t len) {
     return ESP_OK;
 }
 
-// esp_netif free RX buffer
+// esp_netif free RX buffer (we malloc'd a copy in usb_recv_callback)
 static void portal_l2_free(void *h, void *buffer) {
-    // Buffer owned by TinyUSB; freed after recv callback returns
+    free(buffer);
 }
 
 // ============================================================================
@@ -101,39 +76,41 @@ static void on_heartbeat_received(const uint8_t *sender_mac, const mesh_heartbea
 // ============================================================================
 
 static esp_err_t portal_netif_setup(void) {
-    // Device-side MAC (locally administered unicast)
-    uint8_t dev_mac[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x02};
+    // lwIP-side MAC (locally administered, different from USB NCM device MAC)
+    uint8_t lwip_mac[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x02};
 
-    // Static IP: 10.48.0.1/24
-    static const esp_netif_ip_info_t portal_ip = {
-        .ip      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
-        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
-        .gw      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
-    };
+    // Use built-in soft AP IP (192.168.4.1/24) — proven to work with DHCP server
+    // We'll override to 10.48.0.1 after confirming DHCP works
+    extern const esp_netif_ip_info_t _g_esp_netif_soft_ap_ip;
 
-    // Inherent config modeled on WiFi AP (DHCP server, auto-up)
+    // 1) Inherent config — DHCP server + auto-up (similar to WiFi AP)
     esp_netif_inherent_config_t base_cfg = {
         .flags = (esp_netif_flags_t)(ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP),
-        .ip_info = &portal_ip,
-        .if_key = "USB_ECM_DEF",
-        .if_desc = "usb-ecm-portal",
-        .route_prio = 5,
+        .ip_info = &_g_esp_netif_soft_ap_ip,
+        .if_key = "USB_NCM_DEF",
+        .if_desc = "usb-ncm-portal",
+        .route_prio = 10,
     };
-    memcpy(base_cfg.mac, dev_mac, 6);
 
-    // Driver config
+    // 2) Driver config — point to static transmit and free functions
     esp_netif_driver_ifconfig_t driver_cfg = {
-        .handle = (void *)1,  // USB-ECM is a singleton; must be non-NULL
+        .handle = (void *)1,  // USB-NCM is a singleton; must be non-NULL
         .transmit = portal_netif_transmit,
         .driver_free_rx_buffer = portal_l2_free,
     };
 
-    // lwIP Ethernet netstack
-    extern const struct esp_netif_netstack_config *_g_esp_netif_netstack_default_eth;
+    // 3) lwIP netstack — USB-NCM is Ethernet from lwIP's perspective
+    struct esp_netif_netstack_config lwip_netif_config = {
+        .lwip = {
+            .init_fn = ethernetif_init,
+            .input_fn = ethernetif_input,
+        }
+    };
+
     esp_netif_config_t cfg = {
         .base = &base_cfg,
         .driver = &driver_cfg,
-        .stack = _g_esp_netif_netstack_default_eth,
+        .stack = &lwip_netif_config,
     };
 
     s_portal_netif = esp_netif_new(&cfg);
@@ -142,16 +119,16 @@ static esp_err_t portal_netif_setup(void) {
         return ESP_FAIL;
     }
 
-    // Stop DHCP client (we're a server)
-    esp_netif_dhcpc_stop(s_portal_netif);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_portal_netif, &portal_ip));
+    // Set MAC after creation (not via base_cfg.mac)
+    esp_netif_set_mac(s_portal_netif, lwip_mac);
 
-    // Start DHCP server
-    esp_netif_dhcps_stop(s_portal_netif);
-    ESP_ERROR_CHECK(esp_netif_dhcps_start(s_portal_netif));
+    // Set minimum DHCP lease time
+    uint32_t lease_opt = 1;
+    esp_netif_dhcps_option(s_portal_netif, ESP_NETIF_OP_SET,
+                           IP_ADDRESS_LEASE_TIME, &lease_opt, sizeof(lease_opt));
 
-    // Bring interface up
-    esp_netif_action_start(s_portal_netif, NULL, 0, NULL);
+    // Bring interface up (driver already started by tinyusb_net_init)
+    esp_netif_action_start(s_portal_netif, 0, 0, 0);
 
     esp_netif_ip_info_t info;
     esp_netif_get_ip_info(s_portal_netif, &info);
@@ -180,29 +157,44 @@ esp_err_t portal_init(void) {
     }
 
     // Initialize portal state tracking
-    ESP_ERROR_CHECK(portal_state_init());
+    esp_err_t ret = portal_state_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Portal state init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     // Register heartbeat callback to collect mesh node data
-    ESP_ERROR_CHECK(network_register_heartbeat_callback(on_heartbeat_received));
+    ret = network_register_heartbeat_callback(on_heartbeat_received);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Heartbeat callback register failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     // Initialize TCP/IP stack and event loop (safe to call multiple times)
-    ESP_ERROR_CHECK(esp_netif_init());
+    ret = esp_netif_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     esp_err_t evt_err = esp_event_loop_create_default();
     if (evt_err != ESP_OK && evt_err != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(evt_err);
+        ESP_LOGE(TAG, "Event loop create failed: %s", esp_err_to_name(evt_err));
+        return evt_err;
     }
 
     // Install TinyUSB driver
     tinyusb_config_t tusb_cfg = { 0 };
     tusb_cfg.external_phy = false;
-    ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
+    ret = tinyusb_driver_install(&tusb_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "TinyUSB driver install failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "TinyUSB driver installed");
 
-    // Initialize USB ECM network class
+    // Initialize USB NCM network class
     tinyusb_net_config_t net_config = {
         .on_recv_callback = usb_recv_callback,
-        .free_tx_buffer = usb_free_tx_buffer,
-        .user_context = NULL,
     };
     // Derive USB MAC from chip WiFi STA MAC, set locally administered bit
     esp_read_mac(net_config.mac_addr, ESP_MAC_WIFI_STA);
@@ -212,18 +204,34 @@ esp_err_t portal_init(void) {
              net_config.mac_addr[0], net_config.mac_addr[1],
              net_config.mac_addr[2], net_config.mac_addr[3],
              net_config.mac_addr[4], net_config.mac_addr[5]);
-    ESP_ERROR_CHECK(tinyusb_net_init(TINYUSB_USBDEV_0, &net_config));
-    ESP_LOGI(TAG, "USB ECM network class initialized");
+    ret = tinyusb_net_init(TINYUSB_USBDEV_0, &net_config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "TinyUSB net init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "USB NCM network class initialized");
 
     // Create esp_netif with static IP and DHCP server
-    ESP_ERROR_CHECK(portal_netif_setup());
+    ret = portal_netif_setup();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Portal netif setup failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     // Start HTTP server
-    ESP_ERROR_CHECK(portal_http_start());
+    ret = portal_http_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "HTTP server started");
 
     // Start DNS catch-all server
-    ESP_ERROR_CHECK(portal_dns_start());
+    ret = portal_dns_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "DNS server start failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "DNS server started");
 
     portal_running = true;

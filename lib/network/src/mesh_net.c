@@ -57,6 +57,8 @@ static uint32_t pending_child_ping_id = 0;  // Expected pong ping_id (root side)
 static uint32_t no_parent_count = 0;    // RX diagnostics: failed join attempts
 static uint32_t scan_done_count = 0;    // RX diagnostics: completed scan cycles
 static uint32_t join_fail_count = 0;    // RX diagnostics: parent disconnects before full connect
+static uint32_t auth_expire_count = 0;  // RX diagnostics: auth timeout loop counter
+static uint32_t recovery_restarts = 0;  // RX diagnostics: mesh restart recoveries
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -98,9 +100,9 @@ void derive_src_id(const uint8_t mac[6], char out_src_id[NETWORK_SRC_ID_LEN]) {
         return;
     }
 #if defined(CONFIG_RX_BUILD)
-    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "OUT_%02X%02X%02X", mac[0], mac[1], mac[2]);
+    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "OUT_%02X%02X%02X", mac[3], mac[4], mac[5]);
 #else
-    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "SRC_%02X%02X%02X", mac[0], mac[1], mac[2]);
+    snprintf(out_src_id, NETWORK_SRC_ID_LEN, "SRC_%02X%02X%02X", mac[3], mac[4], mac[5]);
 #endif
 }
 
@@ -129,6 +131,7 @@ static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
 static const char *wifi_disconnect_reason_to_str(uint8_t reason);
 static void trigger_rx_debug_scan(void);
+static void trigger_rx_rejoin(void);
 
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
@@ -166,6 +169,24 @@ static void trigger_rx_debug_scan(void) {
     } else {
         ESP_LOGI(TAG, "Triggered passive hidden scan for RX join diagnostics");
     }
+}
+
+static void trigger_rx_rejoin(void) {
+    if (my_node_role != NODE_ROLE_RX || is_mesh_connected) {
+        return;
+    }
+
+    esp_err_t mesh_err = esp_mesh_set_self_organized(true, true);
+    if (mesh_err != ESP_OK && mesh_err != ESP_ERR_MESH_NOT_START) {
+        ESP_LOGW(TAG, "RX rejoin: set_self_organized failed: %s", esp_err_to_name(mesh_err));
+    }
+
+    esp_err_t wifi_err = esp_wifi_disconnect();
+    if (wifi_err != ESP_OK && wifi_err != ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_LOGW(TAG, "RX rejoin: wifi_disconnect failed: %s", esp_err_to_name(wifi_err));
+    }
+
+    ESP_LOGW(TAG, "RX rejoin triggered (forcing reconnect cycle)");
 }
 
 // Duplicate detection
@@ -266,6 +287,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             is_mesh_connected = true;
             is_mesh_root_ready = true;  // Child nodes are immediately ready
             mesh_layer = esp_mesh_get_layer();
+            auth_expire_count = 0;
             
             ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
             ESP_LOGI(TAG, "Parent BSSID: " MACSTR, MAC2STR(connected->connected.bssid));
@@ -305,11 +327,20 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                     ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
                 } else {
                     join_fail_count++;
+                    if (disconnected->reason == WIFI_REASON_AUTH_EXPIRE) {
+                        auth_expire_count++;
+                    }
                     ESP_LOGI(TAG, "Join attempt failed before parent connect; continuing auto-join without forced reset");
                     if ((join_fail_count % 5) == 0) {
                         ESP_LOGW(TAG, "RX join still failing (count=%lu) - requesting diagnostic scan",
                                  (unsigned long)join_fail_count);
-                        trigger_rx_debug_scan();
+                        // If we are stuck in AUTH_EXPIRE loops, force a reconnect cycle instead of scan.
+                        if (auth_expire_count >= 5) {
+                            trigger_rx_rejoin();
+                            auth_expire_count = 0;
+                        } else {
+                            trigger_rx_debug_scan();
+                        }
                     }
                 }
             }
@@ -523,7 +554,7 @@ static void mesh_rx_task(void *arg) {
             ESP_LOGD(TAG, "Stream announcement received");
         } else if (first_byte == NET_FRAME_MAGIC) {
             // Audio frame with full header
-            if (data.size < NET_FRAME_HEADER_SIZE) {
+            if (data.size < NET_FRAME_HEADER_SIZE_V1) {
                 continue;
             }
             
@@ -554,14 +585,29 @@ static void mesh_rx_task(void *arg) {
                 hdr->ttl--;
                 forward_to_children(data.data, data.size, &from);
                 
-                if (audio_rx_callback && data.size > NET_FRAME_HEADER_SIZE) {
-                    uint8_t *payload = data.data + NET_FRAME_HEADER_SIZE;
+                if (audio_rx_callback) {
+                    // Auto-detect header size for backward compatibility with
+                    // old 14-byte headers (main branch) vs new 26-byte headers.
                     uint16_t total_payload_len = ntohs(hdr->payload_len);
+                    size_t hdr_size;
+                    if (data.size == NET_FRAME_HEADER_SIZE + total_payload_len) {
+                        hdr_size = NET_FRAME_HEADER_SIZE;
+                    } else if (data.size == NET_FRAME_HEADER_SIZE_V1 + total_payload_len) {
+                        hdr_size = NET_FRAME_HEADER_SIZE_V1;
+                    } else {
+                        // Unknown size — skip
+                        continue;
+                    }
+                    
+                    uint8_t *payload = data.data + hdr_size;
                     uint32_t timestamp = ntohl(hdr->timestamp);
-                    uint8_t frame_count = hdr->frame_count;
+                    // frame_count lives at byte 13 in both old (reserved) and new (frame_count)
+                    uint8_t frame_count = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->frame_count
+                                          : data.data[13];  // old header: reserved byte
+                    const char *src_id = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->src_id : "";
                     
                     if (frame_count <= 1) {
-                        audio_rx_callback(payload, total_payload_len, seq, timestamp, hdr->src_id);
+                        audio_rx_callback(payload, total_payload_len, seq, timestamp, src_id);
                     } else {
                         // Unpack batched Opus frames: [len_hi][len_lo][data...]...
                         size_t offset = 0;
@@ -569,7 +615,7 @@ static void mesh_rx_task(void *arg) {
                             uint16_t frame_len = (payload[offset] << 8) | payload[offset + 1];
                             offset += 2;
                             if (frame_len > 0 && offset + frame_len <= total_payload_len) {
-                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp, hdr->src_id);
+                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp, src_id);
                                 offset += frame_len;
                             }
                         }
@@ -873,6 +919,7 @@ static void send_stream_announcement(void) {
 // Starts immediately; heartbeats are only sent when is_mesh_root_ready becomes true
 static void mesh_heartbeat_task(void *arg) {
     const uint32_t HEARTBEAT_INTERVAL_MS = 2000;  // 2 seconds
+    const uint32_t RX_RECOVERY_INTERVAL_MS = 30000;
     
     ESP_LOGI(TAG, "Heartbeat task started (will send once network is ready)");
     
@@ -885,6 +932,15 @@ static void mesh_heartbeat_task(void *arg) {
             ESP_LOGI(TAG, "Still waiting for mesh ready (%lus): connected=%d root_ready=%d no_parent=%lu scans=%lu",
                      (unsigned long)(waited_ms / 1000), is_mesh_connected, is_mesh_root_ready,
                      (unsigned long)no_parent_count, (unsigned long)scan_done_count);
+        }
+        if (my_node_role == NODE_ROLE_RX &&
+            waited_ms >= RX_RECOVERY_INTERVAL_MS &&
+            (waited_ms % RX_RECOVERY_INTERVAL_MS) == 0 &&
+            recovery_restarts < 2) {
+            recovery_restarts++;
+            ESP_LOGW(TAG, "RX join recovery #%lu: forcing reconnect after %lus wait",
+                     (unsigned long)recovery_restarts, (unsigned long)(waited_ms / 1000));
+            trigger_rx_rejoin();
         }
     }
     ESP_LOGI(TAG, "Network ready - sending heartbeats");

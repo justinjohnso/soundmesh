@@ -73,9 +73,10 @@ typedef struct __attribute__((packed)) {
 	uint32_t ping_id;       // Sequence number (echoed back in PONG)
 } mesh_ping_t;
 
-// Audio frame header (26 bytes, aligned for mesh)
-// CRITICAL: This MUST match sizeof(net_frame_header_t)!
-#define NET_FRAME_HEADER_SIZE 26
+// Audio frame header — new format is 26 bytes, old (main branch) was 14 bytes.
+// RX parsing auto-detects which format a packet uses for backward compatibility.
+#define NET_FRAME_HEADER_SIZE     26  // Current wire header size (used for TX)
+#define NET_FRAME_HEADER_SIZE_V1  14  // Legacy 14-byte header (no src_id)
 
 typedef struct __attribute__((packed)) {
 	uint8_t magic;          // 0xA5 (NET_FRAME_MAGIC)

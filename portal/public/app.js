@@ -19,6 +19,8 @@
   let reconnectTimer = null;
   let demoMode = false;
   let selectedMac = null;
+  const forceDemoMode = document.body?.dataset?.forceDemo === '1' ||
+    new URLSearchParams(window.location.search).get('demo') === '1';
 
   const topologyCanvas = document.getElementById('topology-canvas');
   const topologyCtx = topologyCanvas.getContext('2d');
@@ -314,6 +316,14 @@
   }
 
   function connectWs() {
+    if (forceDemoMode) {
+      if (!demoMode) {
+        demoMode = true;
+        startDemo();
+      }
+      return;
+    }
+
     if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     try {
       ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -356,10 +366,10 @@
     state.bpm = null;
     state.fftBins = null;
     state.nodes = [
-      { mac: root, role: 'TX', root: true, layer: 0, rssi: 0, children: 2, streaming: true, parent: null, uptime: 390000, stale: false },
-      { mac: 'B1:C4:05:06:07:08', role: 'RX', root: false, layer: 1, rssi: -58, children: 1, streaming: true, parent: root, uptime: 380000, stale: false },
-      { mac: 'C2:D5:09:0A:0B:0C', role: 'RX', root: false, layer: 1, rssi: -66, children: 0, streaming: true, parent: root, uptime: 365000, stale: false },
-      { mac: 'D3:E6:0D:0E:0F:10', role: 'RX', root: false, layer: 2, rssi: -74, children: 0, streaming: false, parent: 'B1:C4:05:06:07:08', uptime: 95000, stale: true }
+      { mac: root, role: 'SRC', root: true, layer: 0, rssi: 0, children: 2, streaming: true, parent: null, uptime: 390000, stale: false },
+      { mac: 'B1:C4:05:06:07:08', role: 'OUT', root: false, layer: 1, rssi: -58, children: 1, streaming: true, parent: root, uptime: 380000, stale: false },
+      { mac: 'C2:D5:09:0A:0B:0C', role: 'OUT', root: false, layer: 1, rssi: -66, children: 0, streaming: true, parent: root, uptime: 365000, stale: false },
+      { mac: 'D3:E6:0D:0E:0F:10', role: 'OUT', root: false, layer: 2, rssi: -74, children: 0, streaming: false, parent: 'B1:C4:05:06:07:08', uptime: 95000, stale: true }
     ];
 
     setInterval(() => {

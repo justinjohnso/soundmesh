@@ -4,6 +4,7 @@ import AudioAnalysisPane from '../components/AudioAnalysisPane.astro';
 import TopologyPane from '../components/TopologyPane.astro';
 import TelemetryPane from '../components/TelemetryPane.astro';
 import PortalFooter from '../components/PortalFooter.astro';
+const forceDemo = process.env.PORTAL_FORCE_DEMO === '1';
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -13,7 +14,7 @@ import PortalFooter from '../components/PortalFooter.astro';
     <title>SoundMesh Portal</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
-  <body>
+  <body data-force-demo={forceDemo ? '1' : '0'}>
     <PortalHeader />
     <main class="portal-grid">
       <AudioAnalysisPane />

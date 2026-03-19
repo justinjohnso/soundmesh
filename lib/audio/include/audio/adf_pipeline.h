@@ -103,6 +103,8 @@ typedef struct {
     uint32_t avg_encode_time_us;
     uint32_t avg_decode_time_us;
     uint8_t buffer_fill_percent;
+    uint16_t input_peak;
+    bool input_signal_present;
 } adf_pipeline_stats_t;
 
 esp_err_t adf_pipeline_get_stats(adf_pipeline_handle_t pipeline, adf_pipeline_stats_t *stats);

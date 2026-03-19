@@ -122,8 +122,11 @@ static esp_err_t handle_api_status(httpd_req_t *req) {
 }
 
 static esp_err_t handle_captive_redirect(httpd_req_t *req) {
+    const esp_netif_ip_info_t *info = portal_get_ip_info();
+    char location[48];
+    snprintf(location, sizeof(location), "http://" IPSTR "/", IP2STR(&info->ip));
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://10.48.0.1/");
+    httpd_resp_set_hdr(req, "Location", location);
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }

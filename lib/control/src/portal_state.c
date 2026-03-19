@@ -1,4 +1,5 @@
 #include "control/portal_state.h"
+#include "control/usb_portal.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -236,6 +237,12 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         snprintf(core0_load_str, sizeof(core0_load_str), "null");
     }
 
+    char netif_str[40] = "usb_ncm (n/a)";
+    const esp_netif_ip_info_t *pip = portal_get_ip_info();
+    if (pip) {
+        snprintf(netif_str, sizeof(netif_str), "usb_ncm (" IPSTR ")", IP2STR(&pip->ip));
+    }
+
     int off = snprintf(
         buf,
         buf_size,
@@ -247,7 +254,7 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
         core0_load_str,
         (unsigned long)network_get_latency_ms(),
-        "usb_ncm (10.48.0.1)",
+        netif_str,
         portal_build_label(),
         portal_mesh_state());
     

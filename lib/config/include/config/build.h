@@ -95,10 +95,9 @@
 // 20ms frames at 50fps → batch 2 → 25 mesh packets/sec (within ESP-MESH limit)
 #define MESH_FRAMES_PER_PACKET     2
 
-// USB networking (CDC-ECM) - v0.3
-#define USB_ECM_IP_ADDR        "10.48.0.1"
-#define USB_ECM_NETMASK        "255.255.255.0"
-#define USB_ECM_GATEWAY        "10.48.0.1"
+// USB networking (CDC-NCM)
+// Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
+// See usb_portal_netif.c portal_netif_setup()
 
 // ============================================================================
 // Buffer Configuration

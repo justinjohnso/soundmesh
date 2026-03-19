@@ -1,0 +1,282 @@
+# Node Rename: SRC / OUT
+
+**Status:** Planned  
+**Date:** 2025-03-19
+
+## Background
+
+The codebase currently uses three build environments — `tx`, `rx`, `combo` — but only
+two are actually used in practice. `tx` is dead code (COMBO does everything TX does plus
+headphone monitoring). Going forward, the product node names are:
+
+- **SRC** (Source) — replaces COMBO. Captures audio, encodes, broadcasts over mesh.
+  Has ES8388 input + headphone monitor + USB portal.
+- **OUT** (Output) — replaces RX. Receives audio from mesh, decodes, plays via DAC.
+
+## Key Insight: Two Separate Concepts
+
+The codebase mixes two things that should stay distinct:
+
+1. **Node identity** (product/build names): `SRC` / `OUT`  
+   → These describe *what the device is*. Rename these.
+
+2. **Data flow direction** (technical terms): `TX` / `RX`  
+   → These describe *which way audio moves* through the pipeline (transmit vs receive).
+   These are universal audio/networking terms. Leave them alone.
+
+### Examples
+
+| Symbol | Concept | Action |
+|--------|---------|--------|
+| `CONFIG_COMBO_BUILD` | Node identity | → `CONFIG_SRC_BUILD` |
+| `CONFIG_RX_BUILD` | Node identity | → `CONFIG_OUT_BUILD` |
+| `combo_status_t` | Node identity | → `src_status_t` |
+| `display_render_combo()` | Node identity | → `display_render_src()` |
+| `NODE_ROLE_TX` / `NODE_ROLE_RX` | Node identity | → `NODE_ROLE_SRC` / `NODE_ROLE_OUT` |
+| `ADF_PIPELINE_TX` / `ADF_PIPELINE_RX` | Data flow direction | **Keep as-is** |
+| `tx_capture_task` / `tx_encode_task` | Data flow direction | **Keep as-is** |
+| `rx_decode_task` / `rx_playback_task` | Data flow direction | **Keep as-is** |
+| `tx_seq`, `last_rx_seq` | Data flow direction | **Keep as-is** |
+| `network_send_audio()` | Data flow direction | **Keep as-is** |
+| `TX_TEST_TONE_MODE` / `RX_TEST_TONE_MODE` | Data flow direction | **Keep as-is** |
+| `RX_OUTPUT_VOLUME` | Ambiguous (output node config) | Rename → `OUT_OUTPUT_VOLUME` |
+| `MESH_RX_TASK_*` / `MESH_RX_BUFFER_*` | Data flow direction (network receive) | **Keep as-is** |
+
+## The "Define Once" Goal
+
+Instead of scattering `#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)` everywhere,
+create a central **build role header** that defines capability flags. Future name changes
+happen in one place.
+
+### New file: `lib/config/include/config/build_role.h`
+
+```c
+#pragma once
+
+// ============================================================================
+// Build Role & Capability Definitions
+//
+// Node identity and capabilities derived from the build environment.
+// All code should use these macros instead of checking CONFIG_*_BUILD directly.
+// If product names change again, only this file needs updating.
+// ============================================================================
+
+#if defined(CONFIG_SRC_BUILD)
+  // SRC node: audio capture → encode → mesh broadcast + local monitor + portal
+  #define BUILD_IS_SOURCE         1
+  #define BUILD_IS_OUTPUT         0
+  #define BUILD_NODE_LABEL        "SRC"
+  #define BUILD_NODE_ID_PREFIX    "SRC"
+  #define BUILD_HAS_CAPTURE       1
+  #define BUILD_HAS_ENCODER       1
+  #define BUILD_HAS_LOCAL_MONITOR 1
+  #define BUILD_HAS_PORTAL        1
+  #define BUILD_IS_MESH_ROOT      1
+
+#elif defined(CONFIG_OUT_BUILD)
+  // OUT node: mesh receive → decode → DAC playback
+  #define BUILD_IS_SOURCE         0
+  #define BUILD_IS_OUTPUT         1
+  #define BUILD_NODE_LABEL        "OUT"
+  #define BUILD_NODE_ID_PREFIX    "OUT"
+  #define BUILD_HAS_CAPTURE       0
+  #define BUILD_HAS_ENCODER       0
+  #define BUILD_HAS_LOCAL_MONITOR 0
+  #define BUILD_HAS_PORTAL        0
+  #define BUILD_IS_MESH_ROOT      0
+
+#else
+  #error "Unknown build flavor. Define CONFIG_SRC_BUILD or CONFIG_OUT_BUILD in platformio.ini."
+#endif
+```
+
+### Migration of `#ifdef` guards
+
+Old pattern scattered across code:
+```c
+#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)
+    // root/source behavior
+#else
+    // receiver behavior
+#endif
+```
+
+New pattern:
+```c
+#include "config/build_role.h"
+
+#if BUILD_IS_SOURCE
+    // root/source behavior
+#else
+    // receiver behavior
+#endif
+```
+
+Or for specific capabilities:
+```c
+#if BUILD_HAS_PORTAL
+    portal_init();
+#endif
+```
+
+## Execution Plan
+
+### Phase 1: Build System (environments + sdkconfig)
+
+| File | Change |
+|------|--------|
+| `platformio.ini` | Delete `[env:tx]`. Rename `[env:combo]` → `[env:src]`, `[env:rx]` → `[env:out]`. Update `-D` flags. Set `default_envs = src`. |
+| `sdkconfig.combo.defaults` | Rename file → `sdkconfig.src.defaults`. Change `CONFIG_COMBO_BUILD=y` → `CONFIG_SRC_BUILD=y`. |
+| `sdkconfig.tx.defaults` | Delete (SRC uses the old combo sdkconfig). |
+| `sdkconfig.rx.defaults` | Keep file, no flag changes needed (flag comes from platformio.ini `-D`). |
+| `sdkconfig.combo`, `sdkconfig.tx`, `sdkconfig.rx` | Delete stale cache files (regenerated by build). |
+| `CMakeLists.txt` (root) | Change `set(_env "tx")` fallback → `"src"`. |
+| `extra_script.py` | Update env checks: `"combo"` → `"src"`, default → `"out"`. Remove `"tx"` branch. Messages → "Building SRC/OUT firmware". |
+
+### Phase 2: Source Directories
+
+| Change |
+|--------|
+| `src/combo/` → `src/src/` (already done) |
+| `src/rx/` → `src/out/` |
+| `src/tx/` → Delete entirely |
+
+### Phase 3: Central Role Header
+
+Create `lib/config/include/config/build_role.h` as described above.
+
+### Phase 4: Migrate Preprocessor Guards
+
+Replace direct `CONFIG_*_BUILD` checks with `build_role.h` macros:
+
+| File | Old Guard | New Guard |
+|------|-----------|-----------|
+| `lib/network/src/mesh_net.c` L740 | `CONFIG_TX_BUILD \|\| CONFIG_COMBO_BUILD` | `BUILD_IS_SOURCE` |
+| `lib/network/src/mesh_net.c` L102 | `CONFIG_RX_BUILD` | `BUILD_IS_OUTPUT` |
+| `lib/network/CMakeLists.txt` | `CONFIG_COMBO_BUILD` | `CONFIG_SRC_BUILD` (CMake can't use C headers) |
+| `lib/control/src/usb_portal_netif.c` L14 | `CONFIG_TX_BUILD \|\| CONFIG_COMBO_BUILD` | `BUILD_HAS_PORTAL` |
+| `lib/control/src/portal_state.c` L232 | `CONFIG_TX_BUILD \|\| CONFIG_COMBO_BUILD` | `BUILD_IS_SOURCE` |
+| `lib/control/src/portal_state.c` L285 | Three-way COMBO/TX/RX check | `BUILD_NODE_LABEL` |
+| `lib/audio/src/usb_audio.c` L9, L50 | `CONFIG_TX_BUILD` | `BUILD_IS_SOURCE` |
+
+### Phase 5: Rename Node-Identity Types & Functions
+
+**Headers:**
+
+| File | Old | New |
+|------|-----|-----|
+| `lib/control/include/control/status.h` | `tx_status_t` | Delete (SRC uses `src_status_t`) |
+| `lib/control/include/control/status.h` | `combo_status_t` | → `src_status_t` |
+| `lib/control/include/control/status.h` | `rx_status_t` | → `out_status_t` |
+| `lib/control/include/control/display.h` | `display_render_tx/rx/combo()` | → `display_render_src/out()` (delete `_tx`) |
+| `lib/control/include/control/serial_dashboard.h` | `dashboard_render_tx/rx/combo()` | → `dashboard_render_src/out()` (delete `_tx`) |
+| `lib/control/include/control/portal_state.h` | Comment `0=RX, 1=TX` | → `0=OUT, 1=SRC` |
+| `lib/network/include/network/mesh_net.h` | Comments referencing TX/COMBO/RX as node types | → SRC/OUT |
+
+**Implementations:**
+
+| File | Changes |
+|------|---------|
+| `lib/control/src/display_ssd1306.c` | Rename `display_render_combo` → `display_render_src`, `display_render_rx` → `display_render_out`. Delete `display_render_tx`. |
+| `lib/control/src/serial_dashboard.c` | Rename `dashboard_render_combo` → `dashboard_render_src`, `dashboard_render_rx` → `dashboard_render_out`. Delete `dashboard_render_tx`. Header strings "COMBO"/"RX" → "SRC"/"OUT". |
+| `lib/network/src/mesh_net.c` | `NODE_ROLE_TX` → `NODE_ROLE_SRC`, `NODE_ROLE_RX` → `NODE_ROLE_OUT`. Update log strings. |
+| `lib/control/src/portal_state.c` | `"TX"` → `"SRC"`, `"RX"` → `"OUT"` in JSON serialization. `portal_build_label()` uses `BUILD_NODE_LABEL`. |
+| `lib/config/include/config/build.h` | Update comments: "TX/COMBO" → "SRC", "RX" → "OUT". Rename `RX_OUTPUT_VOLUME` → `OUT_OUTPUT_VOLUME`. |
+| `lib/config/include/config/pins.h` | Update comments only. |
+| `lib/audio/include/audio/adf_pipeline.h` | Comment "For COMBO" → "For SRC". |
+| `lib/audio/include/audio/es8388_audio.h` | Comment "COMBO mode" → "SRC mode". |
+| `lib/audio/src/es8388_audio.c` | Comment "COMBO mode" → "SRC mode". |
+| `lib/control/include/control/usb_portal.h` | Comments "TX/COMBO" → "SRC", "RX" → "OUT". |
+
+### Phase 6: Update main.c Entry Points
+
+| File | Changes |
+|------|---------|
+| `src/src/main.c` | TAG → `"src_main"`. Log messages "COMBO" → "SRC". Use `src_status_t`. Call `display_render_src()` / `dashboard_render_src()`. |
+| `src/out/main.c` | TAG → `"out_main"`. Log messages "RX" → "OUT". Use `out_status_t`. Call `display_render_out()` / `dashboard_render_out()`. |
+
+### Phase 7: Portal (Web UI)
+
+| File | Change |
+|------|--------|
+| `portal/public/app.js` L74 | Default role `'RX'` → `'OUT'` |
+| `portal/public/app.js` L127 | Fallback label `'TX v1.0.1'` → `'SRC v1.0.1'` |
+| `portal/public/app.js` L297 | Fallback text `'RX'` → `'OUT'` |
+| `portal/public/app.css` | CSS vars `--rx` → `--out`, `--tx` → `--src`. Classes `.node-rx` → `.node-out`. |
+| `portal/src/components/PortalFooter.astro` | `"TX v1.0.1"` → dynamic from state |
+| `portal/dist/` | Rebuild after source changes |
+
+### Phase 8: VS Code Configuration
+
+**`.vscode/tasks.json`** — full overhaul:
+
+| Old Task | New Task |
+|----------|----------|
+| `TX: Build` (`pio run -e tx`) | **Delete** |
+| `TX: Upload` | **Delete** |
+| `TX: Monitor` | **Delete** |
+| `TX: Build + Upload + Monitor` | **Delete** |
+| `COMBO: Build` (`pio run -e combo`) | → `SRC: Build` (`pio run -e src`) |
+| `COMBO: Upload` | → `SRC: Upload` (`pio run -e src -t upload`) |
+| `COMBO: Upload SPIFFS` | → `SRC: Upload SPIFFS` (`pio run -e src -t uploadfs`) |
+| `COMBO: Monitor` | → `SRC: Monitor` |
+| `COMBO: Build + Upload + Monitor` | → `SRC: Build + Upload + Monitor` |
+| `RX: Build` (`pio run -e rx`) | → `OUT: Build` (`pio run -e out`) |
+| `RX: Upload` | → `OUT: Upload` (`pio run -e out -t upload`) |
+| `RX: Monitor` | → `OUT: Monitor` |
+| `RX: Build + Upload + Monitor` | → `OUT: Build + Upload + Monitor` |
+| `Build All (TX + RX + COMBO)` | → `Build All (SRC + OUT)` (`pio run -e src -e out`) |
+| `Clean Build` | → update to `pio run -e src -e out` |
+| `Upload All Test Nodes` | → update `combo` → `src`, `rx` → `out` in commands |
+
+**`.vscode/launch.json`** — auto-generated by PlatformIO, but currently hardcoded to `tx`:
+
+| Old | New |
+|-----|-----|
+| `projectEnvName: "tx"` | → `"src"` |
+| `.pio/build/tx/firmware.elf` | → `.pio/build/src/firmware.elf` |
+
+### Phase 9: Documentation
+
+| File | Change |
+|------|--------|
+| `AGENTS.md` | Full update: build commands, file map, sdkconfig hierarchy, conventions. |
+| `docs/planning/*` | Update active planning docs where they reference build envs. |
+| `docs/progress/*`, `docs/posts/*` | **Leave as-is** — historical documents. |
+
+### Phase 10: Cleanup & Verify
+
+```bash
+# Delete stale sdkconfig caches
+rm -f sdkconfig.tx sdkconfig.rx sdkconfig.combo
+
+# Delete dead tx source
+rm -rf src/tx/
+
+# Clean PlatformIO build artifacts
+pio run -e src -t clean && pio run -e out -t clean
+
+# Build both environments
+pio run -e src && pio run -e out
+```
+
+## Files NOT Changed (and why)
+
+| File/Symbol | Reason |
+|-------------|--------|
+| `ADF_PIPELINE_TX` / `ADF_PIPELINE_RX` | Describes pipeline data flow direction, not node identity |
+| `tx_capture_task`, `tx_encode_task` | Internal task names describing TX audio path |
+| `rx_decode_task`, `rx_playback_task` | Internal task names describing RX audio path |
+| `tx_seq`, `last_rx_seq`, `first_rx_packet` | Struct fields for packet sequencing |
+| `TX_TEST_TONE_MODE`, `RX_TEST_TONE_MODE` | Test flags for TX/RX pipeline directions |
+| `MESH_RX_TASK_*`, `MESH_RX_BUFFER_*` | Network receive task config (direction, not node type) |
+| `network_get_tx_bytes_and_reset()` | Measures bytes transmitted (direction) |
+| `mesh_rx_task`, `mesh_rx_buffer` | Network receive internals |
+| `docs/posts/*`, `docs/progress/*` | Historical documents — not updated |
+
+## Rollback
+
+If something breaks:
+1. The old `CONFIG_COMBO_BUILD` / `CONFIG_RX_BUILD` flags will stop working immediately
+2. `build_role.h` includes backward-compat aliases during migration (optional)
+3. Git revert is the safest rollback path

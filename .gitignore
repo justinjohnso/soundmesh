@@ -31,7 +31,6 @@ sdkconfig.rx
 sdkconfig.combo
 
 # AMP AI
-
 .aider*
 
 # Worktrees

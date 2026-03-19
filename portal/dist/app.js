@@ -69,9 +69,12 @@
     const parent = typeof rawNode.parent === 'string'
       ? rawNode.parent
       : (!root && fallbackRootMac && fallbackRootMac !== mac ? fallbackRootMac : null);
+    // Map TX→SRC, RX→OUT for display
+    let rawRole = typeof rawNode.role === 'string' ? rawNode.role : 'RX';
+    let displayRole = rawRole === 'TX' ? 'SRC' : (rawRole === 'RX' ? 'OUT' : rawRole);
     return {
       mac,
-      role: typeof rawNode.role === 'string' ? rawNode.role : 'RX',
+      role: displayRole,
       root,
       layer: normalizedLayer,
       rssi: Number.isFinite(rawNode.rssi) ? rawNode.rssi : -100,
@@ -135,6 +138,23 @@
     $('heap-free').textContent = numOrNA(state.heapKb);
   }
 
+  function rssiToBars(rssi) {
+    // Map RSSI to 0-5 bars: >-50=5, >-60=4, >-70=3, >-80=2, >-90=1, else=0
+    if (rssi > -50) return 5;
+    if (rssi > -60) return 4;
+    if (rssi > -70) return 3;
+    if (rssi > -80) return 2;
+    if (rssi > -90) return 1;
+    return 0;
+  }
+
+  function renderRssiBars(rssi) {
+    const bars = rssiToBars(rssi);
+    const filled = '█'.repeat(bars);
+    const empty = '░'.repeat(5 - bars);
+    return `[${filled}${empty}] ${rssi} dBm`;
+  }
+
   function renderSelectedNode() {
     const box = $('selected-node-details');
     const empty = $('selected-node-empty');
@@ -147,15 +167,17 @@
     }
 
     empty.style.display = 'none';
+    const streamLabel = node.streaming ? 'Yes' : 'No';
+    const roleLabel = node.root ? `${node.role} (Root)` : node.role;
     box.innerHTML = [
       ['MAC', node.mac],
-      ['Role', node.role],
+      ['Role', roleLabel],
       ['Layer', String(node.layer)],
-      ['RSSI', `${node.rssi} dBm`],
+      ['RSSI', renderRssiBars(node.rssi)],
       ['Children', String(node.children)],
-      ['Streaming', node.streaming ? 'Yes' : 'No'],
+      ['Streaming', streamLabel],
       ['Uptime', formatUptime(node.uptime)],
-      ['Parent', node.parent || '— (root)']
+      ['Parent', node.parent ? shortMac(node.parent) : '— (root)']
     ].map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join('');
   }
 
@@ -179,10 +201,18 @@
     });
 
     const keys = Object.keys(layers).map(Number).sort((a, b) => a - b);
-    const maxR = Math.min(rect.width, rect.height) * 0.38;
+    const maxR = Math.min(rect.width, rect.height) * 0.40;
+    const minR = 70; // Minimum radius for layer 1 to separate from root
     const radiiByLayer = {};
-    keys.forEach((layer, idx) => {
-      radiiByLayer[layer] = layer === 0 ? 0 : (idx / Math.max(1, keys.length - 1)) * maxR;
+    keys.forEach((layer) => {
+      if (layer === 0) {
+        radiiByLayer[layer] = 0; // Root at center
+      } else {
+        // Spread layers evenly between minR and maxR
+        const maxLayer = Math.max(...keys.filter(k => k > 0), 1);
+        radiiByLayer[layer] = minR + ((layer - 1) / Math.max(1, maxLayer - 1)) * (maxR - minR);
+        if (maxLayer === 1) radiiByLayer[layer] = minR; // Only one non-root layer
+      }
     });
 
     return {
@@ -270,36 +300,66 @@
       }
     });
 
+    // Draw a star shape for root node
+    function drawStar(cx, cy, spikes, outerR, innerR) {
+      topologyCtx.beginPath();
+      for (let i = 0; i < spikes * 2; i++) {
+        const r = i % 2 === 0 ? outerR : innerR;
+        const angle = (Math.PI / spikes) * i - Math.PI / 2;
+        const x = cx + r * Math.cos(angle);
+        const y = cy + r * Math.sin(angle);
+        if (i === 0) topologyCtx.moveTo(x, y);
+        else topologyCtx.lineTo(x, y);
+      }
+      topologyCtx.closePath();
+    }
+
     nodes.forEach((n) => {
       const pos = nodePositions[n.mac];
       if (!pos) return;
-      const r = n.root ? 16 : 12;
+      const r = n.root ? 28 : 14;
       const col = n.root ? '#2196f3' : '#76ff03';
       topologyCtx.globalAlpha = n.stale ? 0.45 : 1;
 
+      // Pulsing ring for self node
       if (n.mac === state.self) {
         topologyCtx.beginPath();
-        topologyCtx.arc(pos.x, pos.y, r + 7 + Math.sin(t * 3), 0, Math.PI * 2);
-        topologyCtx.strokeStyle = '#76ff03';
-        topologyCtx.lineWidth = 1.2;
+        topologyCtx.arc(pos.x, pos.y, r + 8 + Math.sin(t * 3) * 2, 0, Math.PI * 2);
+        topologyCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+        topologyCtx.lineWidth = 2;
         topologyCtx.stroke();
       }
 
+      // Draw node circle
       topologyCtx.beginPath();
       topologyCtx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
       topologyCtx.fillStyle = col;
       topologyCtx.fill();
 
-      topologyCtx.fillStyle = '#121212';
-      topologyCtx.font = '700 10px "IBM Plex Mono", monospace';
-      topologyCtx.textAlign = 'center';
-      topologyCtx.textBaseline = 'middle';
-      topologyCtx.fillText(n.role || 'RX', pos.x, pos.y);
+      // Draw star icon for root, text label for others
+      if (n.root) {
+        topologyCtx.fillStyle = '#121212';
+        drawStar(pos.x, pos.y, 5, 14, 6);
+        topologyCtx.fill();
+      } else {
+        topologyCtx.fillStyle = '#121212';
+        topologyCtx.font = '700 10px "IBM Plex Mono", monospace';
+        topologyCtx.textAlign = 'center';
+        topologyCtx.textBaseline = 'middle';
+        topologyCtx.fillText(n.role || 'OUT', pos.x, pos.y);
+      }
 
+      // MAC label below
       topologyCtx.fillStyle = '#e9ecef';
       topologyCtx.font = '10px "IBM Plex Mono", monospace';
+      topologyCtx.textAlign = 'center';
       topologyCtx.textBaseline = 'top';
       topologyCtx.fillText(shortMac(n.mac), pos.x, pos.y + r + 4);
+
+      // Role label for root
+      if (n.root) {
+        topologyCtx.fillText('ROOT ' + (n.role || 'SRC'), pos.x, pos.y + r + 16);
+      }
       topologyCtx.globalAlpha = 1;
     });
   }

@@ -609,7 +609,8 @@ static void tx_encode_task(void *arg)
                 hdr->timestamp = htonl((uint32_t)(esp_timer_get_time() / 1000));
                 hdr->payload_len = htons((uint16_t)batch_payload_len);
                 hdr->ttl = 6;
-                hdr->reserved = batch_count;  // Store frame count in reserved byte
+                hdr->frame_count = batch_count;
+                memcpy(hdr->src_id, network_get_src_id(), NETWORK_SRC_ID_LEN);
                 
                 ret = network_send_audio(s_batch_buffer, NET_FRAME_HEADER_SIZE + batch_payload_len);
                 if (ret == ESP_OK) {

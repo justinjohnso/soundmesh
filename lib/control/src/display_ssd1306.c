@@ -2,6 +2,7 @@
 #include "control/usb_portal.h"
 #include "config/pins.h"
 #include "config/build.h"
+#include "network/mesh_net.h"
 #include <esp_log.h>
 #include <driver/i2c.h>
 #include <driver/gpio.h>
@@ -115,7 +116,7 @@ static const uint8_t font5x7[][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // \ (92)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ] (93)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ^ (94)
-    {0x00, 0x00, 0x00, 0x00, 0x00}, // _ (95)
+    {0x40, 0x40, 0x40, 0x40, 0x40}, // _ (95)
     {0x00, 0x00, 0x00, 0x00, 0x00}, // ` (96)
     {0x20, 0x54, 0x54, 0x54, 0x78}, // a
     {0x7F, 0x48, 0x44, 0x44, 0x38}, // b
@@ -400,70 +401,57 @@ void display_clear(void) {
     memset(display_buffer, 0, sizeof(display_buffer));
 }
 
+// Re-send critical SSD1306 config commands that could be corrupted by I2C/MCLK EMI.
+// If EMI flips SEG_REMAP or COM_SCAN, the display mirrors/flips. Re-sending every
+// frame ensures self-correction within one refresh cycle (~100ms).
+static void display_reinforce_config(void) {
+    static uint32_t reinforce_counter = 0;
+    reinforce_counter++;
+    // Reinforce every 10th frame (~1s at 10Hz) to reduce I2C traffic
+    if ((reinforce_counter % 10) != 0) return;
+
+    ssd1306_write_command(SSD1306_CMD_MEMORY_MODE);
+    ssd1306_write_command(0x00);  // Horizontal addressing mode
+    ssd1306_write_command(SSD1306_CMD_SEG_REMAP | 0x01);  // Column 127 → SEG0
+    ssd1306_write_command(SSD1306_CMD_COM_SCAN_DEC);       // COM[N-1] → COM0
+    ssd1306_write_command(SSD1306_CMD_SET_START_LINE | 0x00);
+    ssd1306_write_command(SSD1306_CMD_SET_DISPLAY_OFFSET);
+    ssd1306_write_command(0x00);
+    ssd1306_write_command(SSD1306_CMD_NORMAL_DISPLAY);
+}
+
 // Update display from buffer (page-by-page to avoid large I2C writes)
 static void display_update(void) {
     if (!display_initialized) {
         return;
     }
-    
-    // Check if buffer has any non-zero data (every 5 seconds)
-    static uint32_t last_buffer_check = 0;
-    uint32_t now = xTaskGetTickCount();
-    if ((now - last_buffer_check) >= pdMS_TO_TICKS(5000)) {
-        uint32_t buffer_nonzero_count = 0;
-        for (int i = 0; i < DISPLAY_WIDTH * DISPLAY_PAGES; i++) {
-            if (display_buffer[i] != 0) buffer_nonzero_count++;
-        }
-        ESP_LOGI(TAG, "display_update: buffer has %lu non-zero bytes out of %u", 
-                 buffer_nonzero_count, DISPLAY_WIDTH * DISPLAY_PAGES);
-        last_buffer_check = now;
-    }
+
+    // Periodically re-send orientation/mode commands to recover from EMI corruption
+    display_reinforce_config();
     
     for (uint8_t page = 0; page < DISPLAY_PAGES; page++) {
         // Set column address range
         esp_err_t err = ssd1306_write_command(SSD1306_CMD_SET_COLUMN_ADDR);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set column addr start for page %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(0);  // Start column
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write column start: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(DISPLAY_WIDTH - 1);  // End column
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write column end: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         // Set page address range
         err = ssd1306_write_command(SSD1306_CMD_SET_PAGE_ADDR);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set page addr cmd: %s", esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(page);  // Start page
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write page start %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         err = ssd1306_write_command(page);  // End page (same)
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write page end %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        if (err != ESP_OK) continue;
         
         // Write one page (128 bytes)
-        err = ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to write pixel data for page %u: %s", page, esp_err_to_name(err));
-            continue;
-        }
+        ssd1306_write_data(&display_buffer[page * DISPLAY_WIDTH], DISPLAY_WIDTH);
     }
 }
 
@@ -601,39 +589,46 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
 
     display_draw_signal_bars(112, 0, status->rssi);
 
+    const char *state_str = status->connection_state[0] ? status->connection_state :
+                            (status->receiving_audio ? "Streaming" : "Waiting");
+
     if (view == DISPLAY_VIEW_AUDIO) {
+        char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.14s", state_str);
+        display_draw_string(0, 0, buf);
+
+        if (status->source_src_id[0]) {
+            snprintf(buf, sizeof(buf), "From: %s", status->source_src_id);
+        } else {
+            snprintf(buf, sizeof(buf), "Wait: %lus", status->state_elapsed_s);
+        }
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "Opus %dk %dkHz", OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
+        display_draw_string(0, 2, buf);
+
+        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 3, buf);
+
         if (status->receiving_audio) {
             for (int x = 0; x < DISPLAY_WIDTH; x++) {
                 float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 24 + (int)(sinf(phase) * 6.0f);
+                int y = 23 + (int)(sinf(phase) * 2.0f);
                 if (y >= 0 && y < DISPLAY_HEIGHT) {
                     display_draw_pixel(x, y);
                 }
             }
-        } else {
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                display_draw_pixel(x, 24);
-            }
         }
-
-        const char *state_str = status->receiving_audio ? "Receiving" : "Waiting...";
-        display_draw_string(0, 0, state_str);
-
-        char buf[22];
-        snprintf(buf, sizeof(buf), "Opus %dk %dkHz",
-                 OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
-        display_draw_string(0, 1, buf);
-
-        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 3, buf);
     } else if (view == DISPLAY_VIEW_NETWORK) {
         char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        display_draw_string(0, 0, buf);
 
         if (status->rssi == -100) {
-            display_draw_string(0, 0, "RSSI: --");
+            display_draw_string(0, 1, "RSSI: --");
         } else {
             snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-            display_draw_string(0, 0, buf);
+            display_draw_string(0, 1, buf);
         }
 
         if (status->latency_ms > 0) {
@@ -641,18 +636,13 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
         } else {
             snprintf(buf, sizeof(buf), "Ping: --");
         }
-        display_draw_string(0, 1, buf);
+        display_draw_string(0, 2, buf);
 
         snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
-        display_draw_string(0, 2, buf);
-        display_draw_string(0, 4, "Portal: 10.48.0.1");
+        display_draw_string(0, 3, buf);
     } else {
         char buf[22];
-        
-        uint32_t total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
-        uint32_t free_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-        uint32_t ram_pct = (total > 0) ? ((total - free_mem) * 100 / total) : 0;
-        snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
+        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
         display_draw_string(0, 0, buf);
         
         snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
@@ -764,14 +754,14 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
         snprintf(buf, sizeof(buf), "RAM: %lu%%", ram_pct);
         display_draw_string(0, 0, buf);
         
-        snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
-        display_draw_string(0, 1, buf);
-        
         uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
         uint32_t hours = uptime_s / 3600;
         uint32_t mins = (uptime_s % 3600) / 60;
         uint32_t secs = uptime_s % 60;
         snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "ID: %.17s", network_get_src_id());
         display_draw_string(0, 3, buf);
     }
 

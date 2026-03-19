@@ -691,15 +691,8 @@ src/combo/main.c                                  — Call portal_init() after m
 - **Phase 5: Build system** — SPIFFS partition in `partitions.csv`, static asset gzip pipeline to `data/`, all three firmware variants build clean
 - **Phase 5: Conditional compilation** — Portal only initialized on TX/COMBO builds
 
-### ⚠️ Pending: USB CDC-NCM Networking
-The bundled ESP-IDF 5.1.x (`framework-espidf@3.40406.240122`) does not include the `tinyusb_net` NCM driver or the `esp_tinyusb` managed component with network class support. The `tusb_ncm` example was added in ESP-IDF 5.2+.
-
-**Options to complete USB networking:**
-1. **Upgrade to ESP-IDF 5.2+** via `platform = espressif32@~6.9.0` (or later) — easiest path, `esp_tinyusb` v1.5+ has NCM support built in
-2. **Add `espressif/esp_tinyusb` as managed component** — update `idf_component.yml` to `espressif/esp_tinyusb: "^1.5.0"`, requires compatible ESP-IDF version
-3. **Implement NCM manually** using TinyUSB's low-level `net_device.h` API — the USB device class support exists in the bundled TinyUSB, but requires writing the esp_netif bridge manually (~200 lines)
-
-The portal subsystem (`portal_init()`) currently registers the heartbeat callback and initializes state tracking, but skips USB network setup. All HTTP/DNS/WebSocket code is compiled and ready to activate.
+### ✅ Phase 1: USB CDC-NCM Networking — COMPLETE
+Using the `espressif/esp_tinyusb` managed component (^1.4.0) with `CONFIG_TINYUSB_NET_MODE_NCM=y` on ESP-IDF 5.2.1. The `tinyusb_net_init()` / `tinyusb_net_send_sync()` API provides the USB↔lwIP bridge. `usb_portal_netif.c` creates an `esp_netif` with static IP 10.48.0.1/24, DHCP server, and bridges USB Ethernet frames to/from lwIP. The HTTP server, DNS catch-all, and WebSocket push are started after USB netif is ready. All three firmware variants (tx, rx, combo) build clean.
 
 ### ⚠️ Pending: Astro Migration + TE Visual Alignment
 - Migrate the current prototype frontend from flat static files to Astro project structure.

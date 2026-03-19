@@ -79,14 +79,17 @@ static esp_err_t portal_netif_setup(void) {
     // lwIP-side MAC (locally administered, different from USB NCM device MAC)
     uint8_t lwip_mac[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x02};
 
-    // Use built-in soft AP IP (192.168.4.1/24) — proven to work with DHCP server
-    // We'll override to 10.48.0.1 after confirming DHCP works
-    extern const esp_netif_ip_info_t _g_esp_netif_soft_ap_ip;
+    // Static IP config from build.h (10.48.0.1/24)
+    static const esp_netif_ip_info_t portal_ip = {
+        .ip      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
+        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
+        .gw      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
+    };
 
     // 1) Inherent config — DHCP server + auto-up (similar to WiFi AP)
     esp_netif_inherent_config_t base_cfg = {
         .flags = (esp_netif_flags_t)(ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP),
-        .ip_info = &_g_esp_netif_soft_ap_ip,
+        .ip_info = &portal_ip,
         .if_key = "USB_NCM_DEF",
         .if_desc = "usb-ncm-portal",
         .route_prio = 10,

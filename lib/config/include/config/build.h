@@ -80,6 +80,18 @@
     ((AUDIO_INPUT_ACTIVITY_HOLD_MS + AUDIO_FRAME_MS - 1) / AUDIO_FRAME_MS)
 
 // ============================================================================
+// Audio FFT Analysis (Portal Telemetry)
+// ============================================================================
+// FFT runs on local PCM frames and is exposed to the portal as 28 normalized bins.
+#define FFT_ANALYSIS_SIZE              512       // Must be power-of-two and <= AUDIO_FRAME_SAMPLES
+#define FFT_PORTAL_BIN_COUNT           28
+#define FFT_MIN_FREQ_HZ                20
+#define FFT_MAX_FREQ_HZ                20000
+#define FFT_UPDATE_INTERVAL_FRAMES     2         // 20ms frames -> 25 FFT updates/sec
+#define FFT_DB_FLOOR                   (-78.0f)
+#define FFT_DB_CEIL                    (-12.0f)
+
+// ============================================================================
 // Network Configuration - ESP-WIFI-MESH
 // ============================================================================
 
@@ -223,6 +235,14 @@
 // Codec frame must be a multiple of DMA chunk for clean accumulation
 _Static_assert((AUDIO_FRAME_MS % I2S_DMA_CHUNK_MS) == 0,
                "AUDIO_FRAME_MS must be a multiple of I2S_DMA_CHUNK_MS");
+
+// FFT size must fit inside one codec PCM frame
+_Static_assert(FFT_ANALYSIS_SIZE <= AUDIO_FRAME_SAMPLES,
+               "FFT_ANALYSIS_SIZE must be <= AUDIO_FRAME_SAMPLES");
+
+// FFT implementation expects a power-of-two size
+_Static_assert((FFT_ANALYSIS_SIZE & (FFT_ANALYSIS_SIZE - 1)) == 0,
+               "FFT_ANALYSIS_SIZE must be power-of-two");
 
 // Jitter prefill can't exceed buffer depth
 _Static_assert(JITTER_PREFILL_FRAMES <= JITTER_BUFFER_FRAMES,

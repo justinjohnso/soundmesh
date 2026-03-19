@@ -541,6 +541,7 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
             snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
             display_draw_string(0, 2, buf);
         }
+        display_draw_string(0, 4, "Portal: 10.48.0.1");
     } else {
     const char *mode_str = "Unknown";
     if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
@@ -638,6 +639,7 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
 
         snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
         display_draw_string(0, 2, buf);
+        display_draw_string(0, 4, "Portal: 10.48.0.1");
     } else {
         char buf[22];
         
@@ -740,6 +742,7 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
             display_draw_string(0, 0, "RSSI: --");
             display_draw_string(0, 1, "Con. Nodes: 0");
         }
+        display_draw_string(0, 4, "Portal: 10.48.0.1");
     } else {
         char buf[22];
         

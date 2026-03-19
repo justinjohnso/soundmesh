@@ -299,11 +299,18 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 }
             }
             
-            // Disable self-organized mode to stop periodic parent monitoring scans
-            // These scans pause the radio for ~300ms and cause audio dropouts
-            esp_mesh_set_self_organized(false, false);
-            esp_wifi_scan_stop();
-            ESP_LOGI(TAG, "Self-organized disabled (no more parent scans during streaming)");
+            // Only disable self-organized for non-root nodes (RX/OUT)
+            // ROOT must keep self-organized enabled to accept new children joining later!
+            // Disabling it on root was blocking 2nd/3rd children from connecting.
+            if (!esp_mesh_is_root()) {
+                esp_mesh_set_self_organized(false, false);
+                esp_wifi_scan_stop();
+                ESP_LOGI(TAG, "Self-organized disabled (RX node, no more parent scans)");
+            } else {
+                // Root: stop scanning but keep accepting children
+                esp_wifi_scan_stop();
+                ESP_LOGI(TAG, "Root: stopped scanning but still accepting children");
+            }
             break;
         }
         
@@ -351,15 +358,12 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             int new_count = esp_mesh_get_routing_table_size();
             ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
             mesh_children_count = new_count;
-            // Now that a child has joined, disable root's self-organized scanning
-            // to avoid radio pauses that cause audio dropouts.
-            // Also disconnect STA to stop futile "MESHNET_DISABLED" connection attempts.
-            // (Moved here from MESH_EVENT_STARTED to avoid racing with children joining)
+            // Stop STA connection attempts to "MESHNET_DISABLED" but keep accepting children
+            // IMPORTANT: Do NOT disable self-organized here - that blocks new children from joining!
             if (is_mesh_root) {
-                esp_mesh_set_self_organized(false, false);
                 esp_wifi_scan_stop();
                 esp_wifi_disconnect();
-                ESP_LOGI(TAG, "Root: self-organized disabled, STA disconnected (child connected)");
+                ESP_LOGI(TAG, "Root: stopped scanning, STA disconnected (still accepting children)");
             }
             break;
         }
@@ -830,6 +834,16 @@ esp_err_t network_init_mesh(void) {
     // Set maximum layer depth
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
     
+    // Increase mesh queue sizes for multi-node reliability
+    // Default RX queue is 32, which backs up with 3+ nodes at 25pps each
+    ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(64));
+    
+    // Set AP association timeout to clean up stale connections
+    // This prevents old associations from blocking new children
+    ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(30));
+    
+    ESP_LOGI(TAG, "Mesh tuning: xon_qsize=64, ap_assoc_expire=30s");
+    
     // User Designated Root Node pattern (ESP-IDF official approach)
     // TX/COMBO nodes are always the root - no election, no scanning delay
     // RX nodes wait indefinitely to join the designated root
@@ -852,6 +866,14 @@ esp_err_t network_init_mesh(void) {
       
       // Start mesh - TX immediately becomes root, RX scans for the TX root
       ESP_ERROR_CHECK(esp_mesh_start());
+      
+      // TX/COMBO: Stop any startup scans immediately
+      // Root has no parent to find, scanning just wastes time and causes audio gaps
+      if (my_node_role == NODE_ROLE_TX) {
+          esp_wifi_scan_stop();
+          esp_wifi_disconnect();  // Stop "MESHNET_DISABLED" connection attempts
+          ESP_LOGI(TAG, "TX/COMBO: stopped startup scanning");
+      }
       
       ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
       

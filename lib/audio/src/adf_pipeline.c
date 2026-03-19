@@ -25,7 +25,6 @@
 #include <esp_timer.h>
 #include <esp_mesh.h>
 #include <esp_heap_caps.h>
-#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -149,6 +148,16 @@ static void fft_init_once(void)
     }
     s_fft_init_attempted = true;
 
+#ifdef CONFIG_COMBO_BUILD
+    // FFT disabled on COMBO - causes boot loop (likely esp-dsp conflict with USB/ES8388)
+    // FFT visualization is on RX nodes anyway
+    ESP_LOGW(TAG, "FFT disabled on COMBO build");
+    return;
+#endif
+
+    ESP_LOGI(TAG, "FFT init: calling dsps_fft2r_init_fc32 (heap=%lu)...",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    
     // Initialize esp-dsp FFT tables
     esp_err_t ret = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
     if (ret != ESP_OK) {
@@ -160,9 +169,6 @@ static void fft_init_once(void)
     dsps_wind_hann_f32(s_fft_window, FFT_ANALYSIS_SIZE);
 
     // Pre-compute logarithmic frequency bin mapping
-    // Reset watchdog during this compute-intensive operation
-    esp_task_wdt_reset();
-    
     const float ratio = (float)FFT_MAX_FREQ_HZ / (float)FFT_MIN_FREQ_HZ;
     const int max_bin = (FFT_ANALYSIS_SIZE / 2) - 1;
 
@@ -182,8 +188,8 @@ static void fft_init_once(void)
         s_fft_bar_end[i] = k1;
     }
 
-    esp_task_wdt_reset();
     s_fft_initialized = true;
+    ESP_LOGI(TAG, "FFT init complete: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
     ESP_LOGI(TAG, "esp-dsp FFT init OK: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
 }
 
@@ -319,7 +325,8 @@ adf_pipeline_handle_t adf_pipeline_create(const adf_pipeline_config_t *config)
         return NULL;
     }
 
-    fft_init_once();
+    // FFT init deferred to first fft_process_frame() call
+    // This avoids timing conflicts during early COMBO boot
     
     ESP_LOGI(TAG, "Pipeline created: type=%s, local_output=%d (event-driven)",
              config->type == ADF_PIPELINE_TX ? "TX" : "RX",

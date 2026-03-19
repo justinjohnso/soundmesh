@@ -226,9 +226,11 @@ esp_err_t portal_init(void) {
         .on_recv_callback = usb_recv_callback,
     };
     // Derive USB MAC from chip WiFi STA MAC, set locally administered bit
+    // XOR byte[1] with 0x01 to ensure USB MAC differs from lwIP MAC (which host may mirror)
     esp_read_mac(net_config.mac_addr, ESP_MAC_WIFI_STA);
     net_config.mac_addr[0] |= 0x02;
     net_config.mac_addr[0] &= ~0x01;
+    net_config.mac_addr[1] ^= 0x01;  // Differentiate from host-side MAC
     ESP_LOGI(TAG, "USB ECM MAC: %02x:%02x:%02x:%02x:%02x:%02x",
              net_config.mac_addr[0], net_config.mac_addr[1],
              net_config.mac_addr[2], net_config.mac_addr[3],

@@ -188,6 +188,8 @@ esp_err_t portal_http_start(void) {
     config.max_open_sockets = 4;
     config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
+    // Let wildcard handler catch unrecognized captive-check URIs from different OSes.
+    config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 6144;
     
     esp_err_t ret = httpd_start(&server, &config);
@@ -225,10 +227,19 @@ esp_err_t portal_http_start(void) {
     
     const char *probe_uris[] = {
         "/generate_204",
+        "/gen_204",
+        "/mobile/status.php",
+        "/connectivity-check.html",
+        "/redirect",
+        "/redirect.html",
         "/hotspot-detect.html",
+        "/hotspotdetect.html",
+        "/success.html",
         "/library/test/success.html",
         "/connecttest.txt",
         "/ncsi.txt",
+        "/fwlink",
+        "/msftconnecttest/redirect",
         "/success.txt",
         "/canonical.html"
     };
@@ -240,6 +251,13 @@ esp_err_t portal_http_start(void) {
         };
         httpd_register_uri_handler(server, &uri_probe);
     }
+
+    httpd_uri_t uri_catch_all = {
+        .uri = "/*",
+        .method = HTTP_GET,
+        .handler = handle_captive_redirect
+    };
+    httpd_register_uri_handler(server, &uri_catch_all);
     
     xTaskCreatePinnedToCore(ws_push_task, "ws_push", 4096, server, 3, &ws_push_task_handle, 0);
     

@@ -180,7 +180,7 @@
 #define PORTAL_HTTP_STACK_BYTES      (6 * 1024)
 #define PORTAL_WS_PUSH_STACK_BYTES   (4 * 1024)
 #define PORTAL_DNS_STACK_BYTES       (3 * 1024)
-#define PORTAL_MIN_FREE_HEAP         (64 * 1024)  // Don't start portal if heap < 64KB
+#define PORTAL_MIN_FREE_HEAP         (30 * 1024)  // Don't start portal if heap < 30KB
 
 // ============================================================================
 // Audio Output Configuration

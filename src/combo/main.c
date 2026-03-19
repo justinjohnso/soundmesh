@@ -160,15 +160,16 @@ void app_main(void) {
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
     dashboard_log("Network ready");
 
-    // Initialize portal (USB networking + web UI)
+    // Start the TX pipeline BEFORE portal — portal/TinyUSB consumes heap and
+    // can fragment memory, causing the 32KB encode task stack to fail silently.
+    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
+    status.audio_active = true;
+
+    // Initialize portal (USB networking + web UI) — after audio pipeline
     esp_err_t portal_err = portal_init();
     if (portal_err != ESP_OK) {
         ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
     }
-
-    // Start the TX pipeline
-    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
-    status.audio_active = true;
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));

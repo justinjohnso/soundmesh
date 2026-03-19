@@ -1,3 +1,4 @@
+#include "control/usb_portal.h"
 #include <esp_log.h>
 #include <lwip/sockets.h>
 #include <lwip/ip4_addr.h>
@@ -69,8 +70,9 @@ static int build_dns_response(const uint8_t *query, int query_len, uint8_t *resp
         uint16_t rdlen = htons(4);
         memcpy(resp + off, &rdlen, 2); off += 2;
         
-        uint8_t ip[4] = {10, 48, 0, 1};
-        memcpy(resp + off, ip, 4); off += 4;
+        const esp_netif_ip_info_t *info = portal_get_ip_info();
+        uint32_t addr = info ? ip4_addr_get_u32(&info->ip) : 0;
+        memcpy(resp + off, &addr, 4); off += 4;
     }
     
     return off;

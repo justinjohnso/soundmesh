@@ -27,6 +27,7 @@ static const char *TAG = "portal_usb";
 
 static bool portal_running = false;
 static esp_netif_t *s_portal_netif = NULL;
+static esp_netif_ip_info_t s_portal_ip;  // computed at runtime from mesh ID + node MAC
 
 // Forward declarations for services in other files
 esp_err_t portal_http_start(void);
@@ -76,20 +77,29 @@ static void on_heartbeat_received(const uint8_t *sender_mac, const mesh_heartbea
 // ============================================================================
 
 static esp_err_t portal_netif_setup(void) {
-    // lwIP-side MAC (locally administered, different from USB NCM device MAC)
-    uint8_t lwip_mac[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x02};
+    // Derive lwIP MAC from efuse base MAC (locally administered, unicast)
+    uint8_t lwip_mac[6];
+    esp_efuse_mac_get_default(lwip_mac);
+    lwip_mac[0] = (lwip_mac[0] | 0x02) & 0xFE;
 
-    // Static IP config from build.h (10.48.0.1/24)
-    static const esp_netif_ip_info_t portal_ip = {
-        .ip      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
-        .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
-        .gw      = { .addr = ESP_IP4TOADDR(10, 48, 0, 1) },
-    };
+    // Compute unique /30 subnet: 10.48.<mesh_hash>.<node_base+1>
+    // 3rd octet: DJB2 hash of MESH_ID string (groups nodes by network)
+    // 4th octet: node MAC last byte, /30-aligned (distinguishes nodes)
+    uint32_t hash = 5381;
+    for (const char *p = MESH_ID; *p; p++) {
+        hash = ((hash << 5) + hash) + (uint8_t)*p;
+    }
+    uint8_t mesh_octet = (uint8_t)(hash & 0xFF);
+    uint8_t node_base  = lwip_mac[5] & 0xFC;  // /30 aligned: 0,4,8,...,252
+
+    IP4_ADDR(&s_portal_ip.ip,      10, 48, mesh_octet, node_base + 1);
+    IP4_ADDR(&s_portal_ip.netmask, 255, 255, 255, 252);
+    IP4_ADDR(&s_portal_ip.gw,      10, 48, mesh_octet, node_base + 1);
 
     // 1) Inherent config — DHCP server + auto-up (similar to WiFi AP)
     esp_netif_inherent_config_t base_cfg = {
         .flags = (esp_netif_flags_t)(ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP),
-        .ip_info = &portal_ip,
+        .ip_info = &s_portal_ip,
         .if_key = "USB_NCM_DEF",
         .if_desc = "usb-ncm-portal",
         .route_prio = 10,
@@ -248,6 +258,10 @@ bool portal_is_running(void) {
     return portal_running;
 }
 
+const esp_netif_ip_info_t *portal_get_ip_info(void) {
+    return &s_portal_ip;
+}
+
 #else /* RX build — portal not supported */
 
 esp_err_t portal_init(void) {
@@ -256,6 +270,10 @@ esp_err_t portal_init(void) {
 
 bool portal_is_running(void) {
     return false;
+}
+
+const esp_netif_ip_info_t *portal_get_ip_info(void) {
+    return NULL;
 }
 
 #endif /* CONFIG_TX_BUILD || CONFIG_COMBO_BUILD */

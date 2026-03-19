@@ -126,6 +126,25 @@ typedef enum {
  */
 esp_err_t adf_pipeline_set_input_mode(adf_pipeline_handle_t pipeline, adf_input_mode_t mode);
 
+/**
+ * Get latest normalized FFT bins for portal visualization.
+ * @param pipeline Pipeline handle (TX or RX)
+ * @param bins_out Output array
+ * @param bin_count Number of bins to copy
+ * @param valid_out Optional validity flag (true once at least one FFT frame is computed)
+ * @return ESP_OK on success
+ */
+esp_err_t adf_pipeline_get_fft_bins(adf_pipeline_handle_t pipeline,
+                                    float *bins_out,
+                                    size_t bin_count,
+                                    bool *valid_out);
+
+/**
+ * Get latest FFT bins from the active local pipeline.
+ * Useful for portal telemetry without direct access to pipeline handle.
+ */
+esp_err_t adf_pipeline_get_latest_fft_bins(float *bins_out, size_t bin_count, bool *valid_out);
+
 #ifdef __cplusplus
 }
 #endif

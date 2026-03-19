@@ -58,6 +58,59 @@
     return typeof value === 'number' && Number.isFinite(value) ? `${value}${suffix}` : 'N/A';
   }
 
+  function normalizeNode(rawNode, fallbackRootMac) {
+    if (!rawNode || typeof rawNode !== 'object') return null;
+    const mac = typeof rawNode.mac === 'string' ? rawNode.mac : null;
+    if (!mac) return null;
+    const root = !!rawNode.root;
+    const normalizedLayer = Number.isFinite(rawNode.layer)
+      ? Math.max(0, Math.floor(rawNode.layer))
+      : (root ? 0 : 1);
+    const parent = typeof rawNode.parent === 'string'
+      ? rawNode.parent
+      : (!root && fallbackRootMac && fallbackRootMac !== mac ? fallbackRootMac : null);
+    return {
+      mac,
+      role: typeof rawNode.role === 'string' ? rawNode.role : 'RX',
+      root,
+      layer: normalizedLayer,
+      rssi: Number.isFinite(rawNode.rssi) ? rawNode.rssi : -100,
+      children: Number.isFinite(rawNode.children) ? rawNode.children : 0,
+      streaming: !!rawNode.streaming,
+      parent,
+      uptime: Number.isFinite(rawNode.uptime) ? rawNode.uptime : 0,
+      stale: !!rawNode.stale
+    };
+  }
+
+  function normalizePayload(msg) {
+    const rawNodes = Array.isArray(msg?.nodes) ? msg.nodes : [];
+    const rootNode = rawNodes.find((n) => n && n.root && typeof n.mac === 'string');
+    const selfMac = typeof msg?.self === 'string' ? msg.self : '';
+    const fallbackRootMac = rootNode?.mac || selfMac || null;
+
+    const dedup = new Map();
+    rawNodes.forEach((n) => {
+      const normalized = normalizeNode(n, fallbackRootMac);
+      if (normalized) dedup.set(normalized.mac, normalized);
+    });
+    const nodes = Array.from(dedup.values()).sort((a, b) => a.mac.localeCompare(b.mac));
+
+    return {
+      ts: Number.isFinite(msg?.ts) ? msg.ts : 0,
+      self: selfMac,
+      nodes,
+      heapKb: Number.isFinite(msg?.heapKb) ? msg.heapKb : null,
+      core0LoadPct: Number.isFinite(msg?.core0LoadPct) ? msg.core0LoadPct : null,
+      latencyMs: Number.isFinite(msg?.latencyMs) ? msg.latencyMs : null,
+      netIf: typeof msg?.netIf === 'string' ? msg.netIf : state.netIf,
+      buildLabel: typeof msg?.buildLabel === 'string' ? msg.buildLabel : state.buildLabel,
+      meshState: typeof msg?.meshState === 'string' ? msg.meshState : state.meshState,
+      bpm: Number.isFinite(msg?.bpm) ? msg.bpm : null,
+      fftBins: Array.isArray(msg?.fftBins) ? msg.fftBins : null
+    };
+  }
+
   function updateGlobalReadouts() {
     const nodes = state.nodes || [];
     const root = nodes.find((n) => n.root) || nodes[0] || null;
@@ -76,7 +129,7 @@
     const uptime = root ? root.uptime : 0;
     $('uptime-value').textContent = formatUptime(uptime);
 
-    $('bpm-value').textContent = numOrNA(state.bpm);
+    $('bpm-value').textContent = state.bpm !== null ? numOrNA(state.bpm) : 'No data';
 
     $('core0-load').textContent = numOrNA(state.core0LoadPct);
     $('heap-free').textContent = numOrNA(state.heapKb);
@@ -276,22 +329,10 @@
     });
 
     const fftBins = Array.isArray(state.fftBins) ? state.fftBins : null;
-    const streamFactor = Math.max(1, (state.nodes || []).filter((n) => n.streaming).length);
-    const avgRssi = (state.nodes || []).length
-      ? (state.nodes.reduce((acc, n) => acc + (n.rssi || -70), 0) / state.nodes.length)
-      : -70;
     for (let i = 0; i < bars; i++) {
-      let amp;
-      if (fftBins && typeof fftBins[i] === 'number') {
-        amp = Math.max(0, Math.min(1, fftBins[i]));
-      } else {
-        // Proxy visualization from live network state until real FFT bins are available.
-        const norm = i / (bars - 1);
-        const peak = Math.exp(-Math.pow((norm - 0.42) * 4.0, 2));
-        const rssiFactor = Math.max(0.2, Math.min(1.0, (avgRssi + 95) / 45));
-        const shimmer = (Math.sin(t * 5 + i * 0.38) + 1) * 0.10;
-        amp = Math.min(0.95, peak * 0.75 * rssiFactor + shimmer + streamFactor * 0.025);
-      }
+      const amp = fftBins && typeof fftBins[i] === 'number'
+        ? Math.max(0, Math.min(1, fftBins[i]))
+        : 0;
       const barH = innerH * amp;
       fftCtx.fillStyle = '#76ff03';
       fftCtx.fillRect(pad + i * barW + 1, h - pad - barH, Math.max(1, barW - 2), barH);
@@ -302,7 +343,7 @@
       fftCtx.font = '10px "IBM Plex Mono", monospace';
       fftCtx.textAlign = 'right';
       fftCtx.textBaseline = 'top';
-      fftCtx.fillText('FFT telemetry unavailable (proxy view)', w - pad, pad);
+      fftCtx.fillText('FFT telemetry unavailable', w - pad, pad);
     }
   }
 
@@ -373,7 +414,10 @@
       try {
         const msg = JSON.parse(ev.data);
         if (msg && Array.isArray(msg.nodes)) {
-          Object.assign(state, msg);
+          Object.assign(state, normalizePayload(msg));
+          if (selectedMac && !(state.nodes || []).some((n) => n.mac === selectedMac)) {
+            selectedMac = null;
+          }
           updateAll();
         }
       } catch (_) {}

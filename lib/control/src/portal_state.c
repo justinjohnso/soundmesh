@@ -23,6 +23,147 @@ static uint32_t s_last_total_runtime = 0;
 static uint32_t s_last_core0_runtime = 0;
 static int64_t s_last_core0_sample_us = 0;
 #endif
+static portal_node_t *find_node(const uint8_t *mac);
+static portal_node_t *add_node(const uint8_t *mac);
+
+static bool is_zero_mac(const uint8_t *mac) {
+    for (int i = 0; i < 6; i++) {
+        if (mac[i] != 0) return false;
+    }
+    return true;
+}
+
+static uint8_t effective_layer_for(const portal_node_t *node) {
+    if (!node) return 0;
+    if (node->is_root) return 0;
+    if (node->has_heartbeat) return node->layer;
+    return 1;
+}
+
+static bool parent_exists(const uint8_t *parent_mac) {
+    if (is_zero_mac(parent_mac)) {
+        return false;
+    }
+    for (int i = 0; i < state.node_count; i++) {
+        if (memcmp(state.nodes[i].mac, parent_mac, 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void portal_state_recompute_derived_fields(void) {
+    // Normalize parent links and infer missing layers for nodes discovered via routing table.
+    for (int i = 0; i < state.node_count; i++) {
+        portal_node_t *node = &state.nodes[i];
+        if (!node->is_root && !is_zero_mac(node->parent_mac) && !parent_exists(node->parent_mac)) {
+            memset(node->parent_mac, 0, sizeof(node->parent_mac));
+        }
+    }
+
+    for (int pass = 0; pass < state.node_count; pass++) {
+        bool changed = false;
+        for (int i = 0; i < state.node_count; i++) {
+            portal_node_t *node = &state.nodes[i];
+            if (node->is_root || node->has_heartbeat) {
+                continue;
+            }
+
+            if (is_zero_mac(node->parent_mac)) {
+                continue;
+            }
+
+            portal_node_t *parent = find_node(node->parent_mac);
+            if (!parent) {
+                continue;
+            }
+
+            uint8_t parent_layer = effective_layer_for(parent);
+            uint8_t inferred = (parent_layer < UINT8_MAX) ? (uint8_t)(parent_layer + 1) : UINT8_MAX;
+            if (node->layer != inferred) {
+                node->layer = inferred;
+                changed = true;
+            }
+        }
+        if (!changed) {
+            break;
+        }
+    }
+
+    // Compute child counts from known parent links so totals stay accurate.
+    for (int i = 0; i < state.node_count; i++) {
+        state.nodes[i].children_count = 0;
+    }
+    for (int i = 0; i < state.node_count; i++) {
+        portal_node_t *node = &state.nodes[i];
+        if (is_zero_mac(node->parent_mac)) {
+            continue;
+        }
+        portal_node_t *parent = find_node(node->parent_mac);
+        if (parent) {
+            parent->children_count++;
+        }
+    }
+}
+
+static void portal_state_sync_with_routing_table(void) {
+    mesh_addr_t route_table[PORTAL_MAX_NODES];
+    int route_table_size = 0;
+    esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
+    if (route_table_size < 0) {
+        route_table_size = 0;
+    }
+    if (route_table_size > PORTAL_MAX_NODES) {
+        route_table_size = PORTAL_MAX_NODES;
+    }
+
+    uint8_t root_mac[6] = {0};
+    for (int i = 0; i < state.node_count; i++) {
+        if (state.nodes[i].is_root) {
+            memcpy(root_mac, state.nodes[i].mac, sizeof(root_mac));
+            break;
+        }
+    }
+    if (is_zero_mac(root_mac)) {
+        memcpy(root_mac, state.self_mac, sizeof(root_mac));
+    }
+
+    for (int i = 0; i < route_table_size; i++) {
+        const uint8_t *mac = route_table[i].addr;
+        portal_node_t *node = find_node(mac);
+        if (!node) {
+            node = add_node(mac);
+            if (!node) {
+                continue;
+            }
+            memset(node, 0, sizeof(*node));
+            memcpy(node->mac, mac, 6);
+            node->role = 0;
+            node->rssi = -100;
+            node->stream_active = 0;
+            node->last_seen_us = esp_timer_get_time();
+            node->stale = false;
+        }
+
+        bool is_self = (memcmp(mac, state.self_mac, 6) == 0);
+        node->last_seen_us = esp_timer_get_time();
+        node->stale = false;
+
+        if (is_self) {
+            continue;
+        }
+
+        if (!node->has_heartbeat) {
+            node->is_root = 0;
+            node->layer = 1;
+            if (!is_zero_mac(root_mac) && memcmp(mac, root_mac, 6) != 0) {
+                memcpy(node->parent_mac, root_mac, 6);
+            } else {
+                memset(node->parent_mac, 0, sizeof(node->parent_mac));
+            }
+        }
+    }
+}
 
 esp_err_t portal_state_init(void) {
     memset(&state, 0, sizeof(state));
@@ -53,13 +194,18 @@ static portal_node_t *add_node(const uint8_t *mac) {
 }
 
 void portal_state_update_from_heartbeat(const uint8_t *sender_mac, const mesh_heartbeat_t *hb) {
+    (void)sender_mac;
     portal_node_t *node = find_node(hb->self_mac);
     if (!node) {
         node = add_node(hb->self_mac);
         if (!node) return;
+        memset(node, 0, sizeof(*node));
+        memcpy(node->mac, hb->self_mac, 6);
+        node->rssi = -100;
         ESP_LOGI(TAG, "New node: " MACSTR " role=%d", MAC2STR(hb->self_mac), hb->role);
     }
     
+    node->has_heartbeat = 1;
     node->role = hb->role;
     node->is_root = hb->is_root;
     node->layer = hb->layer;
@@ -77,8 +223,12 @@ void portal_state_update_self(void) {
     if (!node) {
         node = add_node(state.self_mac);
         if (!node) return;
+        memset(node, 0, sizeof(*node));
+        memcpy(node->mac, state.self_mac, 6);
+        node->rssi = -100;
     }
 
+    node->has_heartbeat = 1;
     #if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)
         node->role = 1;  // TX
     #else
@@ -91,7 +241,9 @@ void portal_state_update_self(void) {
     node->children_count = network_get_connected_nodes();
     node->stream_active = network_is_stream_ready() ? 1 : 0;
     memcpy(node->mac, state.self_mac, 6);
-    memset(node->parent_mac, 0, 6);  // Root has no parent
+    if (node->is_root) {
+        memset(node->parent_mac, 0, 6);
+    }
     node->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
     node->last_seen_us = esp_timer_get_time();
     node->stale = false;
@@ -127,13 +279,6 @@ void portal_state_expire_stale(void) {
 static void mac_to_str(const uint8_t *mac, char *str) {
     sprintf(str, "%02X:%02X:%02X:%02X:%02X:%02X",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
-
-static bool is_zero_mac(const uint8_t *mac) {
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] != 0) return false;
-    }
-    return true;
 }
 
 static const char *portal_build_label(void) {
@@ -224,7 +369,9 @@ static void portal_state_update_core0_load(void) {
 
 int portal_state_serialize_json(char *buf, size_t buf_size) {
     portal_state_update_self();
+    portal_state_sync_with_routing_table();
     portal_state_expire_stale();
+    portal_state_recompute_derived_fields();
     portal_state_update_core0_load();
     
     char self_mac_str[18];

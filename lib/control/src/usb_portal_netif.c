@@ -7,7 +7,6 @@
 #include <esp_event.h>
 #include <esp_heap_caps.h>
 #include <lwip/esp_netif_net_stack.h>
-#include <dhcpserver/dhcpserver_options.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <string.h>
@@ -138,7 +137,24 @@ static esp_err_t portal_netif_setup(void) {
     // Set minimum DHCP lease time
     uint32_t lease_opt = 1;
     esp_netif_dhcps_option(s_portal_netif, ESP_NETIF_OP_SET,
-                           IP_ADDRESS_LEASE_TIME, &lease_opt, sizeof(lease_opt));
+                           ESP_NETIF_IP_ADDRESS_LEASE_TIME, &lease_opt, sizeof(lease_opt));
+
+    // Advertise captive portal URI (DHCP option 114 / RFC 8910) so host OSes can prompt users.
+    // Keep startup resilient: if unsupported by platform/host, continue with DNS+probe redirects.
+    char portal_uri[48];
+    snprintf(portal_uri, sizeof(portal_uri), "http://" IPSTR "/", IP2STR(&s_portal_ip.ip));
+    esp_err_t capport_ret = esp_netif_dhcps_option(
+        s_portal_netif,
+        ESP_NETIF_OP_SET,
+        (esp_netif_dhcp_option_id_t)114,
+        (void *)portal_uri,
+        (uint32_t)strlen(portal_uri));
+    if (capport_ret == ESP_OK) {
+        ESP_LOGI(TAG, "DHCP captive portal URI advertised: %s", portal_uri);
+    } else {
+        ESP_LOGW(TAG, "DHCP captive portal URI unsupported (%s); using probe redirects only",
+                 esp_err_to_name(capport_ret));
+    }
 
     // Bring interface up (driver already started by tinyusb_net_init)
     esp_netif_action_start(s_portal_netif, 0, 0, 0);

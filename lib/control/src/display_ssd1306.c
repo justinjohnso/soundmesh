@@ -645,6 +645,7 @@ void display_render_rx(display_view_t view, const rx_status_t *status) {
 
         snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
         display_draw_string(0, 2, buf);
+        display_draw_string(0, 4, "Portal: 10.48.0.1");
     } else {
         char buf[22];
         

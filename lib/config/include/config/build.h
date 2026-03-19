@@ -148,11 +148,11 @@
 #define STACK_BYTES_TO_WORDS(bytes)  ((bytes) / sizeof(StackType_t))
 
 // TX pipeline tasks
-#define CAPTURE_TASK_STACK_BYTES     (6 * 1024)   // Uses static buffers
+#define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Increased for FFT processing (was 6KB)
 #define ENCODE_TASK_STACK_BYTES      (32 * 1024)  // Opus encoder: 20ms @ 48kHz with headroom for analysis buffers
 
 // RX pipeline tasks
-#define DECODE_TASK_STACK_BYTES      (16 * 1024)  // Opus decoder needs more stack (was 6KB, crashed)
+#define DECODE_TASK_STACK_BYTES      (20 * 1024)  // Increased for FFT processing (was 16KB)
 #define PLAYBACK_TASK_STACK_BYTES    (4 * 1024)   // I2S write only
 
 // Network tasks

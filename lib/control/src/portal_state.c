@@ -1,5 +1,6 @@
 #include "control/portal_state.h"
 #include "control/usb_portal.h"
+#include "audio/adf_pipeline.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -390,12 +391,16 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         snprintf(netif_str, sizeof(netif_str), "usb_ncm (" IPSTR ")", IP2STR(&pip->ip));
     }
 
+    float fft_bins[FFT_PORTAL_BIN_COUNT] = {0};
+    bool fft_valid = false;
+    adf_pipeline_get_latest_fft_bins(fft_bins, FFT_PORTAL_BIN_COUNT, &fft_valid);
+
     int off = snprintf(
         buf,
         buf_size,
         "{\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,\"core0LoadPct\":%s,"
         "\"latencyMs\":%lu,\"netIf\":\"%s\",\"buildLabel\":\"%s\","
-        "\"meshState\":\"%s\",\"bpm\":null,\"fftBins\":null,\"nodes\":[",
+        "\"meshState\":\"%s\",\"bpm\":null,\"fftBins\":",
         (long long)(esp_timer_get_time() / 1000),
         self_mac_str,
         (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
@@ -404,6 +409,21 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         netif_str,
         portal_build_label(),
         portal_mesh_state());
+
+    if (fft_valid) {
+        off += snprintf(buf + off, buf_size - off, "[");
+        for (int i = 0; i < FFT_PORTAL_BIN_COUNT && off < (int)buf_size - 32; i++) {
+            if (i > 0) {
+                off += snprintf(buf + off, buf_size - off, ",");
+            }
+            off += snprintf(buf + off, buf_size - off, "%.3f", (double)fft_bins[i]);
+        }
+        off += snprintf(buf + off, buf_size - off, "]");
+    } else {
+        off += snprintf(buf + off, buf_size - off, "null");
+    }
+
+    off += snprintf(buf + off, buf_size - off, ",\"nodes\":[");
     
     for (int i = 0; i < state.node_count && off < (int)buf_size - 200; i++) {
         portal_node_t *n = &state.nodes[i];

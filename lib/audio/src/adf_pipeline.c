@@ -34,6 +34,11 @@
 
 #include "opus.h"
 
+// esp-dsp for FFT
+#include "esp_dsp.h"
+#include "dsps_fft2r.h"
+#include "dsps_wind_hann.h"
+
 static const char *TAG = "adf_pipeline";
 
 struct adf_pipeline {
@@ -61,6 +66,10 @@ struct adf_pipeline {
     uint16_t tx_seq;
     uint16_t last_rx_seq;
     bool first_rx_packet;
+
+    float fft_bins[FFT_PORTAL_BIN_COUNT];
+    bool fft_valid;
+    uint32_t fft_frame_counter;
 };
 
 // Buffer and stack sizes are now centralized in config/build.h
@@ -77,6 +86,11 @@ static int16_t s_decode_pcm_frame[AUDIO_FRAME_SAMPLES];           // 3840 bytes
 static int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];        // 3840 bytes
 static int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];  // 7680 bytes
 static int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];       // 7680 bytes (zero-initialized)
+static float s_fft_window[FFT_ANALYSIS_SIZE];
+static float s_fft_complex[FFT_ANALYSIS_SIZE * 2];  // Interleaved [Re0, Im0, Re1, Im1, ...]
+static bool s_fft_initialized = false;
+static bool s_fft_init_attempted = false;
+static adf_pipeline_handle_t s_latest_pipeline = NULL;
 
 static void tx_capture_task(void *arg);
 static void tx_encode_task(void *arg);
@@ -86,6 +100,8 @@ static esp_err_t init_opus_encoder(adf_pipeline_handle_t pipeline, uint32_t bitr
 static esp_err_t init_opus_decoder(adf_pipeline_handle_t pipeline);
 static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count);
 static void tx_update_input_activity(adf_pipeline_handle_t pipeline, bool signal_present, uint16_t peak);
+static void fft_init_once(void);
+static void fft_process_frame(adf_pipeline_handle_t pipeline, const int16_t *samples, size_t sample_count);
 
 static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count)
 {
@@ -122,6 +138,118 @@ static void tx_update_input_activity(adf_pipeline_handle_t pipeline, bool signal
     pipeline->stats.input_signal_present = false;
 }
 
+static int s_fft_bar_start[FFT_PORTAL_BIN_COUNT];
+static int s_fft_bar_end[FFT_PORTAL_BIN_COUNT];
+
+static void fft_init_once(void)
+{
+    if (s_fft_init_attempted) {
+        return;
+    }
+    s_fft_init_attempted = true;
+
+    // Initialize esp-dsp FFT tables
+    esp_err_t ret = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp-dsp FFT init failed: %d", ret);
+        return;
+    }
+
+    // Generate Hann window using esp-dsp
+    dsps_wind_hann_f32(s_fft_window, FFT_ANALYSIS_SIZE);
+
+    // Pre-compute logarithmic frequency bin mapping
+    const float ratio = (float)FFT_MAX_FREQ_HZ / (float)FFT_MIN_FREQ_HZ;
+    const int max_bin = (FFT_ANALYSIS_SIZE / 2) - 1;
+
+    for (int i = 0; i < FFT_PORTAL_BIN_COUNT; i++) {
+        float f0 = (float)FFT_MIN_FREQ_HZ * powf(ratio, (float)i / (float)FFT_PORTAL_BIN_COUNT);
+        float f1 = (float)FFT_MIN_FREQ_HZ * powf(ratio, (float)(i + 1) / (float)FFT_PORTAL_BIN_COUNT);
+
+        int k0 = (int)floorf((f0 * (float)FFT_ANALYSIS_SIZE) / (float)AUDIO_SAMPLE_RATE);
+        int k1 = (int)ceilf((f1 * (float)FFT_ANALYSIS_SIZE) / (float)AUDIO_SAMPLE_RATE);
+
+        if (k0 < 1) k0 = 1;
+        if (k0 > max_bin) k0 = max_bin;
+        if (k1 <= k0) k1 = k0 + 1;
+        if (k1 > max_bin + 1) k1 = max_bin + 1;
+
+        s_fft_bar_start[i] = k0;
+        s_fft_bar_end[i] = k1;
+    }
+
+    s_fft_initialized = true;
+    ESP_LOGI(TAG, "esp-dsp FFT init OK: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
+}
+
+static void fft_process_frame(adf_pipeline_handle_t pipeline, const int16_t *samples, size_t sample_count)
+{
+    if (!pipeline || !samples || sample_count < FFT_ANALYSIS_SIZE) {
+        return;
+    }
+
+    pipeline->fft_frame_counter++;
+    if ((pipeline->fft_frame_counter % FFT_UPDATE_INTERVAL_FRAMES) != 0) {
+        return;
+    }
+
+    if (!s_fft_initialized) {
+        fft_init_once();
+        if (!s_fft_initialized) {
+            return;
+        }
+    }
+
+    // Prepare interleaved complex input [Re0, Im0, Re1, Im1, ...]
+    const size_t offset = sample_count - FFT_ANALYSIS_SIZE;
+    for (int i = 0; i < FFT_ANALYSIS_SIZE; i++) {
+        float normalized = (float)samples[offset + i] / 32768.0f;
+        s_fft_complex[i * 2 + 0] = normalized * s_fft_window[i];  // Real (windowed)
+        s_fft_complex[i * 2 + 1] = 0.0f;                          // Imaginary (zero for real input)
+    }
+
+    // Execute esp-dsp FFT (in-place)
+    esp_err_t ret = dsps_fft2r_fc32(s_fft_complex, FFT_ANALYSIS_SIZE);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "FFT compute failed: %d", ret);
+        return;
+    }
+
+    // Bit-reverse the output
+    dsps_bit_rev_fc32(s_fft_complex, FFT_ANALYSIS_SIZE);
+
+    float bins_local[FFT_PORTAL_BIN_COUNT];
+    const float db_span = (FFT_DB_CEIL - FFT_DB_FLOOR) > 0.01f ? (FFT_DB_CEIL - FFT_DB_FLOOR) : 1.0f;
+
+    // Map FFT bins to logarithmic display bars
+    for (int b = 0; b < FFT_PORTAL_BIN_COUNT; b++) {
+        float peak_db = FFT_DB_FLOOR;
+        for (int k = s_fft_bar_start[b]; k < s_fft_bar_end[b]; k++) {
+            // Extract real and imaginary from interleaved array
+            float re = s_fft_complex[k * 2 + 0];
+            float im = s_fft_complex[k * 2 + 1];
+            float power = (re * re) + (im * im);
+            if (power < 1e-12f) power = 1e-12f;
+
+            float db = 10.0f * log10f(power / (float)FFT_ANALYSIS_SIZE);
+            if (db > peak_db) {
+                peak_db = db;
+            }
+        }
+
+        float norm = (peak_db - FFT_DB_FLOOR) / db_span;
+        if (norm < 0.0f) norm = 0.0f;
+        if (norm > 1.0f) norm = 1.0f;
+        bins_local[b] = norm;
+    }
+
+    if (xSemaphoreTake(pipeline->mutex, 0) == pdTRUE) {
+        memcpy(pipeline->fft_bins, bins_local, sizeof(pipeline->fft_bins));
+        pipeline->fft_valid = true;
+        xSemaphoreGive(pipeline->mutex);
+    }
+}
+
 adf_pipeline_handle_t adf_pipeline_create(const adf_pipeline_config_t *config)
 {
     if (!config) {
@@ -140,6 +268,8 @@ adf_pipeline_handle_t adf_pipeline_create(const adf_pipeline_config_t *config)
     pipeline->running = false;
     pipeline->first_rx_packet = true;
     pipeline->input_mode = ADF_INPUT_MODE_AUX;  // Default to line input
+    pipeline->fft_valid = false;
+    pipeline->fft_frame_counter = 0;
     
     pipeline->mutex = xSemaphoreCreateMutex();
     if (!pipeline->mutex) {
@@ -183,10 +313,13 @@ adf_pipeline_handle_t adf_pipeline_create(const adf_pipeline_config_t *config)
         free(pipeline);
         return NULL;
     }
+
+    fft_init_once();
     
     ESP_LOGI(TAG, "Pipeline created: type=%s, local_output=%d (event-driven)",
              config->type == ADF_PIPELINE_TX ? "TX" : "RX",
              config->enable_local_output);
+    s_latest_pipeline = pipeline;
     
     return pipeline;
 }
@@ -388,6 +521,9 @@ void adf_pipeline_destroy(adf_pipeline_handle_t pipeline)
     }
     
     free(pipeline);
+    if (s_latest_pipeline == pipeline) {
+        s_latest_pipeline = NULL;
+    }
     ESP_LOGI(TAG, "Pipeline destroyed");
 }
 
@@ -431,6 +567,7 @@ static void tx_capture_task(void *arg)
                 tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
                 frames_read = AUDIO_FRAME_SAMPLES;
                 tx_update_input_activity(pipeline, true, 16000);
+                fft_process_frame(pipeline, mono_frame, frames_read);
                 
                 if (pipeline->enable_local_output) {
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
@@ -500,6 +637,7 @@ static void tx_capture_task(void *arg)
 
                 uint16_t peak = calculate_pcm_peak(mono_frame, frames_read);
                 tx_update_input_activity(pipeline, peak >= AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD, peak);
+                fft_process_frame(pipeline, mono_frame, frames_read);
                 
                 static uint32_t capture_count = 0;
                 capture_count++;
@@ -769,6 +907,8 @@ static void rx_decode_task(void *arg)
                 }
                 continue;
             }
+
+            fft_process_frame(pipeline, pcm_frame, (size_t)samples_decoded);
             
             // Debug: log first decoded frame to verify Opus output
             static bool first_pcm_log = true;
@@ -952,4 +1092,34 @@ esp_err_t adf_pipeline_set_input_mode(adf_pipeline_handle_t pipeline, adf_input_
     ESP_LOGI(TAG, "Input mode set to %d", mode);
     
     return ESP_OK;
+}
+
+esp_err_t adf_pipeline_get_fft_bins(adf_pipeline_handle_t pipeline,
+                                    float *bins_out,
+                                    size_t bin_count,
+                                    bool *valid_out)
+{
+    if (!pipeline || !bins_out || bin_count < FFT_PORTAL_BIN_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(pipeline->mutex, portMAX_DELAY);
+    memcpy(bins_out, pipeline->fft_bins, sizeof(float) * FFT_PORTAL_BIN_COUNT);
+    if (valid_out) {
+        *valid_out = pipeline->fft_valid;
+    }
+    xSemaphoreGive(pipeline->mutex);
+
+    return ESP_OK;
+}
+
+esp_err_t adf_pipeline_get_latest_fft_bins(float *bins_out, size_t bin_count, bool *valid_out)
+{
+    if (!s_latest_pipeline) {
+        if (valid_out) {
+            *valid_out = false;
+        }
+        return ESP_ERR_NOT_FOUND;
+    }
+    return adf_pipeline_get_fft_bins(s_latest_pipeline, bins_out, bin_count, valid_out);
 }

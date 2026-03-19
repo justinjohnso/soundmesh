@@ -25,6 +25,7 @@
 #include <esp_timer.h>
 #include <esp_mesh.h>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -159,6 +160,9 @@ static void fft_init_once(void)
     dsps_wind_hann_f32(s_fft_window, FFT_ANALYSIS_SIZE);
 
     // Pre-compute logarithmic frequency bin mapping
+    // Reset watchdog during this compute-intensive operation
+    esp_task_wdt_reset();
+    
     const float ratio = (float)FFT_MAX_FREQ_HZ / (float)FFT_MIN_FREQ_HZ;
     const int max_bin = (FFT_ANALYSIS_SIZE / 2) - 1;
 
@@ -178,6 +182,7 @@ static void fft_init_once(void)
         s_fft_bar_end[i] = k1;
     }
 
+    esp_task_wdt_reset();
     s_fft_initialized = true;
     ESP_LOGI(TAG, "esp-dsp FFT init OK: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
 }

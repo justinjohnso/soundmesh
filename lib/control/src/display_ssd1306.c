@@ -1,4 +1,5 @@
 #include "control/display.h"
+#include "control/usb_portal.h"
 #include "config/pins.h"
 #include "config/build.h"
 #include <esp_log.h>
@@ -541,6 +542,12 @@ void display_render_tx(display_view_t view, const tx_status_t *status) {
             snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
             display_draw_string(0, 2, buf);
         }
+
+        const esp_netif_ip_info_t *pip = portal_get_ip_info();
+        if (pip && portal_is_running()) {
+            snprintf(buf, sizeof(buf), IPSTR, IP2STR(&pip->ip));
+            display_draw_string(0, 3, buf);
+        }
     } else {
     const char *mode_str = "Unknown";
     if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
@@ -739,6 +746,13 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
         } else {
             display_draw_string(0, 0, "RSSI: --");
             display_draw_string(0, 1, "Con. Nodes: 0");
+        }
+
+        const esp_netif_ip_info_t *pip = portal_get_ip_info();
+        if (pip && portal_is_running()) {
+            char ip_buf[22];
+            snprintf(ip_buf, sizeof(ip_buf), IPSTR, IP2STR(&pip->ip));
+            display_draw_string(0, 3, ip_buf);
         }
     } else {
         char buf[22];

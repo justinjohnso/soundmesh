@@ -539,6 +539,7 @@ In addition to the chat commands in `/`, the following behaviors are defined for
 - **After Major Changes:** Automatically commit completed features, bug fixes, or significant refactoring with descriptive commit messages
 - **Commit Message Format:** Use conventional commit format: `type(scope): description` (e.g., `feat(auth): add JWT token validation`, `docs(api): update endpoint documentation`)
 - **Incremental Commits:** For complex features, make logical incremental commits rather than one large commit
+- **No Co-Author Trailers:** Never add `Co-authored-by` trailers to commit messages.
 
 ### Documentation Synchronization
 - **Code-Documentation Alignment:** When modifying functions, classes, or APIs, automatically update corresponding documentation

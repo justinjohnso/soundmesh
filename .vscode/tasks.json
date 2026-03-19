@@ -131,6 +131,19 @@
             }
         },
         {
+            "label": "COMBO: Upload SPIFFS",
+            "type": "shell",
+            "command": "pio run -e combo -t uploadfs --upload-port /dev/cu.usbmodem21401",
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
             "label": "COMBO: Monitor",
             "type": "shell",
             "command": "pio device monitor -b 115200 --port /dev/cu.usbmodem101",
@@ -183,6 +196,41 @@
                 "focus": false,
                 "panel": "shared"
             }
+        },
+
+        // Flash All Test Nodes
+        {
+            "label": "Erase All Test Nodes",
+            "type": "shell",
+            "command": "~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/cu.usbmodem21401 erase_flash && ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/cu.usbmodem211101 erase_flash && ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/cu.usbmodem211201 erase_flash && ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32s3 --port /dev/cu.usbmodem211301 erase_flash",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Upload All Test Nodes",
+            "type": "shell",
+            "command": "pio run -e combo -t upload --upload-port /dev/cu.usbmodem21401 && pio run -e combo -t uploadfs --upload-port /dev/cu.usbmodem21401 && pio run -e rx -t upload --upload-port /dev/cu.usbmodem211101 && pio run -e rx -t upload --upload-port /dev/cu.usbmodem211201 && pio run -e rx -t upload --upload-port /dev/cu.usbmodem211301",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Erase + Upload All Test Nodes",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Erase All Test Nodes",
+                "Upload All Test Nodes"
+            ],
+            "problemMatcher": []
         }
     ]
 }

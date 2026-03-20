@@ -1017,7 +1017,10 @@ static uint32_t total_sent = 0;              // Aggregate sent (for logging)
 // Byte counter for TX bandwidth measurement
 static volatile uint32_t tx_bytes_counter = 0;
 
-// Rate limiting thresholds
+// Rate limiting DISABLED - was causing 60% packet loss by being too aggressive
+// With MESH_DATA_NONBLOCK, queue-full just means "try again next frame"
+// which naturally rate-limits without accumulated backoff state.
+#define RATE_LIMIT_ENABLED 0                 // Set to 1 to re-enable rate limiting
 #define RATE_LIMIT_MAX_LEVEL 2               // Max backoff: send every 3rd frame (~8fps)
 
 // Find or create flow state for a child address
@@ -1043,6 +1046,7 @@ static child_flow_state_t* get_child_flow(const mesh_addr_t *addr) {
 
 // Check if we should send to this child (returns true if should send)
 static bool check_child_rate_limit(child_flow_state_t *flow) {
+#if RATE_LIMIT_ENABLED
     if (!flow || flow->backoff_level == 0) return true;
     
     flow->skip_counter++;
@@ -1053,12 +1057,17 @@ static bool check_child_rate_limit(child_flow_state_t *flow) {
     }
     flow->skip_counter = 0;
     return true;
+#else
+    (void)flow;  // Suppress unused warning
+    return true; // Always send - let NONBLOCK handle congestion naturally
+#endif
 }
 
 // Update flow state after send attempt
 static void update_child_flow(child_flow_state_t *flow, bool queue_full) {
     if (!flow) return;
     
+#if RATE_LIMIT_ENABLED
     int64_t now = esp_timer_get_time();
     
     if (queue_full) {
@@ -1079,6 +1088,16 @@ static void update_child_flow(child_flow_state_t *flow, bool queue_full) {
                      MAC2STR(flow->addr.addr), flow->backoff_level);
         }
     }
+#else
+    // Just track counts for metrics, no backoff
+    if (queue_full) {
+        flow->drops++;
+        total_drops++;
+    } else {
+        flow->sent++;
+        total_sent++;
+    }
+#endif
 }
 
 // Clean up flow state for disconnected children

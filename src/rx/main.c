@@ -155,12 +155,14 @@ static void update_rx_status_state_fields(int64_t now_ms) {
 
 static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id) {
     // Track sequence gaps for packet loss measurement
+    // NOTE: TX increments seq by MESH_FRAMES_PER_PACKET (2), not 1
     if (!first_packet) {
-        uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
+        uint16_t expected_seq = (last_seq + MESH_FRAMES_PER_PACKET) & 0xFFFF;
         if (seq != expected_seq) {
             int16_t gap = (int16_t)(seq - expected_seq);
             if (gap > 0 && gap < 100) {
-                dropped_packets += gap;
+                // Convert frame gap to packet gap (divide by frames per packet)
+                dropped_packets += (gap / MESH_FRAMES_PER_PACKET);
             }
         }
     }

@@ -44,6 +44,10 @@ bool network_is_stream_ready(void);  // True when connected to mesh
 bool network_is_connected(void);     // True when connected to mesh (non-root) or root
 esp_err_t network_send_ping(void);   // Send ping to root (RX nodes only)
 
+// Dynamic jitter buffer: returns recommended prefill frames based on network state
+// Base is JITTER_PREFILL_FRAMES, adds extra for multi-hop or busy networks
+uint8_t network_get_jitter_prefill_frames(void);
+
 // TX bandwidth measurement
 uint32_t network_get_tx_bytes_and_reset(void);  // Returns bytes sent since last call
 

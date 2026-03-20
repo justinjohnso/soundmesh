@@ -997,40 +997,115 @@ esp_err_t network_register_startup_notification(TaskHandle_t task_handle) {
     return ESP_OK;
 }
 
-// Adaptive rate limiting state
-static uint32_t backoff_level = 0;           // Current backoff level (0-5)
-static uint32_t success_streak = 0;          // Consecutive successes for gradual recovery
-static uint32_t total_drops = 0;
-static uint32_t total_sent = 0;
-static uint32_t skip_counter = 0;
-static int64_t last_qfull_us = 0;
+// Per-child flow control state (replaces global backoff)
+// Each child gets independent rate limiting so one slow child doesn't starve others
+typedef struct {
+    mesh_addr_t addr;
+    uint8_t backoff_level;      // 0-2: send every (N+1) frames
+    uint8_t skip_counter;       // Current skip count
+    int64_t last_qfull_us;      // Last queue-full timestamp
+    uint32_t drops;             // Dropped frames for this child
+    uint32_t sent;              // Sent frames for this child
+    bool active;                // Slot in use
+} child_flow_state_t;
+
+#define MAX_TRACKED_CHILDREN 10
+static child_flow_state_t child_flow[MAX_TRACKED_CHILDREN];
+static uint32_t total_drops = 0;             // Aggregate drops (for logging)
+static uint32_t total_sent = 0;              // Aggregate sent (for logging)
 
 // Byte counter for TX bandwidth measurement
 static volatile uint32_t tx_bytes_counter = 0;
 
-// Rate limiting thresholds - tuned for 25fps on ESP-MESH (40ms frames)
-// At backoff_level N, send every (N+1) frames (0=all, 1=half, 2=third)
-// With 25fps base rate, even level 2 still gives ~8fps (acceptable for degraded audio)
+// Rate limiting thresholds
 #define RATE_LIMIT_MAX_LEVEL 2               // Max backoff: send every 3rd frame (~8fps)
-#define RATE_LIMIT_RECOVERY_STREAK 25        // Successes needed (~1 second at 25fps)
+
+// Find or create flow state for a child address
+static child_flow_state_t* get_child_flow(const mesh_addr_t *addr) {
+    int free_slot = -1;
+    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+        if (child_flow[i].active && memcmp(&child_flow[i].addr, addr, 6) == 0) {
+            return &child_flow[i];
+        }
+        if (!child_flow[i].active && free_slot < 0) {
+            free_slot = i;
+        }
+    }
+    // New child - allocate slot
+    if (free_slot >= 0) {
+        memset(&child_flow[free_slot], 0, sizeof(child_flow_state_t));
+        memcpy(&child_flow[free_slot].addr, addr, 6);
+        child_flow[free_slot].active = true;
+        return &child_flow[free_slot];
+    }
+    return NULL;  // No slots available (shouldn't happen with 10 slots)
+}
+
+// Check if we should send to this child (returns true if should send)
+static bool check_child_rate_limit(child_flow_state_t *flow) {
+    if (!flow || flow->backoff_level == 0) return true;
+    
+    flow->skip_counter++;
+    if (flow->skip_counter <= flow->backoff_level) {
+        flow->drops++;
+        total_drops++;
+        return false;  // Skip this frame
+    }
+    flow->skip_counter = 0;
+    return true;
+}
+
+// Update flow state after send attempt
+static void update_child_flow(child_flow_state_t *flow, bool queue_full) {
+    if (!flow) return;
+    
+    int64_t now = esp_timer_get_time();
+    
+    if (queue_full) {
+        flow->last_qfull_us = now;
+        if (flow->backoff_level < RATE_LIMIT_MAX_LEVEL) {
+            flow->backoff_level++;
+            ESP_LOGW(TAG, "Child " MACSTR " backoff→%d", 
+                     MAC2STR(flow->addr.addr), flow->backoff_level);
+        }
+    } else {
+        flow->sent++;
+        total_sent++;
+        // Recover one level per second of no queue-full
+        if (flow->backoff_level > 0 && (now - flow->last_qfull_us) > 1000000) {
+            flow->backoff_level--;
+            flow->last_qfull_us = now;
+            ESP_LOGI(TAG, "Child " MACSTR " backoff→%d (recovered)", 
+                     MAC2STR(flow->addr.addr), flow->backoff_level);
+        }
+    }
+}
+
+// Clean up flow state for disconnected children
+static void cleanup_stale_children(const mesh_addr_t *active_table, int table_size) {
+    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
+        if (!child_flow[i].active) continue;
+        
+        bool found = false;
+        for (int j = 0; j < table_size; j++) {
+            if (memcmp(&child_flow[i].addr, &active_table[j], 6) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            ESP_LOGI(TAG, "Cleaned stale flow: " MACSTR, MAC2STR(child_flow[i].addr.addr));
+            child_flow[i].active = false;
+        }
+    }
+}
 
 // Send audio frame via mesh (broadcast to all nodes)
-// Uses adaptive rate limiting with gradual recovery to prevent oscillation
+// Uses PER-CHILD rate limiting so one slow child doesn't affect others
 esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     // Allow sending if: (1) connected as child, or (2) root AND ready
     if (!is_mesh_connected && !(is_mesh_root && is_mesh_root_ready)) {
         return ESP_ERR_INVALID_STATE;
-    }
-    
-    // Rate limiting: at level N, only send every (N+1)th frame
-    // Level 0 = 100%, Level 1 = 50%, Level 2 = 33%, Level 3 = 25%, Level 4 = 20%
-    if (backoff_level > 0) {
-        skip_counter++;
-        if (skip_counter <= backoff_level) {
-            total_drops++;
-            return ESP_ERR_MESH_QUEUE_FULL;  // Drop this frame (silent)
-        }
-        skip_counter = 0;
     }
     
     mesh_data_t mesh_data = {
@@ -1041,82 +1116,69 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     };
     
     esp_err_t err = ESP_OK;
-    bool any_queue_full = false;
+    int sent_count = 0;
+    int skip_count = 0;
     
-    // Debug: log stats periodically (every 64 packets at 25fps = ~2.5 seconds)
-    static uint16_t send_count = 0;
-    if ((++send_count & 0x7F) == 0) {
-        int route_table_size = 0;
-        mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
-        esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
-        ESP_LOGI(TAG, "Mesh TX: route=%d, sent=%lu, drops=%lu (%.1f%%), backoff=%lu", 
-                 route_table_size, total_sent, total_drops,
-                 total_sent > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f,
-                 backoff_level);
-    }
+    // Debug: log stats periodically (every 128 packets at 25fps = ~5 seconds)
+    static uint16_t log_counter = 0;
+    bool should_log = ((++log_counter & 0x7F) == 0);
     
     if (is_mesh_root) {
-        // ROOT: Send downstream to each descendant via P2P
-        // Use MESH_DATA_P2P for standalone mesh (no external router/DS)
-        // MESH_DATA_FROMDS is for root-to-DS bridging which doesn't apply here
+        // ROOT: Send downstream to each descendant via P2P with per-child flow control
         mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
         int route_table_size = 0;
         esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
         
+        // Periodically clean up stale flow entries
+        static uint8_t cleanup_counter = 0;
+        if (++cleanup_counter >= 50) {  // Every ~2 seconds at 25fps
+            cleanup_stale_children(route_table, route_table_size);
+            cleanup_counter = 0;
+        }
+        
         for (int i = 0; i < route_table_size; i++) {
             if (memcmp(&route_table[i], my_sta_mac, 6) == 0) continue;
+            
+            // Get per-child flow state
+            child_flow_state_t *flow = get_child_flow(&route_table[i]);
+            
+            // Check if we should send to this child (rate limiting)
+            if (!check_child_rate_limit(flow)) {
+                skip_count++;
+                continue;  // Skip this child, try others
+            }
+            
             esp_err_t send_err = esp_mesh_send(&route_table[i], &mesh_data, 
                                                 MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-            if (send_err == ESP_ERR_MESH_QUEUE_FULL) {
-                any_queue_full = true;
-            } else if (send_err != ESP_OK) {
+            
+            // Update per-child flow state
+            update_child_flow(flow, send_err == ESP_ERR_MESH_QUEUE_FULL);
+            
+            if (send_err == ESP_OK) {
+                sent_count++;
+                tx_bytes_counter += len;
+            } else if (send_err != ESP_ERR_MESH_QUEUE_FULL) {
                 err = send_err;
             }
         }
-        if (!any_queue_full && route_table_size > 0) {
+        
+        if (should_log && route_table_size > 1) {
+            ESP_LOGI(TAG, "Mesh TX: children=%d, sent=%d, skip=%d, total_sent=%lu, drops=%lu (%.1f%%)", 
+                     route_table_size - 1, sent_count, skip_count, total_sent, total_drops,
+                     total_sent > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
+        }
+        
+        if (sent_count > 0) {
             err = ESP_OK;
         } else if (route_table_size <= 1) {
             err = ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
     } else {
-        // CHILD: Send upstream to parent via P2P
+        // CHILD: Send upstream to parent via P2P (no per-child tracking needed)
         err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-    }
-    
-    if (err == ESP_OK) {
-        total_sent++;
-        tx_bytes_counter += len;
-    } else if (err == ESP_ERR_MESH_QUEUE_FULL) {
-        any_queue_full = true;
-    }
-    
-    // Update backoff state based on queue status
-    if (any_queue_full || err == ESP_ERR_MESH_QUEUE_FULL) {
-        last_qfull_us = esp_timer_get_time();
-        success_streak = 0;
-        if (backoff_level < RATE_LIMIT_MAX_LEVEL) {
-            backoff_level++;
-            ESP_LOGW(TAG, "Mesh TX backoff increased to level %lu (sending every %lu frames)", 
-                     backoff_level, backoff_level + 1);
-        }
-    } else {
-        // Time-based recovery: if no queue-full for 1 second, recover one level
-        int64_t now = esp_timer_get_time();
-        if (backoff_level > 0 && (now - last_qfull_us) > 1000000) {
-            backoff_level--;
-            last_qfull_us = now;  // Rate-limit recovery to once per second
-            ESP_LOGI(TAG, "Mesh TX backoff recovered to level %lu", backoff_level);
-        }
-    }
-
-    // Reset backoff when no children to send to
-    if (is_mesh_root) {
-        mesh_addr_t check_table[MESH_ROUTE_TABLE_SIZE];
-        int check_size = 0;
-        esp_mesh_get_routing_table(check_table, sizeof(check_table), &check_size);
-        if (check_size <= 1 && backoff_level > 0) {
-            backoff_level = 0;
-            success_streak = 0;
+        if (err == ESP_OK) {
+            total_sent++;
+            tx_bytes_counter += len;
         }
     }
     
@@ -1193,6 +1255,37 @@ int network_get_rssi(void) {
 
 uint32_t network_get_latency_ms(void) {
     return measured_latency_ms;  // RTT/2 from ping measurements
+}
+
+// Dynamic jitter buffer calculation based on network topology and conditions
+// Returns recommended prefill frames (range: JITTER_PREFILL_FRAMES to JITTER_BUFFER_FRAMES)
+uint8_t network_get_jitter_prefill_frames(void) {
+    uint8_t base = JITTER_PREFILL_FRAMES;  // 3 frames = 60ms
+    uint8_t extra = 0;
+    
+    // Add buffer for multi-hop: each layer adds ~20-40ms latency variance
+    if (mesh_layer > 1) {
+        extra += (mesh_layer - 1);  // +1 frame per extra hop
+    }
+    
+    // Add buffer when many nodes (more contention)
+    uint32_t nodes = network_get_connected_nodes();
+    if (nodes >= 3) {
+        extra += 1;  // +20ms for busy networks
+    }
+    
+    // Add buffer for measured high latency
+    if (measured_latency_ms > 50) {
+        extra += 1;  // +20ms if RTT/2 > 50ms
+    }
+    
+    // Cap at max jitter buffer size
+    uint8_t result = base + extra;
+    if (result > JITTER_BUFFER_FRAMES) {
+        result = JITTER_BUFFER_FRAMES;
+    }
+    
+    return result;
 }
 
 bool network_is_connected(void) {

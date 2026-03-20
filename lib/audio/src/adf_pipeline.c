@@ -963,7 +963,7 @@ static void rx_playback_task(void *arg)
     int16_t *silence = s_playback_silence;  // Already zero-initialized in .bss
     
     bool prefilled = false;
-    const size_t prefill_bytes = AUDIO_FRAME_BYTES * JITTER_PREFILL_FRAMES;
+    size_t prefill_bytes = AUDIO_FRAME_BYTES * JITTER_PREFILL_FRAMES;  // Initial prefill
     
     ESP_LOGI(TAG, "RX playback task started (event-driven), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
@@ -1068,6 +1068,18 @@ static void rx_playback_task(void *arg)
         if (frames_played == 0 && prefilled) {
             pipeline->stats.buffer_underruns++;
             prefilled = false;
+            
+            // Recalculate prefill based on current network conditions
+            uint8_t dynamic_frames = network_get_jitter_prefill_frames();
+            prefill_bytes = AUDIO_FRAME_BYTES * dynamic_frames;
+            
+            static uint32_t underrun_count = 0;
+            underrun_count++;
+            if (underrun_count <= 5 || (underrun_count % 20) == 0) {
+                ESP_LOGW(TAG, "Underrun #%lu - new prefill: %d frames (%zu bytes)", 
+                         underrun_count, dynamic_frames, prefill_bytes);
+            }
+            
 #if defined(CONFIG_USE_ES8388)
             es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
 #else

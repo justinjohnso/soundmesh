@@ -1,7 +1,17 @@
 # Mesh Reliability Investigation & Fix Progress
 
 **Date**: 2026-03-20  
-**Status**: In Progress - Awaiting SRC Node Reflash
+**Status**: In Progress - **USER ACTION REQUIRED**: Reflash SRC Node
+
+## 🚨 Critical Action Required
+
+The rate limiting fix is ready but needs to be applied to the SRC/COMBO node:
+
+```bash
+pio run -e combo -t upload --upload-port /dev/cu.usbmodem21401
+```
+
+This should significantly reduce packet loss from ~60% to <5%.
 
 ## Problem Statement
 

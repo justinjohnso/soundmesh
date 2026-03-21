@@ -89,13 +89,19 @@ Initial investigations over-weighted network flow-control tuning as the primary 
 2. **OUT-side firmware state accumulation is not the blocker** (erase/reflash and retry-path changes did not alter OUT3 outcome).
 3. **Audio stutter/loss tuning is secondary until 3/3 join is stable**; fixing airtime helps, but does not solve the hard join ceiling pattern.
 
-### New stutter-focused finding (2026-03-21)
-- Fresh synchronized OUT telemetry still shows both connected nodes running with persistent ~18-20% loss and wide latency jitter spikes while audio remains active.
-- This reinforces that current stutter is primarily **transport airtime/queue pressure** under 1→many P2P fanout, not local decoder instability.
-- Applied a targeted transport-pressure reduction:
-  - `MESH_FRAMES_PER_PACKET`: 2 → 3 (reduces packets/sec and send-call pressure)
-  - `JITTER_PREFILL_FRAMES`: 3 → 4 (adds 20ms cushion against burst gaps)
-- These changes are architecture-consistent with the project goal (stable 1→many mesh audio) and avoid speculative complexity.
+### Current Status (2026-03-21 - Post Multiple Iterations)
+- **Latest telemetry confirms persistent transport-layer issues**:
+  - SRC reports healthy transmission (100-113 kbps, qfull=0)
+  - OUT1: 34.5% packet loss, RSSI -21dBm, buffer oscillating 0-87%
+  - OUT2: 32.5% packet loss, RSSI -30dBm, buffer oscillating 0-62%
+  - OUT3: 64% packet loss, RSSI -40dBm, buffer mostly empty (0%)
+- **Root cause confirmed**: ESP-WIFI-MESH P2P broadcast inefficiency under load
+- **Key insight**: Application reports success but mesh transport drops packets
+- Applied multiple transport-pressure reduction attempts:
+  - `MESH_FRAMES_PER_PACKET`: 2 → 6 (reduces packets/sec)
+  - `OPUS_BITRATE`: 64000 → 32000 (reduces bandwidth pressure)
+  - `JITTER_PREFILL_FRAMES`: 3 → 10 (adds buffering against gaps)
+- Previous fixes helped but **fundamental broadcast scaling issue remains**
 
 ### FINAL VALIDATION: FROMDS/TODS Broadcast Fix (2026-03-21)
 
@@ -140,8 +146,32 @@ OUT3:
 - **NO MORE AUTH_EXPIRE LOOPS**
 - Receiving audio through multi-hop relay
 
-**Conclusion:**
-The FROMDS/TODS architectural change successfully addressed the root cause. All 3 OUT nodes are now connected and streaming. Multi-hop relay is working as designed. Goal achieved.
+**Conclusion (updated):**
+The transport path is improved but not yet at the target state.
+
+- OUT2 is now consistently the best-performing node (recent loss ~2-3%).
+- OUT1 and OUT3 still show bursty delivery and frequent `buf=0%` starvation periods.
+- Root remains unstable at WiFi control-plane level (`reason:201`, occasional `reason:106`), and child count intermittently flaps (2↔3), which aligns with audio bursts/stalls.
+
+So the latest fixes addressed part of the root cause (delivery path and observability), but the dominant remaining cause appears to be **root-side WiFi/mesh stability under multi-node load**, not decoder quality.
+
+### New evidence from final tuning cycle (2026-03-21)
+
+Applied and validated:
+- Root fanout path moved to explicit P2P per-descendant send (`Mesh TX P2P`) with queue-full metrics.
+- Added high-signal diagnostics around audio callback absence and pipeline feed failures.
+- Increased burst tolerance (`MESH_FRAMES_PER_PACKET=6`, higher jitter prefill/buffer, longer stream silence hysteresis).
+
+Observed after full reflash of SRC + all OUTs:
+- SRC: `Mesh TX P2P ... qfull=0` and ~100–113 kbps TX when 3 descendants are present.
+- OUT2: typically ~2–3% loss and good continuous audio windows.
+- OUT1: remains degraded (~14–16% loss in latest window, frequent buffer starvation).
+- OUT3: often waits with `RX: 0 pkts`, then intermittently receives stream; in active windows it can exceed ~20% loss.
+
+Interpretation:
+- We are no longer blind; logs now clearly separate transport ingress vs pipeline behavior.
+- Pipeline is not the primary failure mode; starvation tracks mesh/root instability.
+- Remaining work should target root-side mesh/WiFi control behavior and parent stability (association churn and disconnect reasons), not further Opus/decode tweaks alone.
 
 ## Root-Cause-Aligned Direction (Going Forward)
 
@@ -886,4 +916,3 @@ const uint32_t HEARTBEAT_INTERVAL_MS = 5000;  // 5s heartbeat interval
 
 4. **Consider channel change**: Channel 6 is often congested; channels 1 or 11 may have
    less external interference.
-

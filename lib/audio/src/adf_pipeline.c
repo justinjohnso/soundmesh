@@ -660,7 +660,15 @@ static void tx_capture_task(void *arg)
                 }
                 
                 if (pipeline->enable_local_output) {
-                    es8388_audio_write_stereo(stereo_frame, frames_read);
+                    esp_err_t lret = es8388_audio_write_stereo(stereo_frame, frames_read);
+                    if (lret != ESP_OK) {
+                        static uint32_t local_out_err_count = 0;
+                        local_out_err_count++;
+                        if ((local_out_err_count % 100) == 0) {
+                            ESP_LOGW(TAG, "Local output write failed: %s (count=%lu)",
+                                     esp_err_to_name(lret), local_out_err_count);
+                        }
+                    }
                     local_output_count++;
                     if ((local_output_count % 1000) == 0) {
                         ESP_LOGI(TAG, "Local output: %lu frames, mode=AUX", local_output_count);

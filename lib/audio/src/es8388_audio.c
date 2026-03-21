@@ -489,6 +489,18 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
     esp_err_t ret = i2s_channel_write(i2s_tx_handle, stereo_buffer, bytes_to_write,
                                        &bytes_written, pdMS_TO_TICKS(100));
     
+    // Log write activity with sample data to verify DAC data path
+    static uint32_t write_count = 0;
+    static uint32_t zero_write_count = 0;
+    write_count++;
+    if (bytes_written == 0) {
+        zero_write_count++;
+    }
+    if ((write_count % 500) == 0) {
+        ESP_LOGI(TAG, "I2S TX stats: writes=%lu, zero_bytes=%lu, last_ret=%d, last_bytes=%u, sample[0]=%d",
+                 write_count, zero_write_count, ret, (unsigned)bytes_written, (int)stereo_buffer[0]);
+    }
+    
     if (ret == ESP_ERR_TIMEOUT) {
         static uint32_t tx_timeout_count = 0;
         tx_timeout_count++;

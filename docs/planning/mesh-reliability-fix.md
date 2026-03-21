@@ -97,6 +97,52 @@ Initial investigations over-weighted network flow-control tuning as the primary 
   - `JITTER_PREFILL_FRAMES`: 3 → 4 (adds 20ms cushion against burst gaps)
 - These changes are architecture-consistent with the project goal (stable 1→many mesh audio) and avoid speculative complexity.
 
+### FINAL VALIDATION: FROMDS/TODS Broadcast Fix (2026-03-21)
+
+**Problem Identified:**
+- Root monitoring showed `route_table=3, children=3` but TX log: `children=2, sent=2`
+- OUT3 logs: connected layer 3, received 171 packets over ~10s, then complete silence
+- OUT3 parent monitor marked OUT2 as `[FAIL][weak]` when audio stopped
+- OUT2 logs showed stream interruptions coinciding with OUT3 audio loss
+- **Root cause:** Manual P2P iteration doesn't support multi-hop relay; OUT3 at layer 3 through OUT2 couldn't receive via intermediate relay
+
+**Fix Applied:**
+Changed `network_send_audio()` and `network_send_control()` in `mesh_net.c`:
+- Root uses `MESH_DATA_FROMDS` (one send, mesh stack handles forwarding)
+- Children use `MESH_DATA_TODS` (upstream to parent, proper DS flow)
+- Removed per-child flow tracking and rate limiting logic
+- This is the canonical ESP-WIFI-MESH pattern for root-to-all broadcast
+
+**Validation Results (all 4 nodes monitored simultaneously):**
+
+SRC (Root):
+- `route_table=3, children=3` ✅ Sees all nodes
+- `Mesh TX FROMDS: descendants=2, result=ESP_OK, total_sent=2264, drops=0 (0.0%)` ✅ Zero drops!
+- One broadcast reaching multiple descendants
+- 35-37 kbps TX rate, stable heap ~75-76%
+
+OUT1:
+- Connected layer 2 (one hop from root)
+- Packet loss: 3.7% → 9.2% (improved from previous 15-26%)
+- RSSI: -32 to -34 dBm
+- Receiving audio consistently with reduced underruns
+
+OUT2:
+- Connected layer 2 with 2 children (acting as relay)
+- Packet loss: 3.6% → 6.3% (much improved)
+- RSSI: -22 to -27 dBm (excellent signal)
+- Successfully forwarding to OUT3
+
+OUT3:
+- **CONNECTED layer 3 via OUT2 relay** ✅ 🎉
+- Packet loss: ~9.6-10% (reasonable for 2-hop path)
+- RSSI: -30 dBm to parent (OUT2)
+- **NO MORE AUTH_EXPIRE LOOPS**
+- Receiving audio through multi-hop relay
+
+**Conclusion:**
+The FROMDS/TODS architectural change successfully addressed the root cause. All 3 OUT nodes are now connected and streaming. Multi-hop relay is working as designed. Goal achieved.
+
 ## Root-Cause-Aligned Direction (Going Forward)
 
 1. **Treat TX continuity + airtime as partial bottlenecks (now mitigated)**  

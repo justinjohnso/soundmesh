@@ -43,6 +43,7 @@ uint32_t network_get_connected_nodes(void);
 bool network_is_stream_ready(void);  // True when connected to mesh
 bool network_is_connected(void);     // True when connected to mesh (non-root) or root
 esp_err_t network_send_ping(void);   // Send ping to root (RX nodes only)
+esp_err_t network_trigger_rejoin(void);  // Force child rejoin to refresh parent path
 
 // Dynamic jitter buffer: returns recommended prefill frames based on network state
 // Base is JITTER_PREFILL_FRAMES, adds extra for multi-hop or busy networks

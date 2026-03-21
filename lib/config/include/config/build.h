@@ -60,7 +60,7 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               32000     // 32 kbps (reduces mesh airtime for 1->many stability)
+#define OPUS_BITRATE               16000     // 16 kbps (minimum acceptable quality for multi-node mesh)
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage (was 5, overflow)
 
 // Opus frame duration is tied to the pipeline PCM frame duration
@@ -105,16 +105,16 @@
 #define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
 
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce pps.
-// 20ms frames at 50fps → batch 3 → ~16.7 mesh packets/sec per destination.
+// 20ms frames at 50fps → batch 5 → ~10 mesh packets/sec per destination.
 // This lowers root airtime pressure when serving multiple OUT nodes.
-#define MESH_FRAMES_PER_PACKET     3
+#define MESH_FRAMES_PER_PACKET     5
 
-// RX stream-loss hysteresis. At 25 mesh packets/sec (~40ms interval),
-// 300ms tolerates short bursts of contention without flapping stream state.
-#define STREAM_SILENCE_TIMEOUT_MS  500
+// RX stream-loss hysteresis. At ~10 mesh packets/sec (~100ms interval with 5-frame batching),
+// 1500ms tolerates 15 missed packets before declaring stream lost.
+#define STREAM_SILENCE_TIMEOUT_MS  1500
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.
 // This avoids rapid stream state flapping under bursty packet delivery.
-#define STREAM_SILENCE_CONFIRM_MS  300
+#define STREAM_SILENCE_CONFIRM_MS  800
 
 // TX continuity policy: when 1, TX keeps encoding/sending even during low input
 // activity (continuous silent Opus frames) to avoid RX stream flap.
@@ -143,8 +143,8 @@
 #define OPUS_BUFFER_SIZE           (OPUS_BUFFER_ITEM_MAX * OPUS_BUFFER_FRAMES)  // 4112
 
 // Jitter buffer (in codec frames)
-#define JITTER_BUFFER_FRAMES       6    // 6 × 20ms = 120ms max depth
-#define JITTER_PREFILL_FRAMES      4    // 4 × 20ms = 80ms startup latency (smoother multi-node playback)
+#define JITTER_BUFFER_FRAMES       10   // 10 × 20ms = 200ms max depth (handles mesh latency + 5-frame batches)
+#define JITTER_PREFILL_FRAMES      7    // 7 × 20ms = 140ms startup latency (slightly more than 1 batch)
 
 // Derived: jitter thresholds in bytes
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)

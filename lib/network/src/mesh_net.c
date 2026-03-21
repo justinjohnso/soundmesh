@@ -892,7 +892,7 @@ static void send_stream_announcement(void) {
 // Heartbeat task - sends periodic heartbeats
 // Starts immediately; heartbeats are only sent when is_mesh_root_ready becomes true
 static void mesh_heartbeat_task(void *arg) {
-    const uint32_t HEARTBEAT_INTERVAL_MS = 2000;  // 2 seconds
+    const uint32_t HEARTBEAT_INTERVAL_MS = 5000;  // 5 seconds (reduced overhead for multi-node)
     const uint32_t RX_RECOVERY_INTERVAL_MS = 120000;
     
     ESP_LOGI(TAG, "Heartbeat task started (will send once network is ready)");

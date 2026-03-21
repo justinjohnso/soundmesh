@@ -1,7 +1,7 @@
 # SoundMesh Mesh Network Reliability Fix
 
-**Date:** March 19, 2026  
-**Status:** Investigation Complete, Implementation Pending  
+**Date:** March 20, 2026  
+**Status:** Ongoing - Root Cause Reframed (Validated with Multi-Node Field Tests)  
 **Author:** Copilot Analysis
 
 ## Problem Summary
@@ -12,7 +12,107 @@ Three critical issues have been identified with the ESP-WIFI-MESH audio streamin
 2. **Inconsistent audio reception**: Connected nodes don't consistently receive audio, and conditions for success aren't reproducible
 3. **Multi-node degradation**: Adding a 2nd working node causes both OUTs to stutter (nodes interfere with each other rather than cooperating)
 
-Additionally, these issues have reportedly worsened over time, suggesting possible state accumulation within sessions.
+Additionally, these issues have reportedly worsened over time, suggesting state churn under unstable stream conditions.
+
+---
+
+## What Changed in Understanding (Big-Picture Feedback Loop)
+
+Initial investigations over-weighted network flow-control tuning as the primary cause. Live monitoring across OUT nodes changed that understanding.
+
+### Earlier belief
+- Packet-loss and stutter were mainly from mesh send backpressure logic.
+
+### Current belief (after instrumentation + device monitoring)
+- The dominant problem is **bursty source delivery + overly sensitive RX stream-loss detection**, which creates rapid stream state flapping.
+- Flapping drives repeated stream-lost/stream-found transitions, aggravating underruns and heap pressure over time on affected nodes.
+- One OUT failing to join is now treated as a topology/RF joinability issue, not just queue tuning.
+
+### Root-cause vs symptom classification
+- **Root-cause fixes already applied:** preserve root joinability behavior, disable overly aggressive rate limiter, fix packet-loss sequence math.
+- **Symptom mitigation applied:** RX hysteresis added so transient packet gaps do not collapse stream state as quickly.
+
+### Latest validation results (post-fixes)
+- RX timeout hysteresis (`STREAM_SILENCE_TIMEOUT_MS` now 500ms) and continuous TX policy reduced stream-state churn side effects (heap remains stable in observed windows).
+- Lower TX bitrate (`OPUS_BITRATE=32000`) improved airtime pressure; one node (OUT2) now sustains long streaming windows around ~10-16% reported loss.
+- OUT1 remains unstable with repeated stream loss and higher loss (~30-32%), including intervals showing weak RSSI around `-60 dBm`.
+- OUT3 still fails join with persistent `AUTH_EXPIRE` loops even after full erase + reflash; this ruled out stale firmware/NVS buildup as the primary cause.
+- Overall pattern is now clearly asymmetric by node, indicating link/topology/auth path quality issues (RF and association reliability), not a single global queue bug.
+
+### New evidence from latest field cycle (post-rollback)
+- OUT firmware rollback/reflash completed cleanly on all three OUT ports.
+- OUT3 still repeatedly logs:
+  - `[DONE]connect to parent: ... rssi:-24 ... [layer:1, assoc:2]`
+  - immediate `wifi:state: auth -> init (200)` and `AUTH_EXPIRE`
+- This means discovery and RSSI are good, but association/auth is failing after parent selection.
+- The persistent `assoc:2` in parent advertisements strongly suggests parent association capacity is effectively 2 in the active root path. That exactly matches the observed behavior: two OUTs can join, third churns in `AUTH_EXPIRE`.
+
+### New evidence from latest field cycle (post-runtime-toggle removal)
+- Applied a focused patch in `mesh_net.c` to **remove runtime `esp_mesh_set_self_organized(...)` toggles** from `MESH_EVENT_PARENT_CONNECTED` and `MESH_EVENT_PARENT_DISCONNECTED`.
+- Rationale: repeated runtime topology-mode toggling during association/disassociation can create immediate leave/rejoin churn that looks like RF instability.
+- Rebuilt `tx/rx/combo` and reflashed all 3 OUT nodes.
+- Synchronized OUT monitoring after reflash shows:
+  - `OUT1` and `OUT2` no longer emit rapid `Parent connected -> ASSOC_LEAVE` loops.
+  - Both nodes remain mesh-connected and continue receiving audio intermittently.
+  - `OUT3` remains in repeated `AUTH_EXPIRE` / occasional `NO_AP_FOUND`, still never reaching stable connected state.
+- Interpretation:
+  - Runtime self-organized toggles were a **real contributor** to churn on connected nodes (root-cause fix, not cosmetic).
+  - Remaining blocker for 3/3 join is still the auth/association path for the third OUT (likely root-side capacity/auth behavior and/or asymmetric RF path), not OUT stale state.
+
+### New evidence from latest field cycle (RX stream-loss confirmation window)
+- Implemented a second-stage RX stream-loss confirmation gate:
+  - Added `STREAM_SILENCE_CONFIRM_MS` in `build.h` (set to `300`).
+  - Updated `src/rx/main.c` so `STREAM_SILENCE_TIMEOUT_MS` must be exceeded and sustained for confirm duration before declaring `Stream Lost`.
+- Rebuilt and reflashed all OUT nodes.
+- Post-flash monitoring results:
+  - `OUT1`: long stable streaming windows observed (loss trending down toward ~5-6%) before occasional `Stream Lost`.
+  - `OUT2`: improved continuity, but still shows intermittent stream-loss events under bursty periods.
+  - `OUT3`: still blocked in join path (`AUTH_EXPIRE`/`NO_AP_FOUND`).
+- Interpretation:
+  - This materially reduces false-positive stream-loss flapping (symptom mitigation with clear impact).
+  - It does not change the final join blocker for OUT3, which remains upstream of RX stream-state logic.
+
+### New evidence from latest field cycle (reverted experiments)
+- Tested two additional OUT-side experiments and rolled both back after validation:
+  1) Increased mesh AP association expiry to 45s
+  2) Added bounded RX mesh-restart recovery for prolonged join loops
+- Neither produced a reliable break-out from persistent OUT3 `AUTH_EXPIRE`.
+- Restored best-known baseline:
+  - `MESH_AP_ASSOC_EXPIRE_S=30`
+  - native ESP-MESH retry path (no forced mesh restarts)
+- Final OUT-only snapshot remains:
+  - OUT1/OUT2: connected heartbeats observed
+  - OUT3: repeated `AUTH_EXPIRE` with candidate selection but no stable join
+
+### Refined root-cause model
+1. **Root-side association capacity/config path is currently the dominant blocker** for 3-node join reliability.
+2. **OUT-side firmware state accumulation is not the blocker** (erase/reflash and retry-path changes did not alter OUT3 outcome).
+3. **Audio stutter/loss tuning is secondary until 3/3 join is stable**; fixing airtime helps, but does not solve the hard join ceiling pattern.
+
+### New stutter-focused finding (2026-03-21)
+- Fresh synchronized OUT telemetry still shows both connected nodes running with persistent ~18-20% loss and wide latency jitter spikes while audio remains active.
+- This reinforces that current stutter is primarily **transport airtime/queue pressure** under 1→many P2P fanout, not local decoder instability.
+- Applied a targeted transport-pressure reduction:
+  - `MESH_FRAMES_PER_PACKET`: 2 → 3 (reduces packets/sec and send-call pressure)
+  - `JITTER_PREFILL_FRAMES`: 3 → 4 (adds 20ms cushion against burst gaps)
+- These changes are architecture-consistent with the project goal (stable 1→many mesh audio) and avoid speculative complexity.
+
+## Root-Cause-Aligned Direction (Going Forward)
+
+1. **Treat TX continuity + airtime as partial bottlenecks (now mitigated)**  
+   Continuous TX and lower bitrate improved one branch of the mesh, confirming these were contributing causes.
+
+2. **Preserve relay capability on RX nodes**  
+   Connected RX nodes now keep self-organized enabled with `select_parent=false` to support descendant joins (multi-hop intent from architecture docs), instead of hard-disabling topology operations after connect.
+
+3. **Avoid disruptive root STA disconnect churn**  
+   Forced `esp_wifi_disconnect()` on child-connect was removed for root event handling to reduce join/auth churn during multi-node association.
+
+4. **Treat OUT3 auth failure as a separate root cause**  
+   Reflash/erase did not change behavior; next work should target join/auth path reliability (parent selection quality and RF conditions), not memory cleanup.
+
+5. **Continue only with changes that prove causal**  
+   Deferred adaptive batch size implementation for now because current RX loss accounting assumes fixed `MESH_FRAMES_PER_PACKET`; changing batch size without protocol/metrics migration would confound diagnosis.
 
 ---
 
@@ -288,6 +388,29 @@ If the network has intermittent issues every few seconds, backoff never fully re
 The routing table (`esp_mesh_get_routing_table()`) can accumulate stale entries if nodes disconnect without proper `CHILD_DISCONNECTED` events (e.g., power loss, hard reset). The current code doesn't validate that routing table entries are still alive.
 
 **Citation:** `mesh_net.c` `forward_to_children()` and `network_send_audio()`
+
+---
+
+## Root-Cause-Centered Fix Strategy (Updated)
+
+### A. Keep changes that directly address causal faults
+1. Root joinability preserved (already implemented)
+2. Over-aggressive rate limiting disabled (already implemented)
+3. Sequence accounting corrected (already implemented)
+
+### B. Add hysteresis at the RX boundary (implemented in this pass)
+Problem: 100ms timeout at ~40ms packet cadence causes stream flap on short bursts.
+
+Fix: introduce `STREAM_SILENCE_TIMEOUT_MS` in `build.h` and set to 300ms; use it in `src/rx/main.c` stream timeout check.
+
+Why this is root-cause aligned:
+- It targets the actual failure mode observed on-device (state flapping), not just reported packet percentages.
+- It prevents transient jitter from cascading into repeated state resets and heap churn.
+
+### C. Continue investigation only where it can close causal gaps
+1. OUT3 prolonged join failure: verify RF/topology path and routing visibility
+2. TX continuity: validate source input mode and send cadence at source side
+3. Routing validation/metrics: implement only if they inform concrete corrective actions
 
 ---
 

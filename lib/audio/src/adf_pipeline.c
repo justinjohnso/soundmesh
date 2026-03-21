@@ -713,6 +713,7 @@ static void tx_encode_task(void *arg)
             if (ret != ESP_OK) break;
 
             bool signal_present = pipeline->stats.input_signal_present;
+#if !TX_CONTINUOUS_STREAMING
             if (pipeline->input_mode != ADF_INPUT_MODE_TONE && !signal_present) {
                 // No real input activity: consume PCM but skip encode/send to keep TX idle.
                 // Also clear any partial batch so stale pre-silence frames don't flush later.
@@ -720,6 +721,9 @@ static void tx_encode_task(void *arg)
                 batch_payload_len = 0;
                 continue;
             }
+#else
+            (void)signal_present;
+#endif
             
             int64_t start_us = esp_timer_get_time();
             

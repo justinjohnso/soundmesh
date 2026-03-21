@@ -167,11 +167,15 @@ void app_main(void) {
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
     status.audio_active = false;
 
+#if ENABLE_USB_PORTAL_NETWORK
     // Initialize portal (USB networking + web UI) — after audio pipeline
     esp_err_t portal_err = portal_init();
     if (portal_err != ESP_OK) {
         ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
     }
+#else
+    ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
+#endif
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));

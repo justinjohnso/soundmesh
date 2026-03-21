@@ -602,3 +602,53 @@ if (backoff_level == 0 && total_drops == last_snapshot_drops) {
 3. [esp_mesh.h API reference](https://github.com/espressif/esp-idf/blob/master/components/esp_wifi/include/esp_mesh.h)
 4. SoundMesh codebase: `lib/network/src/mesh_net.c`
 5. SoundMesh architecture: `docs/planning/mesh-network-architecture.md`
+
+---
+
+## FROMDS/TODS Broadcast Fix (2026-03-21)
+
+### Root Cause Breakthrough
+
+With full SRC monitoring enabled, identified the actual root cause:
+
+**The P2P iteration broadcast strategy doesn't support multi-hop relay.**
+
+Evidence:
+- SRC reports `route_table=3, children=2` - sees 3 descendants but only sends to 2
+- OUT3 successfully connects at **layer 3** (through OUT2 as intermediate hop)
+- OUT3 receives ~10 seconds of audio (171 packets), then complete silence
+- OUT2 (the relay node) experiences stream interruptions due to high packet loss
+- When OUT2 can't receive cleanly, it can't forward to OUT3
+- OUT3 remains mesh-connected but starved of audio
+
+The manual P2P iteration in `network_send_audio()` was sending directly to each MAC in the routing table. But ESP-WIFI-MESH routing tables include **all descendants at all layers**, not just direct children. The code assumed one-hop delivery for all nodes.
+
+### The Fix
+
+**Changed from manual P2P iteration to ESP-WIFI-MESH DS (Distribution System) broadcast:**
+
+- **Root**: Use `MESH_DATA_FROMDS` flag with `esp_mesh_send(NULL, ...)` - one send, mesh handles multi-hop forwarding
+- **Children**: Use `MESH_DATA_TODS` for upstream sends (proper DS flow)
+- **Removed**: Per-child flow tracking, rate limiting, manual iteration logic
+
+This aligns with ESP-WIFI-MESH architectural design. FROMDS broadcast:
+- Sends once from root to mesh DS
+- Mesh stack automatically forwards through intermediate nodes
+- Handles multi-hop relay and retransmission internally
+- Reduces root airtime contention
+
+### Expected Outcomes
+
+1. **OUT3 should receive audio consistently** via OUT2 relay
+2. **Reduced airtime on root** (1 FROMDS send vs N P2P sends)
+3. **Better multi-hop scalability** - intermediate nodes forward automatically
+4. **Natural congestion handling** - mesh stack's internal flow control
+
+### Validation Plan
+
+1. Flash all 4 nodes with FROMDS/TODS firmware
+2. Monitor all nodes simultaneously (SRC + OUT1/2/3)
+3. Verify all 3 OUT nodes connect and receive audio
+4. Test multi-hop scenarios (OUT3 at layer 2-3)
+5. Measure packet loss/jitter under load
+

@@ -968,18 +968,70 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
                 if (memcmp(route_table[i].addr, my_sta_mac, 6) == 0) {
                     continue;  // skip self entry
                 }
+                uint32_t now_us = esp_timer_get_time();
+                bool skip = false;
+                for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                    if (send_fail_table[si].fail_count > 0 &&
+                        memcmp(send_fail_table[si].addr.addr, route_table[i].addr, 6) == 0) {
+                        if (now_us - send_fail_table[si].last_fail_us < 1000000 && send_fail_table[si].fail_count >= 3) {
+                            skip = true;
+                        }
+                        break;
+                    }
+                }
+                if (skip) {
+                    ESP_LOGD(TAG, "Skipping audio send to %02x:%02x:%02x:%02x:%02x:%02x due to recent failures",
+                             route_table[i].addr[0], route_table[i].addr[1], route_table[i].addr[2],
+                             route_table[i].addr[3], route_table[i].addr[4], route_table[i].addr[5]);
+                    continue;
+                }
+
                 esp_err_t perr = esp_mesh_send(&route_table[i], &mesh_data,
                                                MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
                 if (perr == ESP_OK) {
                     sent_ok++;
                     total_sent++;
-                } else if (perr == ESP_ERR_MESH_QUEUE_FULL) {
-                    sent_qfull++;
-                    total_drops++;
+                    // Clear any previous failure record for this dest
+                    for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                        if (send_fail_table[si].fail_count > 0 &&
+                            memcmp(send_fail_table[si].addr.addr, route_table[i].addr, 6) == 0) {
+                            send_fail_table[si].fail_count = 0;
+                            break;
+                        }
+                    }
+                } else {
+                    if (perr == ESP_ERR_MESH_QUEUE_FULL) {
+                        sent_qfull++;
+                        total_drops++;
+                    }
                     if (first_err == ESP_OK) first_err = perr;
-                } else if (first_err == ESP_OK) {
-                    first_err = perr;
+                    ESP_LOGW(TAG, "audio send to %02x:%02x:%02x:%02x:%02x:%02x failed: %s",
+                             route_table[i].addr[0], route_table[i].addr[1], route_table[i].addr[2],
+                             route_table[i].addr[3], route_table[i].addr[4], route_table[i].addr[5],
+                             esp_err_to_name(perr));
+                    // record failure in table
+                    int slot = -1;
+                    for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                        if (send_fail_table[si].fail_count == 0) {
+                            slot = si;
+                            break;
+                        }
+                        if (memcmp(send_fail_table[si].addr.addr, route_table[i].addr, 6) == 0) {
+                            slot = si;
+                            break;
+                        }
+                    }
+                    if (slot == -1) {
+                        slot = send_fail_index;
+                        send_fail_index = (send_fail_index + 1) % SEND_FAIL_TABLE_SIZE;
+                    }
+                    memcpy(send_fail_table[slot].addr.addr, route_table[i].addr, 6);
+                    send_fail_table[slot].last_fail_us = now_us;
+                    send_fail_table[slot].fail_count++;
                 }
+
+                // Micro-pause to reduce burst collisions during fanout
+                vTaskDelay(pdMS_TO_TICKS(1));
             }
             tx_bytes_counter += (uint32_t)(sent_ok * len);
             err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);

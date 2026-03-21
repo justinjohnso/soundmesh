@@ -130,8 +130,6 @@ static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
 static const char *wifi_disconnect_reason_to_str(uint8_t reason);
-static void trigger_rx_debug_scan(void);
-static void trigger_rx_rejoin(void);
 
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
@@ -151,42 +149,6 @@ static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
         case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
         default: return "OTHER";
     }
-}
-
-static void trigger_rx_debug_scan(void) {
-    if (my_node_role != NODE_ROLE_RX || is_mesh_connected) {
-        return;
-    }
-
-    wifi_scan_config_t scan_cfg = {0};
-    scan_cfg.show_hidden = true;
-    scan_cfg.scan_type = WIFI_SCAN_TYPE_PASSIVE;
-    scan_cfg.scan_time.passive = 120;
-
-    esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Debug scan trigger failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Triggered passive hidden scan for RX join diagnostics");
-    }
-}
-
-static void trigger_rx_rejoin(void) {
-    if (my_node_role != NODE_ROLE_RX || is_mesh_connected) {
-        return;
-    }
-
-    esp_err_t mesh_err = esp_mesh_set_self_organized(true, true);
-    if (mesh_err != ESP_OK && mesh_err != ESP_ERR_MESH_NOT_START) {
-        ESP_LOGW(TAG, "RX rejoin: set_self_organized failed: %s", esp_err_to_name(mesh_err));
-    }
-
-    esp_err_t wifi_err = esp_wifi_disconnect();
-    if (wifi_err != ESP_OK && wifi_err != ESP_ERR_WIFI_NOT_CONNECT) {
-        ESP_LOGW(TAG, "RX rejoin: wifi_disconnect failed: %s", esp_err_to_name(wifi_err));
-    }
-
-    ESP_LOGW(TAG, "RX rejoin triggered (forcing reconnect cycle)");
 }
 
 // Duplicate detection
@@ -249,7 +211,7 @@ static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr
 
 // Mesh event handler
 static void mesh_event_handler(void *arg, esp_event_base_t event_base,
-                                int32_t event_id, void *event_data) {
+                               int32_t event_id, void *event_data) {
     switch (event_id) {
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
@@ -299,17 +261,14 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 }
             }
             
-            // Only disable self-organized for non-root nodes (RX/OUT)
-            // ROOT must keep self-organized enabled to accept new children joining later!
-            // Disabling it on root was blocking 2nd/3rd children from connecting.
-            if (!esp_mesh_is_root()) {
-                esp_mesh_set_self_organized(false, false);
+            // IMPORTANT: Do not toggle self-organized mode here.
+            // Runtime toggles during parent transitions can trigger immediate leave/rejoin churn.
+            // Keep the mode configured once in network_init_mesh() and only stop scans on root.
+            if (esp_mesh_is_root()) {
                 esp_wifi_scan_stop();
-                ESP_LOGI(TAG, "Self-organized disabled (RX node, no more parent scans)");
+                ESP_LOGI(TAG, "Root connected: scan stopped");
             } else {
-                // Root: stop scanning but keep accepting children
-                esp_wifi_scan_stop();
-                ESP_LOGI(TAG, "Root: stopped scanning but still accepting children");
+                ESP_LOGI(TAG, "RX connected: preserving startup self-organized config");
             }
             break;
         }
@@ -327,28 +286,27 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                          was_connected, esp_mesh_get_layer());
                 is_mesh_connected = false;
                 have_root_addr = false;
-                // Only re-enable if we had previously disabled it after a real connection.
-                // During initial join attempts, forcing this repeatedly can cause churn.
-                if (was_connected) {
-                    esp_mesh_set_self_organized(true, true);
-                    ESP_LOGI(TAG, "Self-organized re-enabled for reconnection");
-                } else {
+                // During parent transitions, avoid explicit self-organized toggles here.
+                // Let native mesh recovery run with the startup configuration.
+                if (!was_connected) {
                     join_fail_count++;
                     if (disconnected->reason == WIFI_REASON_AUTH_EXPIRE) {
                         auth_expire_count++;
                     }
                     ESP_LOGI(TAG, "Join attempt failed before parent connect; continuing auto-join without forced reset");
-                    if ((join_fail_count % 5) == 0) {
-                        ESP_LOGW(TAG, "RX join still failing (count=%lu) - requesting diagnostic scan",
-                                 (unsigned long)join_fail_count);
-                        // If we are stuck in AUTH_EXPIRE loops, force a reconnect cycle instead of scan.
-                        if (auth_expire_count >= 5) {
-                            trigger_rx_rejoin();
-                            auth_expire_count = 0;
-                        } else {
-                            trigger_rx_debug_scan();
-                        }
+                    if ((join_fail_count % 10) == 0) {
+                        ESP_LOGW(TAG, "RX join still failing (count=%lu)", (unsigned long)join_fail_count);
                     }
+                    // Avoid forced rejoin resets during initial AUTH_EXPIRE loops.
+                    // ESP-MESH internal retries are usually more stable than explicit
+                    // self-organized toggles while still associating.
+                    if (auth_expire_count >= 12) {
+                        ESP_LOGW(TAG, "AUTH_EXPIRE persists (count=%lu), keeping native mesh retry path",
+                                 (unsigned long)auth_expire_count);
+                        auth_expire_count = 0;
+                    }
+                } else {
+                    ESP_LOGI(TAG, "Connected parent lost; waiting for native mesh reconnect");
                 }
             }
             break;
@@ -358,12 +316,11 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             int new_count = esp_mesh_get_routing_table_size();
             ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
             mesh_children_count = new_count;
-            // Stop STA connection attempts to "MESHNET_DISABLED" but keep accepting children
-            // IMPORTANT: Do NOT disable self-organized here - that blocks new children from joining!
+            // Keep root stable; avoid forcing STA disconnect here since it can churn auth state
+            // while descendants are joining through relay parents.
             if (is_mesh_root) {
                 esp_wifi_scan_stop();
-                esp_wifi_disconnect();
-                ESP_LOGI(TAG, "Root: stopped scanning, STA disconnected (still accepting children)");
+                ESP_LOGI(TAG, "Root: child connected, scan stopped (no forced STA disconnect)");
             }
             break;
         }
@@ -443,9 +400,6 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             no_parent_count++;
             ESP_LOGW(TAG, "No parent found (attempt=%lu) — retrying scan (channel=%d, mesh_id=%s, src_id=%s)",
                      (unsigned long)no_parent_count, MESH_CHANNEL, MESH_ID, g_src_id);
-            if ((no_parent_count % 3) == 0) {
-                trigger_rx_debug_scan();
-            }
             break;
 
         case MESH_EVENT_FIND_NETWORK: {
@@ -838,11 +792,10 @@ esp_err_t network_init_mesh(void) {
     // Default RX queue is 32, which backs up with 3+ nodes at 25pps each
     ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(64));
     
-    // Set AP association timeout to clean up stale connections
-    // This prevents old associations from blocking new children
-    ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(30));
+    // Keep association expiry long enough for auth/assoc retries under RF churn.
+    ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(MESH_AP_ASSOC_EXPIRE_S));
     
-    ESP_LOGI(TAG, "Mesh tuning: xon_qsize=64, ap_assoc_expire=30s");
+    ESP_LOGI(TAG, "Mesh tuning: xon_qsize=64, ap_assoc_expire=%us", (unsigned)MESH_AP_ASSOC_EXPIRE_S);
     
     // User Designated Root Node pattern (ESP-IDF official approach)
     // TX/COMBO nodes are always the root - no election, no scanning delay
@@ -871,7 +824,6 @@ esp_err_t network_init_mesh(void) {
       // Root has no parent to find, scanning just wastes time and causes audio gaps
       if (my_node_role == NODE_ROLE_TX) {
           esp_wifi_scan_stop();
-          esp_wifi_disconnect();  // Stop "MESHNET_DISABLED" connection attempts
           ESP_LOGI(TAG, "TX/COMBO: stopped startup scanning");
       }
       
@@ -941,7 +893,7 @@ static void send_stream_announcement(void) {
 // Starts immediately; heartbeats are only sent when is_mesh_root_ready becomes true
 static void mesh_heartbeat_task(void *arg) {
     const uint32_t HEARTBEAT_INTERVAL_MS = 2000;  // 2 seconds
-    const uint32_t RX_RECOVERY_INTERVAL_MS = 30000;
+    const uint32_t RX_RECOVERY_INTERVAL_MS = 120000;
     
     ESP_LOGI(TAG, "Heartbeat task started (will send once network is ready)");
     
@@ -958,11 +910,11 @@ static void mesh_heartbeat_task(void *arg) {
         if (my_node_role == NODE_ROLE_RX &&
             waited_ms >= RX_RECOVERY_INTERVAL_MS &&
             (waited_ms % RX_RECOVERY_INTERVAL_MS) == 0 &&
-            recovery_restarts < 2) {
+            recovery_restarts < 1) {
             recovery_restarts++;
             ESP_LOGW(TAG, "RX join recovery #%lu: forcing reconnect after %lus wait",
                      (unsigned long)recovery_restarts, (unsigned long)(waited_ms / 1000));
-            trigger_rx_rejoin();
+            // Let ESP-MESH continue native join loop; avoid forced rejoin churn.
         }
     }
     ESP_LOGI(TAG, "Network ready - sending heartbeats");
@@ -1135,66 +1087,42 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     };
     
     esp_err_t err = ESP_OK;
-    int sent_count = 0;
-    int skip_count = 0;
     
     // Debug: log stats periodically (every 128 packets at 25fps = ~5 seconds)
     static uint16_t log_counter = 0;
     bool should_log = ((++log_counter & 0x7F) == 0);
     
     if (is_mesh_root) {
-        // ROOT: Send downstream to each descendant via P2P with per-child flow control
+        // ROOT: Use FROMDS broadcast for automatic multi-hop forwarding
+        // This allows intermediate nodes to relay packets to their descendants
+        // without root having to track per-child routing
         mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
         int route_table_size = 0;
         esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
+        int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
         
-        // Periodically clean up stale flow entries
-        static uint8_t cleanup_counter = 0;
-        if (++cleanup_counter >= 50) {  // Every ~2 seconds at 25fps
-            cleanup_stale_children(route_table, route_table_size);
-            cleanup_counter = 0;
-        }
-        
-        for (int i = 0; i < route_table_size; i++) {
-            if (memcmp(&route_table[i], my_sta_mac, 6) == 0) continue;
+        if (descendant_count > 0) {
+            // Send once using FROMDS - mesh stack handles multi-hop relay
+            err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
             
-            // Get per-child flow state
-            child_flow_state_t *flow = get_child_flow(&route_table[i]);
-            
-            // Check if we should send to this child (rate limiting)
-            if (!check_child_rate_limit(flow)) {
-                skip_count++;
-                continue;  // Skip this child, try others
-            }
-            
-            esp_err_t send_err = esp_mesh_send(&route_table[i], &mesh_data, 
-                                                MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-            
-            // Update per-child flow state
-            update_child_flow(flow, send_err == ESP_ERR_MESH_QUEUE_FULL);
-            
-            if (send_err == ESP_OK) {
-                sent_count++;
+            if (err == ESP_OK) {
+                total_sent++;
                 tx_bytes_counter += len;
-            } else if (send_err != ESP_ERR_MESH_QUEUE_FULL) {
-                err = send_err;
+            } else if (err == ESP_ERR_MESH_QUEUE_FULL) {
+                total_drops++;
             }
-        }
-        
-        if (should_log && route_table_size > 1) {
-            ESP_LOGI(TAG, "Mesh TX: children=%d, sent=%d, skip=%d, total_sent=%lu, drops=%lu (%.1f%%)", 
-                     route_table_size - 1, sent_count, skip_count, total_sent, total_drops,
-                     total_sent > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
-        }
-        
-        if (sent_count > 0) {
-            err = ESP_OK;
-        } else if (route_table_size <= 1) {
+            
+            if (should_log) {
+                ESP_LOGI(TAG, "Mesh TX FROMDS: descendants=%d, result=%s, total_sent=%lu, drops=%lu (%.1f%%)", 
+                         descendant_count, esp_err_to_name(err), total_sent, total_drops,
+                         total_sent > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
+            }
+        } else {
             err = ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
     } else {
-        // CHILD: Send upstream to parent via P2P (no per-child tracking needed)
-        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+        // CHILD: Send upstream to parent via TODS (proper DS flow)
+        err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
         if (err == ESP_OK) {
             total_sent++;
             tx_bytes_counter += len;
@@ -1220,25 +1148,23 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
     
     esp_err_t err = ESP_OK;
     if (is_mesh_root) {
-        // Root: iterate routing table and send to each descendant (P2P)
-        // esp_mesh_send(NULL) with MESH_DATA_P2P is invalid for root
+        // Root: Use FROMDS broadcast for control messages to reach all descendants
         mesh_addr_t ctrl_route[MESH_ROUTE_TABLE_SIZE];
         int ctrl_route_size = 0;
         esp_mesh_get_routing_table(ctrl_route, sizeof(ctrl_route), &ctrl_route_size);
         
-        for (int i = 0; i < ctrl_route_size; i++) {
-            if (memcmp(&ctrl_route[i], my_sta_mac, 6) == 0) continue;
-            esp_err_t send_err = esp_mesh_send(&ctrl_route[i], &mesh_data, 
-                                                MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-            if (send_err == ESP_OK) {
-                err = ESP_OK;
-            } else if (send_err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
-                ESP_LOGD(TAG, "Control send to descendant failed: %s", esp_err_to_name(send_err));
+        if (ctrl_route_size > 1) {
+            err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
+            if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
+                ESP_LOGD(TAG, "Control FROMDS send failed: %s", esp_err_to_name(err));
             }
+        } else {
+            err = ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
     } else {
+        // Child: Send control upstream using TODS
         if (have_root_addr) {
-            err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+            err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
         } else {
             err = ESP_ERR_INVALID_STATE;
         }

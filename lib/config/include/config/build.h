@@ -60,7 +60,7 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               64000     // 64 kbps (transparent for mono music)
+#define OPUS_BITRATE               32000     // 32 kbps (reduces mesh airtime for 1->many stability)
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage (was 5, overflow)
 
 // Opus frame duration is tied to the pipeline PCM frame duration
@@ -100,16 +100,31 @@
 #define MESH_PASSWORD          "meshnet123"
 #define MESH_CHANNEL           6
 #define MESH_ROUTE_TABLE_SIZE  50        // Max nodes in routing table
+#define MESH_AP_ASSOC_EXPIRE_S 30        // Association expiry; keep moderate to avoid sticky auth loops
 #define UDP_PORT               3333      // Legacy fallback
 #define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
 
-// Mesh packet batching: combine N Opus frames per mesh packet to reduce pps
-// 20ms frames at 50fps → batch 2 → 25 mesh packets/sec (within ESP-MESH limit)
-#define MESH_FRAMES_PER_PACKET     2
+// Mesh packet batching: combine N Opus frames per mesh packet to reduce pps.
+// 20ms frames at 50fps → batch 3 → ~16.7 mesh packets/sec per destination.
+// This lowers root airtime pressure when serving multiple OUT nodes.
+#define MESH_FRAMES_PER_PACKET     3
+
+// RX stream-loss hysteresis. At 25 mesh packets/sec (~40ms interval),
+// 300ms tolerates short bursts of contention without flapping stream state.
+#define STREAM_SILENCE_TIMEOUT_MS  500
+// Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.
+// This avoids rapid stream state flapping under bursty packet delivery.
+#define STREAM_SILENCE_CONFIRM_MS  300
+
+// TX continuity policy: when 1, TX keeps encoding/sending even during low input
+// activity (continuous silent Opus frames) to avoid RX stream flap.
+#define TX_CONTINUOUS_STREAMING     1
+
 
 // USB networking (CDC-NCM)
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
+#define ENABLE_USB_PORTAL_NETWORK   0
 
 // ============================================================================
 // Buffer Configuration
@@ -129,7 +144,7 @@
 
 // Jitter buffer (in codec frames)
 #define JITTER_BUFFER_FRAMES       6    // 6 × 20ms = 120ms max depth
-#define JITTER_PREFILL_FRAMES      3    // 3 × 20ms = 60ms startup latency
+#define JITTER_PREFILL_FRAMES      4    // 4 × 20ms = 80ms startup latency (smoother multi-node playback)
 
 // Derived: jitter thresholds in bytes
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)

@@ -100,6 +100,7 @@ static uint32_t dropped_packets = 0;
 static uint16_t last_seq = 0;
 static bool first_packet = true;
 static uint32_t last_packet_time = 0;
+static uint32_t stream_silence_confirm_start = 0;
 
 // One-way latency estimation from audio frame timestamps
 // Root puts esp_timer ms in each frame header; we compare to our local clock.
@@ -155,7 +156,7 @@ static void update_rx_status_state_fields(int64_t now_ms) {
 
 static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id) {
     // Track sequence gaps for packet loss measurement
-    // NOTE: TX increments seq by MESH_FRAMES_PER_PACKET (2), not 1
+    // NOTE: TX increments seq by MESH_FRAMES_PER_PACKET, not 1
     if (!first_packet) {
         uint16_t expected_seq = (last_seq + MESH_FRAMES_PER_PACKET) & 0xFFFF;
         if (seq != expected_seq) {
@@ -349,15 +350,23 @@ void app_main(void) {
         }
         
         // Check for audio stream timeout
-        if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(100)) {
+        if ((xTaskGetTickCount() - last_packet_time) > pdMS_TO_TICKS(STREAM_SILENCE_TIMEOUT_MS)) {
             if (status.receiving_audio) {
-                status.receiving_audio = false;
-                if (current_state == RX_STATE_STREAMING || current_state == RX_STATE_STREAM_FOUND) {
-                    rx_set_connection_state(RX_STATE_STREAM_LOST, "100ms+ silence timeout");
-                    receiving_from_src_id[0] = '\0';
-                    rx_set_connection_state(RX_STATE_WAITING_FOR_STREAM, "waiting for stream recovery");
+                uint32_t now_ticks = xTaskGetTickCount();
+                if (stream_silence_confirm_start == 0) {
+                    stream_silence_confirm_start = now_ticks;
+                }
+                if ((now_ticks - stream_silence_confirm_start) > pdMS_TO_TICKS(STREAM_SILENCE_CONFIRM_MS)) {
+                    status.receiving_audio = false;
+                    if (current_state == RX_STATE_STREAMING || current_state == RX_STATE_STREAM_FOUND) {
+                        rx_set_connection_state(RX_STATE_STREAM_LOST, "stream silence timeout");
+                        receiving_from_src_id[0] = '\0';
+                        rx_set_connection_state(RX_STATE_WAITING_FOR_STREAM, "waiting for stream recovery");
+                    }
                 }
             }
+        } else {
+            stream_silence_confirm_start = 0;
         }
 
         bool mesh_connected = network_is_connected();

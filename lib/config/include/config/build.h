@@ -60,7 +60,7 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               32000     // 32 kbps (good quality, balanced for mesh)
+#define OPUS_BITRATE               16000     // 16 kbps (reduce airtime for multi-node testing)
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage (was 5, overflow)
 
 // Opus frame duration is tied to the pipeline PCM frame duration
@@ -106,7 +106,7 @@
 
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce mesh pps.
 // 20ms frames at 50fps → batch 8 → ~6.25 mesh packets/sec per destination.
-#define MESH_FRAMES_PER_PACKET     8
+#define MESH_FRAMES_PER_PACKET     4
 
 #define STREAM_SILENCE_TIMEOUT_MS  3000
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.

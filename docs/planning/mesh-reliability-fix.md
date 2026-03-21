@@ -4,6 +4,38 @@
 **Status:** Ongoing - Root Cause Reframed (Validated with Multi-Node Field Tests)  
 **Author:** Copilot Analysis
 
+## Latest Validation Cycle (2026-03-21, post-manual reflash)
+
+### What was broken
+- Root transport regression: `network_send_audio()` used `MESH_DATA_FROMDS` with `dest=NULL`.
+- On this stack/build, that caused root-local receive side effects (`Audio frame received but audio_rx_callback is NULL`) while OUT nodes starved (`RX: 0 pkts`).
+
+### Root-cause fix implemented
+- Updated root send path to explicit per-destination DS send:
+  - `esp_mesh_send(&route_table[i], ..., MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, ...)`
+  - Same correction applied to control path.
+- Removed stale send-failure table globals left over from prior P2P flow-control experiments.
+- Added stronger local-output diagnostics:
+  - `adf_pipeline` now logs failed local ES8388 writes.
+  - `es8388_audio_write_stereo()` logs `invalid_state` counters and returns timeout as `ESP_ERR_TIMEOUT` (no silent success on dropped output frames).
+
+### Validation results (same revision, reflashed COMBO + 3 OUT)
+- COMBO/root:
+  - `Mesh TX FROMDS: descendants=3 sent_ok=3 qfull=0`
+  - Stable TX ~56–62 kbps with 3 nodes.
+  - Local path active: `Local output: ... mode=AUX` observed.
+- OUT2:
+  - ~0.4–1.1% loss (good).
+- OUT3:
+  - ~1.6–1.9% loss (good).
+- OUT1:
+  - still degraded (~14–21% loss) with buffer oscillation.
+
+### Updated big-picture conclusion
+- Broadcast transport regression is fixed.
+- COMBO local monitor software path is active (capture + write calls confirmed).
+- Remaining reliability issue is now asymmetric branch quality (primarily OUT1 path), not global transport collapse.
+
 ## Problem Summary
 
 Three critical issues have been identified with the ESP-WIFI-MESH audio streaming system:

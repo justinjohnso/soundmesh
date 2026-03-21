@@ -468,6 +468,12 @@ esp_err_t es8388_audio_read_stereo(int16_t *stereo_buffer, size_t max_frames, si
 esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
 {
     if (!es8388_initialized || !dac_enabled || !i2s_tx_handle) {
+        static uint32_t invalid_state_count = 0;
+        invalid_state_count++;
+        if ((invalid_state_count % 100) == 0) {
+            ESP_LOGW(TAG, "I2S TX unavailable: init=%d dac=%d tx=%d (count=%lu)",
+                     es8388_initialized, dac_enabled, i2s_tx_handle != NULL, invalid_state_count);
+        }
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -484,15 +490,12 @@ esp_err_t es8388_audio_write_stereo(const int16_t *stereo_buffer, size_t frames)
                                        &bytes_written, pdMS_TO_TICKS(100));
     
     if (ret == ESP_ERR_TIMEOUT) {
-        // Timeout during WiFi activity is expected - just drop the frame
-        // The DMA buffer will continue playing, so this is usually inaudible
-        static uint32_t last_timeout_log = 0;
-        uint32_t now = xTaskGetTickCount();
-        if ((now - last_timeout_log) > pdMS_TO_TICKS(5000)) {
-            ESP_LOGW(TAG, "I2S TX timeout (WiFi activity?) - frame dropped");
-            last_timeout_log = now;
+        static uint32_t tx_timeout_count = 0;
+        tx_timeout_count++;
+        if ((tx_timeout_count % 50) == 0) {
+            ESP_LOGW(TAG, "I2S TX timeout: dropped=%lu", tx_timeout_count);
         }
-        return ESP_OK;  // Treat as success - DMA buffer keeps playing
+        return ESP_ERR_TIMEOUT;
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
         return ret;

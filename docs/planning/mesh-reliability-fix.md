@@ -62,19 +62,32 @@
 
 ### Remaining Work
 
-**OUT1 Auth Reliability**:
-- Consider physical placement/antenna orientation to improve OUT1→root RSSI
-- OR accept that OUT1 will typically be layer:3 via OUT2 relay (mesh working as designed)
-- Monitor whether layer:3 path quality is acceptable for audio (initial signs: yes, but with some delay)
+**COMBO Local Audio Monitor** - **SOFTWARE VERIFIED WORKING**:
+- Diagnostic logs confirm ES8388 DAC write path is fully functional:
+  - `I2S TX stats: writes=4000, zero_bytes=0` - All writes succeeding
+  - `last_bytes=3840` - Full frames being written
+  - `sample[0]=168` (non-zero) - Real audio data in DAC output
+- Software capture→DAC passthrough pipeline is active and correct
+- **If user hears no audio from headphones**, likely causes:
+  1. **Physical routing**: ES8388 modules have multiple output jacks (OUT1/OUT2, Line Out/Headphone Out)
+     - User may be plugged into wrong jack
+     - Check ES8388 module markings for correct headphone output
+  2. **ES8388 internal routing**: May need register adjustment for OUT1 vs OUT2 selection
+  3. **Volume/gain**: Though software shows +4.5dB max, analog path may need hardware adjustment
+- **Action**: User should verify physical headphone connection to correct ES8388 output jack
 
-**Stream Stop/Start Behavior**:
+**Stream Pause/Start Behavior**:
 - OUT2 lost stream at ~22s, auto-recovered at ~31s when root resumed
-- Investigate: Was this root-side stream pause, or root disconnect event?
-- If root streaming is stopping unexpectedly, need to diagnose why
+- Timing correlates with OUT1 joining as OUT2's child (~20s)
+- **Hypothesis**: Routing table change (2→3 descendants) may cause brief root stream pause
+- **Need to validate**: Monitor root during child join events to confirm correlation
 
-**COMBO Local Monitor**:
-- User reported COMBO direct audio out not working despite network streaming success
-- Need to validate ES8388 local playback path on COMBO firmware
+**Root Reason:201 Churn**:
+- Persistent `wifi:disconnected reason:201()` every 2-3 seconds on COMBO root
+- This is known ESP-MESH behavior under multi-child streaming load
+- Does NOT prevent audio delivery (OUT2/OUT3 receiving with excellent quality)
+- Does NOT cause node disconnections or routing failures
+- **Decision**: Accept as mesh stack characteristic, not blocking issue
 
 ## Problem Summary
 

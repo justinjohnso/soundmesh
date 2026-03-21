@@ -32,6 +32,16 @@ static bool is_mesh_root = false;
 static bool is_mesh_root_ready = false;  // Track when root is fully initialized
 
 static uint8_t mesh_layer = 0;
+
+// Send failure tracking to avoid repeated sends to failing destinations
+#define SEND_FAIL_TABLE_SIZE 32
+typedef struct {
+    mesh_addr_t addr;
+    uint32_t last_fail_us;
+    uint8_t fail_count;
+} send_fail_t;
+static send_fail_t send_fail_table[SEND_FAIL_TABLE_SIZE];
+static int send_fail_index = 0;
 static int mesh_children_count = 0;
 static mesh_addr_t mesh_parent_addr;
 static uint32_t measured_latency_ms = 0;       // RTT/2 from ping measurements
@@ -123,7 +133,6 @@ static void mesh_rx_task(void *arg);
 static void mesh_heartbeat_task(void *arg);
 static bool is_duplicate(uint8_t stream_id, uint16_t seq);
 static void mark_seen(uint8_t stream_id, uint16_t seq);
-static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender);
 static void send_heartbeat(void);
 static void send_stream_announcement(void);
 static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
@@ -167,46 +176,6 @@ static void mark_seen(uint8_t stream_id, uint16_t seq) {
     dedupe_cache[dedupe_index].seq = seq;
     dedupe_cache[dedupe_index].timestamp_ms = esp_timer_get_time() / 1000;
     dedupe_index = (dedupe_index + 1) % DEDUPE_CACHE_SIZE;
-}
-
-// Forward frame to all descendants except sender
-// Note: esp_mesh_get_routing_table() returns ALL descendants (children, grandchildren, etc.)
-// Dedupe+TTL in the receiver handles any duplicates naturally
-static void forward_to_children(const uint8_t *data, size_t len, const mesh_addr_t *sender) {
-    if (!is_mesh_connected && !is_mesh_root) return;
-    
-    // Get full routing table - contains all descendants in the mesh tree
-    mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
-    int route_table_size = 0;
-    
-    esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
-    
-    if (route_table_size == 0) {
-        return;
-    }
-    
-    // Forward to all descendants except the sender
-    // The mesh stack handles the actual routing - we just need to initiate sends
-    // Dedupe cache and TTL on the receiving end prevent loops/duplicates
-    for (int i = 0; i < route_table_size; i++) {
-        if (memcmp(&route_table[i], my_sta_mac, 6) == 0) continue;
-        if (sender && memcmp(&route_table[i], sender, 6) == 0) {
-            continue;
-        }
-        
-        mesh_data_t mesh_data;
-        mesh_data.data = (uint8_t *)data;
-        mesh_data.size = len;
-        mesh_data.proto = MESH_PROTO_BIN;
-        mesh_data.tos = MESH_TOS_DEF;
-        
-        // Use MESH_DATA_P2P for internal mesh communication
-        esp_err_t err = esp_mesh_send(&route_table[i], &mesh_data, 
-                                      MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-        if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
-            ESP_LOGD(TAG, "Failed to forward to descendant: %s", esp_err_to_name(err));
-        }
-    }
 }
 
 // Mesh event handler
@@ -540,8 +509,9 @@ static void mesh_rx_task(void *arg) {
                     continue;
                 }
                 
+                // Keep application-layer forwarding disabled to avoid duplicate fanout loops.
+                // Delivery is handled by root explicit P2P fanout to descendants.
                 hdr->ttl--;
-                forward_to_children(data.data, data.size, &from);
                 
                 if (audio_rx_callback) {
                     // Auto-detect header size for backward compatibility with
@@ -577,6 +547,12 @@ static void mesh_rx_task(void *arg) {
                                 offset += frame_len;
                             }
                         }
+                    }
+                }
+                else {
+                    static uint32_t cb_missing = 0;
+                    if ((++cb_missing % 200) == 1) {
+                        ESP_LOGW(TAG, "Audio frame received but audio_rx_callback is NULL");
                     }
                 }
             }
@@ -949,127 +925,11 @@ esp_err_t network_register_startup_notification(TaskHandle_t task_handle) {
     return ESP_OK;
 }
 
-// Per-child flow control state (replaces global backoff)
-// Each child gets independent rate limiting so one slow child doesn't starve others
-typedef struct {
-    mesh_addr_t addr;
-    uint8_t backoff_level;      // 0-2: send every (N+1) frames
-    uint8_t skip_counter;       // Current skip count
-    int64_t last_qfull_us;      // Last queue-full timestamp
-    uint32_t drops;             // Dropped frames for this child
-    uint32_t sent;              // Sent frames for this child
-    bool active;                // Slot in use
-} child_flow_state_t;
-
-#define MAX_TRACKED_CHILDREN 10
-static child_flow_state_t child_flow[MAX_TRACKED_CHILDREN];
 static uint32_t total_drops = 0;             // Aggregate drops (for logging)
 static uint32_t total_sent = 0;              // Aggregate sent (for logging)
 
 // Byte counter for TX bandwidth measurement
 static volatile uint32_t tx_bytes_counter = 0;
-
-// Rate limiting DISABLED - was causing 60% packet loss by being too aggressive
-// With MESH_DATA_NONBLOCK, queue-full just means "try again next frame"
-// which naturally rate-limits without accumulated backoff state.
-#define RATE_LIMIT_ENABLED 0                 // Set to 1 to re-enable rate limiting
-#define RATE_LIMIT_MAX_LEVEL 2               // Max backoff: send every 3rd frame (~8fps)
-
-// Find or create flow state for a child address
-static child_flow_state_t* get_child_flow(const mesh_addr_t *addr) {
-    int free_slot = -1;
-    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
-        if (child_flow[i].active && memcmp(&child_flow[i].addr, addr, 6) == 0) {
-            return &child_flow[i];
-        }
-        if (!child_flow[i].active && free_slot < 0) {
-            free_slot = i;
-        }
-    }
-    // New child - allocate slot
-    if (free_slot >= 0) {
-        memset(&child_flow[free_slot], 0, sizeof(child_flow_state_t));
-        memcpy(&child_flow[free_slot].addr, addr, 6);
-        child_flow[free_slot].active = true;
-        return &child_flow[free_slot];
-    }
-    return NULL;  // No slots available (shouldn't happen with 10 slots)
-}
-
-// Check if we should send to this child (returns true if should send)
-static bool check_child_rate_limit(child_flow_state_t *flow) {
-#if RATE_LIMIT_ENABLED
-    if (!flow || flow->backoff_level == 0) return true;
-    
-    flow->skip_counter++;
-    if (flow->skip_counter <= flow->backoff_level) {
-        flow->drops++;
-        total_drops++;
-        return false;  // Skip this frame
-    }
-    flow->skip_counter = 0;
-    return true;
-#else
-    (void)flow;  // Suppress unused warning
-    return true; // Always send - let NONBLOCK handle congestion naturally
-#endif
-}
-
-// Update flow state after send attempt
-static void update_child_flow(child_flow_state_t *flow, bool queue_full) {
-    if (!flow) return;
-    
-#if RATE_LIMIT_ENABLED
-    int64_t now = esp_timer_get_time();
-    
-    if (queue_full) {
-        flow->last_qfull_us = now;
-        if (flow->backoff_level < RATE_LIMIT_MAX_LEVEL) {
-            flow->backoff_level++;
-            ESP_LOGW(TAG, "Child " MACSTR " backoff→%d", 
-                     MAC2STR(flow->addr.addr), flow->backoff_level);
-        }
-    } else {
-        flow->sent++;
-        total_sent++;
-        // Recover one level per second of no queue-full
-        if (flow->backoff_level > 0 && (now - flow->last_qfull_us) > 1000000) {
-            flow->backoff_level--;
-            flow->last_qfull_us = now;
-            ESP_LOGI(TAG, "Child " MACSTR " backoff→%d (recovered)", 
-                     MAC2STR(flow->addr.addr), flow->backoff_level);
-        }
-    }
-#else
-    // Just track counts for metrics, no backoff
-    if (queue_full) {
-        flow->drops++;
-        total_drops++;
-    } else {
-        flow->sent++;
-        total_sent++;
-    }
-#endif
-}
-
-// Clean up flow state for disconnected children
-static void cleanup_stale_children(const mesh_addr_t *active_table, int table_size) {
-    for (int i = 0; i < MAX_TRACKED_CHILDREN; i++) {
-        if (!child_flow[i].active) continue;
-        
-        bool found = false;
-        for (int j = 0; j < table_size; j++) {
-            if (memcmp(&child_flow[i].addr, &active_table[j], 6) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            ESP_LOGI(TAG, "Cleaned stale flow: " MACSTR, MAC2STR(child_flow[i].addr.addr));
-            child_flow[i].active = false;
-        }
-    }
-}
 
 // Send audio frame via mesh (broadcast to all nodes)
 // Uses PER-CHILD rate limiting so one slow child doesn't affect others
@@ -1093,29 +953,42 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     bool should_log = ((++log_counter & 0x7F) == 0);
     
     if (is_mesh_root) {
-        // ROOT: Use FROMDS broadcast for automatic multi-hop forwarding
-        // This allows intermediate nodes to relay packets to their descendants
-        // without root having to track per-child routing
+        // ROOT: explicit per-descendant P2P fanout.
+        // This keeps routing inside mesh while avoiding app-layer relay duplication.
         mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
         int route_table_size = 0;
         esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
         int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
-        
+
         if (descendant_count > 0) {
-            // Send once using FROMDS - mesh stack handles multi-hop relay
-            err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
-            
-            if (err == ESP_OK) {
-                total_sent++;
-                tx_bytes_counter += len;
-            } else if (err == ESP_ERR_MESH_QUEUE_FULL) {
-                total_drops++;
+            int sent_ok = 0;
+            int sent_qfull = 0;
+            esp_err_t first_err = ESP_OK;
+            for (int i = 0; i < route_table_size; i++) {
+                if (memcmp(route_table[i].addr, my_sta_mac, 6) == 0) {
+                    continue;  // skip self entry
+                }
+                esp_err_t perr = esp_mesh_send(&route_table[i], &mesh_data,
+                                               MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+                if (perr == ESP_OK) {
+                    sent_ok++;
+                    total_sent++;
+                } else if (perr == ESP_ERR_MESH_QUEUE_FULL) {
+                    sent_qfull++;
+                    total_drops++;
+                    if (first_err == ESP_OK) first_err = perr;
+                } else if (first_err == ESP_OK) {
+                    first_err = perr;
+                }
             }
-            
+            tx_bytes_counter += (uint32_t)(sent_ok * len);
+            err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);
+
             if (should_log) {
-                ESP_LOGI(TAG, "Mesh TX FROMDS: descendants=%d, result=%s, total_sent=%lu, drops=%lu (%.1f%%)", 
-                         descendant_count, esp_err_to_name(err), total_sent, total_drops,
-                         total_sent > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
+                ESP_LOGI(TAG, "Mesh TX P2P: descendants=%d sent_ok=%d qfull=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
+                         descendant_count, sent_ok, sent_qfull, esp_err_to_name(err),
+                         total_sent, total_drops,
+                         (total_sent + total_drops) > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
             }
         } else {
             err = ESP_ERR_MESH_NO_ROUTE_FOUND;
@@ -1148,15 +1021,85 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
     
     esp_err_t err = ESP_OK;
     if (is_mesh_root) {
-        // Root: Use FROMDS broadcast for control messages to reach all descendants
+        // Root control fanout mirrors audio transport path.
         mesh_addr_t ctrl_route[MESH_ROUTE_TABLE_SIZE];
         int ctrl_route_size = 0;
         esp_mesh_get_routing_table(ctrl_route, sizeof(ctrl_route), &ctrl_route_size);
-        
+
         if (ctrl_route_size > 1) {
-            err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
+            int sent_ok = 0;
+            esp_err_t first_err = ESP_OK;
+            for (int i = 0; i < ctrl_route_size; i++) {
+                if (memcmp(ctrl_route[i].addr, my_sta_mac, 6) == 0) {
+                    continue;
+                }
+                // Small per-destination failure tracking to avoid repeated immediate retries
+                uint32_t now_us = esp_timer_get_time();
+                bool skip = false;
+                for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                    if (send_fail_table[si].fail_count > 0 &&
+                        memcmp(send_fail_table[si].addr.addr, ctrl_route[i].addr, 6) == 0) {
+                        // If failures recent and repeated, skip this dest briefly
+                        if (now_us - send_fail_table[si].last_fail_us < 1000000 && send_fail_table[si].fail_count >= 3) {
+                            skip = true;
+                        }
+                        break;
+                    }
+                }
+                if (skip) {
+                    ESP_LOGD(TAG, "Skipping send to %02x:%02x:%02x:%02x:%02x:%02x due to recent failures",
+                             ctrl_route[i].addr[0], ctrl_route[i].addr[1], ctrl_route[i].addr[2],
+                             ctrl_route[i].addr[3], ctrl_route[i].addr[4], ctrl_route[i].addr[5]);
+                    continue;
+                }
+
+                esp_err_t perr = esp_mesh_send(&ctrl_route[i], &mesh_data,
+                                               MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+                if (perr == ESP_OK) {
+                    sent_ok++;
+                    // On success, clear any previous failure record for this dest
+                    for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                        if (send_fail_table[si].fail_count > 0 &&
+                            memcmp(send_fail_table[si].addr.addr, ctrl_route[i].addr, 6) == 0) {
+                            send_fail_table[si].fail_count = 0;
+                            break;
+                        }
+                    }
+                } else {
+                    if (first_err == ESP_OK) {
+                        first_err = perr;
+                    }
+                    ESP_LOGW(TAG, "mesh_send to %02x:%02x:%02x:%02x:%02x:%02x failed: %s",
+                             ctrl_route[i].addr[0], ctrl_route[i].addr[1], ctrl_route[i].addr[2],
+                             ctrl_route[i].addr[3], ctrl_route[i].addr[4], ctrl_route[i].addr[5],
+                             esp_err_to_name(perr));
+                    // record failure in table
+                    int slot = -1;
+                    for (int si = 0; si < SEND_FAIL_TABLE_SIZE; si++) {
+                        if (send_fail_table[si].fail_count == 0) {
+                            slot = si;
+                            break;
+                        }
+                        if (memcmp(send_fail_table[si].addr.addr, ctrl_route[i].addr, 6) == 0) {
+                            slot = si;
+                            break;
+                        }
+                    }
+                    if (slot == -1) {
+                        slot = send_fail_index;
+                        send_fail_index = (send_fail_index + 1) % SEND_FAIL_TABLE_SIZE;
+                    }
+                    memcpy(send_fail_table[slot].addr.addr, ctrl_route[i].addr, 6);
+                    send_fail_table[slot].last_fail_us = now_us;
+                    send_fail_table[slot].fail_count++;
+                }
+
+                // Small micro-delay to reduce burst collisions when fanout is large
+                vTaskDelay(pdMS_TO_TICKS(2));
+            }
+            err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);
             if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
-                ESP_LOGD(TAG, "Control FROMDS send failed: %s", esp_err_to_name(err));
+                ESP_LOGD(TAG, "Control P2P fanout failed: %s", esp_err_to_name(err));
             }
         } else {
             err = ESP_ERR_MESH_NO_ROUTE_FOUND;

@@ -101,6 +101,9 @@ static uint16_t last_seq = 0;
 static bool first_packet = true;
 static uint32_t last_packet_time = 0;
 static uint32_t stream_silence_confirm_start = 0;
+static uint32_t last_ping_ms = 0;
+static int64_t last_stream_rx_ms = 0;
+static int64_t last_rejoin_attempt_ms = 0;
 
 // One-way latency estimation from audio frame timestamps
 // Root puts esp_timer ms in each frame header; we compare to our local clock.
@@ -155,15 +158,14 @@ static void update_rx_status_state_fields(int64_t now_ms) {
 }
 
 static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id) {
-    // Track sequence gaps for packet loss measurement
-    // NOTE: TX increments seq by MESH_FRAMES_PER_PACKET, not 1
+    // Track sequence gaps for packet loss measurement.
+    // Callback is invoked per unpacked Opus frame (seq, seq+1, ...), so expected step is +1.
     if (!first_packet) {
-        uint16_t expected_seq = (last_seq + MESH_FRAMES_PER_PACKET) & 0xFFFF;
+        uint16_t expected_seq = (last_seq + 1) & 0xFFFF;
         if (seq != expected_seq) {
             int16_t gap = (int16_t)(seq - expected_seq);
             if (gap > 0 && gap < 100) {
-                // Convert frame gap to packet gap (divide by frames per packet)
-                dropped_packets += (gap / MESH_FRAMES_PER_PACKET);
+                dropped_packets += (uint32_t)gap;
             }
         }
     }
@@ -197,6 +199,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
     if (rx_pipeline) {
         esp_err_t ret = adf_pipeline_feed_opus(rx_pipeline, payload, len, seq, timestamp);
         if (ret == ESP_OK) {
+            last_stream_rx_ms = esp_timer_get_time() / 1000;
             bool was_receiving = status.receiving_audio;
             status.receiving_audio = true;
             packets_received++;
@@ -222,7 +225,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
                          packets_received, seq, len, ewma_oneway_ms);
             }
         } else {
-            ESP_LOGW(TAG, "Pipeline buffer full, dropping packet seq=%u", seq);
+            ESP_LOGW(TAG, "Pipeline feed failed seq=%u err=%s", seq, esp_err_to_name(ret));
         }
     }
 }
@@ -389,6 +392,9 @@ void app_main(void) {
         if (network_ready && (now - last_stats_update) >= pdMS_TO_TICKS(1000)) {
             status.rssi = network_get_rssi();
             status.latency_ms = ewma_oneway_ms;
+            // Temporarily disable active RX->root pings during stability debugging.
+            // They are non-essential for audio transport and currently generate frequent
+            // ESP_ERR_MESH_ARGUMENT noise on degraded links, obscuring root-cause signals.
             
             // Calculate bandwidth rate (bytes this second * 8 / 1000 = kbps)
             status.bandwidth_kbps = (bytes_received_this_second * 8) / 1000;
@@ -421,6 +427,24 @@ void app_main(void) {
             ESP_LOGI(TAG, "Still waiting for stream (State: %s, elapsed: %lus)",
                      rx_state_to_string(current_state), (unsigned long)status.state_elapsed_s);
             last_waiting_log_ms = now_ms;
+        }
+
+        // Self-heal: if we're mesh-connected but stream-starved for a sustained period,
+        // force a mesh reconnect to refresh parent path selection.
+        if (network_ready &&
+            network_is_connected() &&
+            !status.receiving_audio &&
+            current_state == RX_STATE_WAITING_FOR_STREAM &&
+            status.state_elapsed_s >= 20 &&
+            (now_ms - last_stream_rx_ms) >= 20000 &&
+            (now_ms - last_rejoin_attempt_ms) >= 60000) {
+            ESP_LOGW(TAG, "No stream for %lus while connected, triggering mesh rejoin",
+                     (unsigned long)status.state_elapsed_s);
+            if (network_trigger_rejoin() == ESP_OK) {
+                last_rejoin_attempt_ms = now_ms;
+                rx_set_connection_state(RX_STATE_MESH_JOINING, "rejoin after prolonged stream starvation");
+                receiving_from_src_id[0] = '\0';
+            }
         }
 
         static uint32_t last_display_update = 0;

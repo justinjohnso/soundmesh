@@ -646,7 +646,10 @@ esp_err_t network_send_ping(void) {
     };
     
     ping_pending = true;
-    esp_err_t err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P, NULL, 0);
+    // Child -> root should use TODS uplink semantics (same path as audio/control uplink).
+    // Using direct P2P to cached root can fail with ESP_ERR_MESH_ARGUMENT on some
+    // parent/layer states (observed on OUT1 during join churn).
+    esp_err_t err = esp_mesh_send(NULL, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
     if (err != ESP_OK) {
         ping_pending = false;
         ESP_LOGW(TAG, "Ping send failed: %s", esp_err_to_name(err));
@@ -951,8 +954,9 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
             return ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
 
-        // Root DS fanout: send FROMDS to each routed descendant.
-        // NULL destination can loop back on root; explicit destination is required.
+        // Standalone mesh fanout: use explicit P2P sends to each descendant.
+        // FROMDS is for external DS/router path and introduces avoidable root-side churn
+        // in this standalone topology.
         int sent_ok = 0;
         int sent_qfull = 0;
         esp_err_t first_err = ESP_OK;
@@ -961,7 +965,7 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
                 continue;
             }
             esp_err_t perr = esp_mesh_send(&route_table[i], &mesh_data,
-                                           MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
+                                           MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
             if (perr == ESP_OK) {
                 sent_ok++;
             } else {
@@ -983,7 +987,7 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
         total_drops += sent_qfull;
 
         if (should_log) {
-            ESP_LOGI(TAG, "Mesh TX FROMDS: descendants=%d sent_ok=%d qfull=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
+            ESP_LOGI(TAG, "Mesh TX P2P: descendants=%d sent_ok=%d qfull=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
                      descendant_count, sent_ok, sent_qfull, esp_err_to_name(err), total_sent, total_drops,
                      (total_sent + total_drops) > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
         }
@@ -1029,7 +1033,7 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
                 continue;
             }
             esp_err_t perr = esp_mesh_send(&ctrl_route[i], &mesh_data,
-                                           MESH_DATA_FROMDS | MESH_DATA_NONBLOCK, NULL, 0);
+                                           MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
             if (perr == ESP_OK) {
                 sent_ok++;
             } else if (first_err == ESP_OK) {
@@ -1038,7 +1042,7 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
         }
         err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);
         if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
-            ESP_LOGD(TAG, "Control FROMDS send failed: %s", esp_err_to_name(err));
+            ESP_LOGD(TAG, "Control P2P send failed: %s", esp_err_to_name(err));
         }
     } else {
         // Child: Send control upstream using TODS
@@ -1119,6 +1123,26 @@ bool network_is_connected(void) {
 bool network_is_stream_ready(void) {
     // Ready if: (1) connected as child, or (2) root AND fully initialized
     return is_mesh_connected || (is_mesh_root && is_mesh_root_ready);
+}
+
+esp_err_t network_trigger_rejoin(void) {
+    if (is_mesh_root) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(TAG, "Triggering RX rejoin: disconnect + reconnect");
+    have_root_addr = false;
+    is_mesh_connected = false;
+    esp_err_t derr = esp_mesh_disconnect();
+    if (derr != ESP_OK && derr != ESP_ERR_MESH_DISCONNECTED) {
+        ESP_LOGW(TAG, "esp_mesh_disconnect failed: %s", esp_err_to_name(derr));
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+    esp_err_t cerr = esp_mesh_connect();
+    if (cerr != ESP_OK) {
+        ESP_LOGW(TAG, "esp_mesh_connect failed: %s", esp_err_to_name(cerr));
+        return cerr;
+    }
+    return ESP_OK;
 }
 
 uint32_t network_get_connected_nodes(void) {

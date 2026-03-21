@@ -106,7 +106,7 @@
 
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce mesh pps.
 // 20ms frames at 50fps → batch 8 → ~6.25 mesh packets/sec per destination.
-#define MESH_FRAMES_PER_PACKET     4
+#define MESH_FRAMES_PER_PACKET     6
 
 #define STREAM_SILENCE_TIMEOUT_MS  3000
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.

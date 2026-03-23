@@ -20,6 +20,7 @@ Wireless multi-node audio streaming on XIAO ESP32-S3 using ESP-WIFI-MESH and Opu
 - `lib/audio/` — capture, encode/decode, playback pipeline.
 - `lib/network/` — mesh init, transport, heartbeat, node metrics.
 - `lib/control/` — display, buttons, portal/state rendering.
+- `lib/control/portal-ui/` — Astro portal UI source and build scripts.
 - `lib/config/` — shared constants and pin mapping.
 - `docs/` — planning, troubleshooting, and progress notes.
 
@@ -77,7 +78,7 @@ After code changes, always build all firmware targets:
 pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
-Run deterministic host-side logic tests:
+Run deterministic host-side Unity tests (transport/frame parsing, sequence tracking, JSON extraction, and portal API contract checks for `/api/status`, `/api/uplink`, and `/api/ota`):
 
 ```bash
 pio test -e native

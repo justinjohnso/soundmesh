@@ -824,6 +824,17 @@ esp_err_t adf_pipeline_feed_opus(adf_pipeline_handle_t pipeline,
             int gap = (int16_t)(seq - expected);
             if (gap > 0 && gap < 100) {
                 pipeline->stats.frames_dropped += gap;
+                // Packet-loss concealment (PLC): synthesize a few missing frames by
+                // inserting tiny "PLC markers" (length=0) into the Opus queue.
+                // Decode task converts these into opus_decode(NULL,0,...) frames.
+                // This smooths short loss bursts without extra network traffic.
+                uint8_t plc_frames = (gap > RX_PLC_MAX_FRAMES_PER_GAP) ? RX_PLC_MAX_FRAMES_PER_GAP : (uint8_t)gap;
+                for (uint8_t i = 0; i < plc_frames; i++) {
+                    uint8_t plc_item[2] = {0, 0};  // zero-length opus payload => PLC
+                    if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -906,14 +917,27 @@ static void rx_decode_task(void *arg)
                 first_bytes[3] = item[5];
             }
             
-            int samples_decoded = opus_decode(
-                pipeline->decoder,
-                &item[2],
-                opus_len,
-                pcm_frame,
-                AUDIO_FRAME_SAMPLES,
-                0
-            );
+            int samples_decoded = 0;
+            if (opus_len == 0) {
+                // Explicit PLC frame: ask Opus to generate concealment audio.
+                samples_decoded = opus_decode(
+                    pipeline->decoder,
+                    NULL,
+                    0,
+                    pcm_frame,
+                    AUDIO_FRAME_SAMPLES,
+                    0
+                );
+            } else {
+                samples_decoded = opus_decode(
+                    pipeline->decoder,
+                    &item[2],
+                    opus_len,
+                    pcm_frame,
+                    AUDIO_FRAME_SAMPLES,
+                    0
+                );
+            }
             
             ring_buffer_return_item(pipeline->opus_buffer, item);
             

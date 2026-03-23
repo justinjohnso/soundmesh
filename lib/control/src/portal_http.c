@@ -1,5 +1,6 @@
 #include "control/usb_portal.h"
 #include "control/portal_state.h"
+#include "control/portal_ota.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_http_server.h>
@@ -17,6 +18,55 @@ static int ws_fd = -1;
 static TaskHandle_t ws_push_task_handle = NULL;
 
 static char ws_json_buf[4096];
+
+static bool extract_json_string_field(const char *body, const char *field, char *out, size_t out_size) {
+    if (!body || !field || !out || out_size == 0) {
+        return false;
+    }
+    char key[40];
+    snprintf(key, sizeof(key), "\"%s\":\"", field);
+    char *start = strstr((char *)body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    char *end = strchr(start, '"');
+    if (!end) {
+        return false;
+    }
+    size_t len = (size_t)(end - start);
+    if (len >= out_size) {
+        return false;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return true;
+}
+
+static bool extract_json_bool_field(const char *body, const char *field, bool *out) {
+    if (!body || !field || !out) {
+        return false;
+    }
+    char key[40];
+    snprintf(key, sizeof(key), "\"%s\":", field);
+    char *start = strstr((char *)body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+    if (strncmp(start, "true", 4) == 0) {
+        *out = true;
+        return true;
+    }
+    if (strncmp(start, "false", 5) == 0) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
 
 // ---- SPIFFS Initialization ----
 
@@ -121,6 +171,121 @@ static esp_err_t handle_api_status(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t handle_api_ota(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        char buf[512];
+        int len = portal_ota_serialize_json(buf, sizeof(buf));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, buf, len);
+        return ESP_OK;
+    }
+
+    if (req->method != HTTP_POST) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+
+    char body[256] = {0};
+    int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rcvd <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    char url[192];
+    if (!extract_json_string_field(body, "url", url, sizeof(url))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"missing url\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    if (url[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"invalid url\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    esp_err_t ret = portal_ota_start(url);
+    if (ret != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, "{\"error\":\"ota start failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t handle_api_uplink(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        network_uplink_status_t st = {0};
+        network_get_uplink_status(&st);
+        char buf[320];
+        int len = snprintf(
+            buf,
+            sizeof(buf),
+            "{\"enabled\":%s,\"configured\":%s,\"rootApplied\":%s,"
+            "\"pendingApply\":%s,\"ssid\":\"%s\",\"lastError\":\"%s\",\"updatedMs\":%lu}",
+            st.enabled ? "true" : "false",
+            st.configured ? "true" : "false",
+            st.root_applied ? "true" : "false",
+            st.pending_apply ? "true" : "false",
+            st.ssid,
+            st.last_error,
+            (unsigned long)st.updated_ms);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, buf, len);
+        return ESP_OK;
+    }
+
+    if (req->method != HTTP_POST) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+
+    char body[320] = {0};
+    int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rcvd <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    bool enabled = false;
+    if (!extract_json_bool_field(body, "enabled", &enabled)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"missing enabled\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    char ssid[UPLINK_SSID_MAX_LEN + 1] = {0};
+    char password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
+    if (enabled) {
+        if (!extract_json_string_field(body, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "{\"error\":\"missing ssid\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+        if (!extract_json_string_field(body, "password", password, sizeof(password))) {
+            password[0] = '\0';
+        }
+    }
+
+    esp_err_t ret = network_set_uplink_config(ssid, password, enabled);
+    if (ret != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, "{\"error\":\"uplink apply failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 static esp_err_t handle_captive_redirect(httpd_req_t *req) {
     const esp_netif_ip_info_t *info = portal_get_ip_info();
     char location[48];
@@ -211,6 +376,31 @@ esp_err_t portal_http_start(void) {
         .handler = handle_api_status
     };
     httpd_register_uri_handler(server, &uri_api);
+
+    httpd_uri_t uri_ota_get = {
+        .uri = "/api/ota",
+        .method = HTTP_GET,
+        .handler = handle_api_ota
+    };
+    httpd_uri_t uri_ota_post = {
+        .uri = "/api/ota",
+        .method = HTTP_POST,
+        .handler = handle_api_ota
+    };
+    httpd_uri_t uri_uplink_get = {
+        .uri = "/api/uplink",
+        .method = HTTP_GET,
+        .handler = handle_api_uplink
+    };
+    httpd_uri_t uri_uplink_post = {
+        .uri = "/api/uplink",
+        .method = HTTP_POST,
+        .handler = handle_api_uplink
+    };
+    httpd_register_uri_handler(server, &uri_ota_get);
+    httpd_register_uri_handler(server, &uri_ota_post);
+    httpd_register_uri_handler(server, &uri_uplink_get);
+    httpd_register_uri_handler(server, &uri_uplink_post);
     
     httpd_uri_t uri_ws = {
         .uri = "/ws",

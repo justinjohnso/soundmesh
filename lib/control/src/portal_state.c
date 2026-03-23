@@ -1,5 +1,6 @@
 #include "control/portal_state.h"
 #include "control/usb_portal.h"
+#include "control/serial_dashboard.h"
 #include "audio/adf_pipeline.h"
 #include "config/build.h"
 #include <esp_log.h>
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 
 static const char *TAG = "portal_state";
+static char s_monitor_json[4096];
 
 static portal_state_t state;
 static bool s_core0_load_valid = false;
@@ -284,11 +286,11 @@ static void mac_to_str(const uint8_t *mac, char *str) {
 
 static const char *portal_build_label(void) {
 #if defined(CONFIG_COMBO_BUILD)
-    return "COMBO";
+    return "SRC";
 #elif defined(CONFIG_TX_BUILD)
-    return "TX";
+    return "SRC";
 #elif defined(CONFIG_RX_BUILD)
-    return "RX";
+    return "OUT";
 #else
     return "UNKNOWN";
 #endif
@@ -459,7 +461,52 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
             n->stale ? "true" : "false");
     }
     
-    off += snprintf(buf + off, buf_size - off, "]}");
+    off += snprintf(buf + off, buf_size - off, "]");
+
+    if (off < (int)buf_size - 64) {
+        int mon_len = dashboard_serialize_recent_json(s_monitor_json, sizeof(s_monitor_json));
+        if (mon_len > 12) {
+            const char *payload = strchr(s_monitor_json, ':');
+            if (payload) {
+                payload++;  // points at '['
+                const char *end = strrchr(payload, '}');
+                if (end && end > payload) {
+                    size_t arr_len = (size_t)(end - payload);
+                    if (arr_len > buf_size - (size_t)off - 16) {
+                        arr_len = buf_size - (size_t)off - 16;
+                    }
+                    off += snprintf(buf + off, buf_size - off, ",\"monitor\":");
+                    memcpy(buf + off, payload, arr_len);
+                    off += (int)arr_len;
+                    buf[off] = '\0';
+                }
+            }
+        }
+    }
+
+    if (off < (int)buf_size - 64) {
+        off += snprintf(buf + off, buf_size - off, ",\"ota\":{\"enabled\":true,\"mode\":\"https\"}");
+    }
+
+    if (off < (int)buf_size - 196) {
+        network_uplink_status_t uplink = {0};
+        if (network_get_uplink_status(&uplink) == ESP_OK) {
+            off += snprintf(
+                buf + off,
+                buf_size - off,
+                ",\"uplink\":{\"enabled\":%s,\"configured\":%s,\"rootApplied\":%s,"
+                "\"pendingApply\":%s,\"ssid\":\"%s\",\"lastError\":\"%s\",\"updatedMs\":%lu}",
+                uplink.enabled ? "true" : "false",
+                uplink.configured ? "true" : "false",
+                uplink.root_applied ? "true" : "false",
+                uplink.pending_apply ? "true" : "false",
+                uplink.ssid,
+                uplink.last_error,
+                (unsigned long)uplink.updated_ms);
+        }
+    }
+
+    off += snprintf(buf + off, buf_size - off, "}");
     
     return off;
 }

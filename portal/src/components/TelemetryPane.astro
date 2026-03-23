@@ -10,4 +10,21 @@
     <div id="selected-node-empty" class="muted">Tap a node in topology to inspect details.</div>
     <div id="selected-node-details" class="details"></div>
   </div>
+  <div class="detail-block monitor-block">
+    <div class="label">Monitor Output</div>
+    <div id="monitor-empty" class="muted">Waiting for monitor stream...</div>
+    <pre id="monitor-output" class="monitor-output" aria-label="Portal monitor output"></pre>
+  </div>
+  <div class="detail-block uplink-block">
+    <div class="label">Wi-Fi Uplink</div>
+    <div class="uplink-controls">
+      <input id="uplink-ssid" class="uplink-input" type="text" maxlength="32" placeholder="SSID" />
+      <input id="uplink-password" class="uplink-input" type="password" maxlength="64" placeholder="Password (optional)" />
+      <div class="uplink-actions">
+        <button id="uplink-apply" class="uplink-btn" type="button">Apply Uplink</button>
+        <button id="uplink-clear" class="uplink-btn uplink-btn-secondary" type="button">Clear</button>
+      </div>
+      <div id="uplink-status" class="muted">Uplink disabled</div>
+    </div>
+  </div>
 </section>

@@ -42,11 +42,22 @@ pio run -e rx -t upload --upload-port /dev/cu.usbmodem211201
 pio run -e rx -t upload --upload-port /dev/cu.usbmodem211301
 ```
 
+Upload portal web assets (SPIFFS) after firmware changes:
+
+```bash
+pio run -e tx -t uploadfs
+pio run -e rx -t uploadfs
+pio run -e combo -t uploadfs
+```
+
 ## Runtime model
 
 - Audio tasks run on Core 1 (`APP_CPU`) for timing stability.
 - Mesh/network tasks run on Core 0 (`PRO_CPU`) with Wi-Fi stack.
 - RX playback uses jitter prefill and bounded concealment to smooth burst loss.
+- USB portal runs on SRC and OUT nodes via TinyUSB NCM with per-node unique USB subnet.
+- Portal now includes a monitor-output pane so operational logs remain visible without USB serial.
+- Portal exposes Wi-Fi uplink control (`/api/uplink`) so one node can set root router credentials and propagate network-wide sync.
 
 ## Core configuration
 
@@ -79,3 +90,35 @@ pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
 For current architecture and operating conventions, see `AGENTS.md`.
+
+## OTA workflow
+
+Portal exposes OTA control at `POST /api/ota` with payload:
+
+```json
+{"url":"https://your-host/path/firmware.bin"}
+```
+
+Notes:
+- OTA requires HTTPS URL and trusted certificate chain (cert bundle enabled).
+- In portal UI, use `Ctrl/⌘ + Shift + U` to open OTA prompt.
+- Keep at least one known-good node/firmware pair before rolling OTA to all nodes.
+
+## Uplink (piggyback Wi-Fi) workflow
+
+Portal exposes root-managed uplink control at `POST /api/uplink` with payload:
+
+```json
+{"enabled":true,"ssid":"YourNetwork","password":"YourPassword"}
+```
+
+Disable/clear uplink:
+
+```json
+{"enabled":false}
+```
+
+Notes:
+- Root applies router config with `esp_mesh_set_router()` and broadcasts sync to descendants.
+- OUT nodes request sync after parent connection and surface status in portal (`enabled`, `rootApplied`, `pendingApply`, `lastError`).
+- Credentials are transported within the mesh control plane; keep testing on trusted local networks.

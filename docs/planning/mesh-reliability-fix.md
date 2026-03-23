@@ -4,6 +4,131 @@
 **Status:** Ongoing - Root Cause Reframed (Validated with Multi-Node Field Tests)  
 **Author:** Copilot Analysis
 
+## Latest Validation Cycle (2026-03-23, root-cause architecture pass)
+
+### Resolution cycle (2026-03-23, close-range RF stabilization)
+
+#### Key root-cause shift
+- In this physical setup (all nodes within a couple feet), the dominant failure was near-field RF saturation / auth instability, not root send drops.
+- Evidence before fix:
+  - Root often held only 2 descendants.
+  - OUT1/OUT3 showed repeated parent disconnects with `AUTH_EXPIRE` dominant.
+  - Root audio transport stayed clean (`Mesh TX GROUP` drops at 0.0%), proving downstream association was the weak link.
+
+#### Changes implemented
+- Added close-range RF transmit-power cap:
+  - `WIFI_TX_POWER_QDBM=52` (13 dBm) in `lib/config/include/config/build.h`.
+  - Applied at runtime with `esp_wifi_set_max_tx_power()` in `lib/network/src/mesh_net.c`.
+- Kept flat close-range topology:
+  - `MESH_MAX_LAYER=2`, `MESH_XON_QSIZE=64`.
+- Added churn observability fields in heartbeat payload:
+  - `parent_conn_count`, `parent_disc_count`, `auth_expire_count`, `no_parent_count`.
+- Reduced false playback underruns from scheduler jitter:
+  - small grace wait before declaring underrun in `rx_playback_task`.
+- Increased RX burst tolerance:
+  - `OPUS_BUFFER_FRAMES: 10 -> 14`
+  - `JITTER_PREFILL_FRAMES: 12 -> 14`
+
+#### Validation (all firmware rebuilt + reflashed to COMBO + 3 OUT)
+- 240s soak after TX-power cap:
+  - Root: descendants `min=max=last=3`, TX drops `0.0%`.
+  - OUT1/OUT2/OUT3: `parent_disc=0`, `AUTH_EXPIRE=0`, `NO_AP_FOUND=0`.
+- 360s extended soak:
+  - Root: descendants stable at `3` for full run, TX drops `0.0%`.
+  - All OUTs: no parent disconnect/auth churn events.
+- Final 240s + 120s verification runs:
+  - Descendants remained stable at 3.
+  - Root TX drops remained 0.0%.
+  - Remaining issue is reduced to occasional playback underruns (short jitter events), not mesh join instability.
+
+#### Outcome
+- **Three-OUT connectivity blocker resolved** in the tested environment.
+- Root now correctly reports all descendants consistently.
+- Remaining quality work is now purely playback smoothness polish (underrun elimination), not topology/auth collapse.
+
+### Follow-up cycle (2026-03-23, control-plane shaping + soak)
+
+#### Change implemented
+- Reduced avoidable root control-plane airtime during streaming in `lib/network/src/mesh_net.c`:
+  - Root now skips root→descendant heartbeat fanout in `send_heartbeat()`.
+  - Root now skips stream-announcement fanout in `send_stream_announcement()`.
+- Rationale: RX state already keys off audio-frame arrival; these root fanouts were not required for playback and added extra P2P traffic pressure.
+
+#### Build / deploy
+- Rebuilt all environments successfully: `tx`, `rx`, `combo`.
+- Reflashed COMBO root + all three OUT nodes.
+
+#### Post-flash results
+- 120s OUT-only run:
+  - No `AUTH_EXPIRE` / `NO_AP_FOUND` on any OUT.
+  - OUT1 still showed parent churn (`parent_disc=6`, `state_changes=15`) and underruns.
+  - OUT2/OUT3 stable connectivity but still occasional underruns; all nodes still hit `buf=0%` at times.
+- 240s 4-node soak (root + 3 OUT):
+  - Root `Mesh TX GROUP`: `drops=0.0%` throughout sampled windows.
+  - Root descendant count stayed at `2` in this run (`descendants_min=max=last=2`), with no routing-table change events.
+  - OUT1 remained the unstable branch (`parent_disc=24`) while OUT2/OUT3 had no parent disconnects.
+  - All OUT nodes still recorded underruns and periodic `buf_min=0%` starvation.
+
+#### Updated root-cause read
+- Control-plane shaping reduced non-essential traffic and removed one architectural pressure source.
+- Remaining dominant issue is not root send-queue overflow; it is branch/path instability plus downstream delivery jitter (especially OUT1) while root effectively serves only two descendants in this run.
+- This is still architectural: transport looks healthy at root, but end-to-end mesh membership/routing stability is the blocker.
+
+#### Next high-leverage steps
+1. Add explicit per-node association/churn counters into shared telemetry (root view + OUT serial), then correlate churn onset with underruns.
+2. Investigate why root stayed at 2 descendants in the soak despite 3 OUT nodes flashed/active (join/membership visibility issue).
+3. Add lightweight playback target-fill control (hold near mid-buffer) to reduce repeated `buf=0%` excursions under jitter spikes.
+4. Keep non-audio control-plane traffic minimized during active stream windows.
+
+### Root-cause findings (updated)
+- The dominant instability is still **mesh association churn on one branch** (AUTH_EXPIRE / NO_AP_FOUND loops), not encoder/decoder CPU saturation.
+- `Mesh TX GROUP` on root remains `drops=0.0%` in sampled windows, so the biggest user-audible failure mode is not root queue overflow.
+- RX stutter maps to two different mechanisms:
+  - intermittent buffer starvation under latency spikes (buffer hits `0%`)
+  - complete branch collapse when a node enters auth-expire loops.
+- Flat topology (`max_layer=2`) conflicted with self-healing goals and reduced join resilience.
+
+### Changes implemented this cycle
+- Enabled adaptive multi-hop routing:
+  - `esp_mesh_set_max_layer(6)` in `lib/network/src/mesh_net.c`
+- Added Opus resilience tuning:
+  - `OPUS_SET_INBAND_FEC(1)` and `OPUS_SET_PACKET_LOSS_PERC(8)`
+  - single-gap path now requests FEC decode on next frame; multi-gap still uses bounded PLC markers.
+- Improved underrun behavior in playback task:
+  - on underrun, output last-good PCM frame instead of hard silence to reduce audible click/drop artifacts.
+- Reduced aggressive RX self-heal timing that could induce churn:
+  - prolonged starvation rejoin threshold from 20s/60s cadence to 60s/180s.
+- Increased association expiry window:
+  - `MESH_AP_ASSOC_EXPIRE_S: 30 -> 90` to reduce auth churn on relay links.
+
+### Experimental rollback from this cycle
+- Tested channel move `MESH_CHANNEL 6 -> 11`.
+- Result: broad regression (higher sustained loss on multiple OUT nodes, persistent heavy-loss windows).
+- Action: reverted back to channel 6 (best-known baseline in this environment).
+
+### What improved
+- With adaptive topology enabled, one OUT branch showed substantial windows near ~0.4–1.3% loss and stable stream continuity compared to prior collapse behavior.
+- Root visibility remained correct for descendant counting (`route_table`/children events).
+
+### What remains unresolved
+- One OUT still intermittently enters prolonged AUTH_EXPIRE loops and can collapse audio completely for long windows.
+- Even on healthy links, periodic latency spikes still push buffer to 0%, causing occasional audible artifacts despite concealment.
+
+### Current best-known firmware posture
+- GROUP multicast fanout
+- `MESH_FRAMES_PER_PACKET=2`
+- `OPUS_BITRATE=24000`
+- adaptive topology enabled (`max_layer=6`)
+- Opus FEC + PLC + last-good-frame underrun concealment
+- channel 6 (reverted from failed channel 11 test)
+
+### Next root-cause actions (not yet implemented)
+1. Add per-node association telemetry counters to portal/serial (auth-expire rate, reconnect intervals) to identify which branch is unstable earliest.
+2. Gate non-audio control-plane traffic during active stream windows (heartbeat/diagnostic throttling) to minimize contention during peaks.
+3. Add bounded jitter target control (keep playback buffer around mid-fill rather than drift to 0/100 swings).
+4. Validate with physical separation + battery-only power test to rule out USB-host RF/noise coupling side-effects.
+
+
 ## Latest Validation Cycle (2026-03-22, architecture stabilization pass)
 
 ### What was changed

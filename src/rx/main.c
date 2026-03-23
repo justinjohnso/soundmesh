@@ -435,9 +435,9 @@ void app_main(void) {
             network_is_connected() &&
             !status.receiving_audio &&
             current_state == RX_STATE_WAITING_FOR_STREAM &&
-            status.state_elapsed_s >= 20 &&
-            (now_ms - last_stream_rx_ms) >= 20000 &&
-            (now_ms - last_rejoin_attempt_ms) >= 60000) {
+            status.state_elapsed_s >= 60 &&
+            (now_ms - last_stream_rx_ms) >= 60000 &&
+            (now_ms - last_rejoin_attempt_ms) >= 180000) {
             ESP_LOGW(TAG, "No stream for %lus while connected, triggering mesh rejoin",
                      (unsigned long)status.state_elapsed_s);
             if (network_trigger_rejoin() == ESP_OK) {

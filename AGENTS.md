@@ -25,6 +25,17 @@ After any code change, confirm all three environments compile:
 pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
+### Run Tests
+Run native Unity unit tests for transport/frame parsing and sequence-gap tracking:
+```bash
+pio test -e native
+```
+
+Recommended full validation:
+```bash
+pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
+```
+
 ## Project Goal
 
 Transmit audio wirelessly from a TX node to one or more RX nodes over ESP-WIFI-MESH.
@@ -45,7 +56,6 @@ Handles all audio capture, codec, and playback. Never calls network APIs directl
 | `adf_pipeline.c` | Main pipeline orchestrator. TX: capture→encode→mesh. RX: mesh→decode→playback |
 | `es8388_audio.c` | ES8388 codec driver (I2C control + I2S audio). Primary input for TX/COMBO |
 | `i2s_audio.c` | UDA1334 I2S DAC output driver (RX without ES8388) |
-| `opus_codec.c` | Opus encode/decode wrappers |
 | `ring_buffer.c` | FreeRTOS ringbuffer wrapper with event-driven consumer notifications |
 | `tone_gen.c` | 440Hz sine wave test tone generator |
 | `usb_audio.c` | USB audio input (stub — future feature) |

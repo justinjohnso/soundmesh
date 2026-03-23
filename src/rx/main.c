@@ -5,6 +5,8 @@
  * Uses ESP-ADF pipeline with Opus decoding
  */
 
+#if defined(CONFIG_RX_BUILD)
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
@@ -451,3 +453,5 @@ void app_main(void) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+
+#endif  // CONFIG_RX_BUILD

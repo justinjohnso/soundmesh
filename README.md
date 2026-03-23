@@ -56,7 +56,7 @@ pio run -e combo -t uploadfs
 - Audio tasks run on Core 1 (`APP_CPU`) for timing stability.
 - Mesh/network tasks run on Core 0 (`PRO_CPU`) with Wi-Fi stack.
 - RX playback uses jitter prefill and bounded concealment to smooth burst loss.
-- USB portal runs on SRC and OUT nodes via TinyUSB NCM with per-node unique USB subnet.
+- USB portal is currently enabled for SRC/COMBO only (OUT remains disabled during phased recovery rollout).
 - Portal now includes a monitor-output pane so operational logs remain visible without USB serial.
 - Portal exposes Wi-Fi uplink control (`/api/uplink`) so one node can set root router credentials and propagate network-wide sync.
 

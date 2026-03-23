@@ -164,7 +164,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
     status.audio_active = false;
 
-#if ENABLE_USB_PORTAL_NETWORK
+#if ENABLE_SRC_USB_PORTAL_NETWORK
     // Initialize portal (USB networking + web UI) — after audio pipeline
     esp_err_t portal_err = portal_init();
     if (portal_err != ESP_OK) {

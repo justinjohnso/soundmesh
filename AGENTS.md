@@ -305,9 +305,12 @@ soundmesh/
 ├── components/
 │   └── esp-opus/              # Opus codec component (git submodule)
 ├── docs/
-│   ├── planning/              # Active planning + audits
-│   ├── posts/                 # Development blog posts
-│   └── progress/              # Fix documentation
+│   ├── roadmap/               # Canonical execution roadmap
+│   ├── architecture/          # Active architecture references
+│   ├── audits/                # Time-bounded audit packets
+│   ├── operations/            # Runbooks/checklists
+│   ├── quality/               # Testing/SLO/security quality docs
+│   └── history/               # Archived posts/progress/superseded plans
 ├── platformio.ini             # Build environments (tx, rx, combo)
 ├── partitions.csv             # Flash partition table
 ├── sdkconfig.shared.defaults  # Common ESP-IDF config
@@ -343,3 +346,13 @@ soundmesh/
 4. **Superseded handling:** if a doc is replaced, mark it as superseded at the top and point to the canonical replacement.
 5. **Anti-clutter rule:** avoid creating one-off planning docs when updating an existing canonical doc is sufficient.
 6. **Restructure direction:** keep active docs easy to scan; aggressively archive non-canonical materials during docs cleanup passes.
+
+## Git Workflow & Branch Hygiene (Mandatory)
+
+1. **No direct feature work on `main`:** start every implementation in a dedicated branch.
+2. **Use worktrees for active efforts:** each significant task gets its own `git worktree` + branch pair.
+3. **Fleet/parallel rule:** if running multiple workflows in parallel ("fleet"), each workflow must run in a separate worktree/branch.
+4. **Commit as you go:** create small, logical commits at each stable milestone (working build/tests for that slice), not one large end-of-session commit.
+5. **Keep working trees clean:** before context-switching, either commit, or explicitly stash with a clear label.
+6. **Merge readiness gate:** merge to `main` only after relevant checks pass (`pio test -e native` and `pio run -e tx && pio run -e rx && pio run -e combo` unless docs-only change).
+7. **PR-first integration:** prefer merge via PR (even solo) to preserve review history and rollback clarity.

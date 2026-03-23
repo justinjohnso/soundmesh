@@ -4,6 +4,39 @@
 **Status:** Ongoing - Root Cause Reframed (Validated with Multi-Node Field Tests)  
 **Author:** Copilot Analysis
 
+## Latest Validation Cycle (2026-03-22, architecture stabilization pass)
+
+### What was changed
+- Kept flat topology (`max_layer=2`) and GROUP multicast fanout.
+- Reduced transport pressure with balanced batching: `MESH_FRAMES_PER_PACKET=2` (25 pps).
+- Reduced bitrate to `OPUS_BITRATE=24000` for lower airtime.
+- Increased RX resilience: `JITTER_PREFILL_FRAMES=6`, `JITTER_BUFFER_FRAMES=12`.
+- Added packet-loss concealment (PLC) path in RX pipeline:
+  - On sequence gaps, insert up to `RX_PLC_MAX_FRAMES_PER_GAP` synthetic PLC frames.
+  - Decode task handles zero-length frames via `opus_decode(NULL, 0, ...)`.
+- Added routing-table add/remove event handling so root node count reflects full descendants.
+
+### Live validation (COMBO + 3 OUT, all flashed and monitored)
+- **SRC/COMBO**
+  - Shows `Nodes:3` consistently (descendant count now correct).
+  - `Mesh TX GROUP ... drops=0 (0.0%)`.
+  - TX rate stabilized around ~30-31 kbps at 24 kbps Opus + batch=2.
+  - Local ES8388 path still healthy (`I2S TX writes` continuous, no zero-byte writes).
+- **OUT1**
+  - Loss improved to ~2.2-2.4% (down from prior ~7-11% and much higher historical windows).
+  - Buffer now generally healthy (often >35%, frequently 75-100%).
+- **OUT2**
+  - Loss improved to ~1.7-2.0%.
+  - Sustained playback with no persistent starvation pattern.
+- **OUT3**
+  - Loss improved to ~2.4-3.2%.
+  - Occasional short underrun events remain, but no long collapse windows.
+
+### Big-picture root-cause update
+- This confirms the dominant issue was architectural transport pressure (packet rate + airtime + burst-loss sensitivity), not a single decoder bug.
+- The new stack (GROUP + moderate batching + lower bitrate + deeper jitter + PLC) addresses root causes, not only symptoms.
+- Residual `reason:201` root logs persist (ESP-MESH control-plane behavior), but are no longer correlating with severe playback collapse in the observed windows.
+
 ## Latest Validation Cycle (2026-03-21, RX rejoin self-heal deployment)
 
 ### What was deployed

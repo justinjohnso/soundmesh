@@ -86,6 +86,13 @@ typedef struct {
 static recent_frame_t dedupe_cache[DEDUPE_CACHE_SIZE];
 static int dedupe_index = 0;
 
+// Audio multicast group address - all RX nodes subscribe to this group
+// This allows root to send ONE packet that all RX nodes receive
+// Format: fixed prefix 01:00:5E for multicast, plus identifier bytes
+static const mesh_addr_t audio_multicast_group = {
+    .addr = {0x01, 0x00, 0x5E, 'A', 'U', 'D'}  // Audio multicast group
+};
+
 // Convert string MESH_ID to 6-byte mesh_addr_t with readable encoding
 static void mesh_id_from_string(const char *str, uint8_t *mesh_id) {
     // Encode string as truncated ASCII bytes for partial readability
@@ -288,6 +295,16 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
         case MESH_EVENT_CHILD_DISCONNECTED: {
             int new_count = esp_mesh_get_routing_table_size();
             ESP_LOGI(TAG, "Child disconnected (routing table: %d)", new_count);
+            mesh_children_count = new_count;
+            break;
+        }
+        
+        case MESH_EVENT_ROUTING_TABLE_ADD:
+        case MESH_EVENT_ROUTING_TABLE_REMOVE: {
+            // These events fire when any descendant (not just direct child) joins/leaves
+            int new_count = esp_mesh_get_routing_table_size();
+            ESP_LOGI(TAG, "Routing table changed: %d entries (descendants: %d)", 
+                     new_count, new_count > 0 ? new_count - 1 : 0);
             mesh_children_count = new_count;
             break;
         }
@@ -755,8 +772,11 @@ esp_err_t network_init_mesh(void) {
     // select_parent=true ensures RX immediately begins scanning for the root
     ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_RX));
     
-    // Set maximum layer depth
-    ESP_ERROR_CHECK(esp_mesh_set_max_layer(6));
+    // Set maximum layer depth to 2 (root + direct children only)
+    // This forces all RX nodes to connect directly to root, preventing
+    // multi-hop relay when devices are physically close together.
+    // Multi-hop adds latency and creates relay bottlenecks.
+    ESP_ERROR_CHECK(esp_mesh_set_max_layer(2));
     
     // Increase mesh queue sizes for multi-node reliability
     // Default RX queue is 32, which backs up with 3+ nodes at 25pps each
@@ -795,6 +815,17 @@ esp_err_t network_init_mesh(void) {
       if (my_node_role == NODE_ROLE_TX) {
           esp_wifi_scan_stop();
           ESP_LOGI(TAG, "TX/COMBO: stopped startup scanning");
+      }
+      
+      // Register for audio multicast group on RX nodes
+      // This allows receiving group-addressed packets from root
+      if (my_node_role == NODE_ROLE_RX) {
+          esp_err_t grp_err = esp_mesh_set_group_id(&audio_multicast_group, 1);
+          if (grp_err == ESP_OK) {
+              ESP_LOGI(TAG, "RX: subscribed to audio multicast group");
+          } else {
+              ESP_LOGW(TAG, "RX: failed to subscribe to multicast group: %s", esp_err_to_name(grp_err));
+          }
       }
       
       ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
@@ -954,41 +985,21 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
             return ESP_ERR_MESH_NO_ROUTE_FOUND;
         }
 
-        // Standalone mesh fanout: use explicit P2P sends to each descendant.
-        // FROMDS is for external DS/router path and introduces avoidable root-side churn
-        // in this standalone topology.
-        int sent_ok = 0;
-        int sent_qfull = 0;
-        esp_err_t first_err = ESP_OK;
-        for (int i = 0; i < route_table_size; i++) {
-            if (memcmp(route_table[i].addr, my_sta_mac, 6) == 0) {
-                continue;
-            }
-            esp_err_t perr = esp_mesh_send(&route_table[i], &mesh_data,
-                                           MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
-            if (perr == ESP_OK) {
-                sent_ok++;
-            } else {
-                if (perr == ESP_ERR_MESH_QUEUE_FULL) {
-                    sent_qfull++;
-                }
-                if (first_err == ESP_OK) {
-                    first_err = perr;
-                }
-            }
+        // Use GROUP multicast for audio - ONE send to all subscribed RX nodes
+        // This dramatically reduces airtime vs per-child P2P sends (N→1 packets)
+        // RX nodes must have registered for audio_multicast_group at init
+        err = esp_mesh_send((mesh_addr_t *)&audio_multicast_group, &mesh_data,
+                            MESH_DATA_GROUP | MESH_DATA_NONBLOCK, NULL, 0);
+        if (err == ESP_OK) {
+            total_sent++;
+            tx_bytes_counter += len;
+        } else if (err == ESP_ERR_MESH_QUEUE_FULL) {
+            total_drops++;
         }
-        if (sent_ok > 0) {
-            total_sent += sent_ok;
-            tx_bytes_counter += (uint32_t)(sent_ok * len);
-            err = ESP_OK;
-        } else {
-            err = (first_err != ESP_OK) ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND;
-        }
-        total_drops += sent_qfull;
 
         if (should_log) {
-            ESP_LOGI(TAG, "Mesh TX P2P: descendants=%d sent_ok=%d qfull=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
-                     descendant_count, sent_ok, sent_qfull, esp_err_to_name(err), total_sent, total_drops,
+            ESP_LOGI(TAG, "Mesh TX GROUP: descendants=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
+                     descendant_count, esp_err_to_name(err), total_sent, total_drops,
                      (total_sent + total_drops) > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
         }
     } else {

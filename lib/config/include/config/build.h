@@ -60,14 +60,14 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               16000     // 16 kbps (reduce airtime for multi-node testing)
+#define OPUS_BITRATE               24000     // 24 kbps (lower airtime pressure for multi-node stability)
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage (was 5, overflow)
 
 // Opus frame duration is tied to the pipeline PCM frame duration
 #define OPUS_FRAME_DURATION_MS     AUDIO_FRAME_MS
 
 // Target bytes per Opus frame (for documentation/sizing estimates)
-#define OPUS_TARGET_FRAME_BYTES    ((OPUS_BITRATE * OPUS_FRAME_DURATION_MS) / (8 * 1000))  // ~320
+#define OPUS_TARGET_FRAME_BYTES    ((OPUS_BITRATE * OPUS_FRAME_DURATION_MS) / (8 * 1000))  // ~60 at 24kbps/20ms
 
 // Max Opus frame size with headroom (~320 bytes typical at 64kbps/40ms)
 #define OPUS_MAX_FRAME_BYTES       512
@@ -105,8 +105,13 @@
 #define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
 
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce mesh pps.
-// 20ms frames at 50fps → batch 8 → ~6.25 mesh packets/sec per destination.
-#define MESH_FRAMES_PER_PACKET     6
+// With GROUP multicast: 50fps / N = total mesh packets/sec (no per-child multiply)
+// CRITICAL TRADEOFF:
+//   - Batch 1 → 50 pps, losing 1 packet = 20ms dropout (barely audible)
+//   - Batch 2 → 25 pps, losing 1 packet = 40ms dropout (PLC can mask short gaps)
+//   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
+// For 3+ OUT nodes, batch=2 reduces mesh packet rate while keeping losses concealable.
+#define MESH_FRAMES_PER_PACKET     2
 
 #define STREAM_SILENCE_TIMEOUT_MS  3000
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.
@@ -129,7 +134,8 @@
 // ============================================================================
 
 // Buffer depths in codec frames
-#define PCM_BUFFER_FRAMES          16   // 16 × 20ms = 320ms PCM buffer (absorbs bursty mesh delivery)
+// JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES (validated by static_assert below)
+#define PCM_BUFFER_FRAMES          16   // 16 × 20ms = 320ms PCM buffer (must be >= JITTER_BUFFER_FRAMES)
 #define OPUS_BUFFER_FRAMES         10   // 10 × 20ms = 200ms compressed (cheap in RAM)
 
 // Derived: buffer sizes in bytes
@@ -140,8 +146,13 @@
 #define OPUS_BUFFER_SIZE           (OPUS_BUFFER_ITEM_MAX * OPUS_BUFFER_FRAMES)  // 4112
 
 // Jitter buffer (in codec frames)
-#define JITTER_BUFFER_FRAMES       14   // 14 × 20ms = 280ms max depth for bursty multi-node delivery
-#define JITTER_PREFILL_FRAMES      10   // 10 × 20ms = 200ms startup prefill for stable playback
+// Priority is smooth, uninterrupted playback under multi-node contention.
+// Use a deeper prefill and buffer for resilience; this intentionally increases latency.
+#define JITTER_BUFFER_FRAMES       12   // 12 × 20ms = 240ms max depth
+#define JITTER_PREFILL_FRAMES      6    // 6 × 20ms = 120ms startup prefill
+// Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
+// This prevents long loss bursts from flooding buffers while still smoothing short gaps.
+#define RX_PLC_MAX_FRAMES_PER_GAP  3
 
 // Derived: jitter thresholds in bytes
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)

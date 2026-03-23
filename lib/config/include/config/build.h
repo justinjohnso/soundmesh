@@ -134,7 +134,7 @@
 // - OUT flag gates RX portal startup (kept OFF during current recovery phase).
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
-#define ENABLE_SRC_USB_PORTAL_NETWORK   1
+#define ENABLE_SRC_USB_PORTAL_NETWORK   0
 #define ENABLE_OUT_USB_PORTAL_NETWORK   0
 
 // ============================================================================
@@ -180,7 +180,7 @@
 // TX pipeline tasks
 #define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Includes FFT processing headroom
 // 24KB keeps encode task creation reliable with mesh+portal-linked builds on S3 internal RAM.
-#define ENCODE_TASK_STACK_BYTES      (24 * 1024)  // Opus encoder: 20ms @ 48kHz with practical headroom
+#define ENCODE_TASK_STACK_BYTES      (32 * 1024)  // Recovery baseline stack budget
 
 // RX pipeline tasks
 #define DECODE_TASK_STACK_BYTES      (20 * 1024)  // Includes FFT processing headroom

@@ -8,6 +8,10 @@ idf_component_register(
         "src/ring_buffer.c"
         "src/sequence_tracker.c"
         "src/adf_pipeline.c"
+        "src/adf_pipeline_core.c"
+        "src/adf_pipeline_tx.c"
+        "src/adf_pipeline_rx.c"
+        "src/adf_pipeline_fft.c"
     INCLUDE_DIRS "include"
     REQUIRES driver esp_adc esp-opus
 )

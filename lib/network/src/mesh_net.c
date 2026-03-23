@@ -60,6 +60,8 @@ static uint32_t scan_done_count = 0;    // RX diagnostics: completed scan cycles
 static uint32_t join_fail_count = 0;    // RX diagnostics: parent disconnects before full connect
 static uint32_t auth_expire_count = 0;  // RX diagnostics: auth timeout loop counter
 static uint32_t recovery_restarts = 0;  // RX diagnostics: mesh restart recoveries
+static uint32_t parent_conn_count = 0;  // RX diagnostics: successful parent connected events
+static uint32_t parent_disc_count = 0;  // RX diagnostics: parent disconnected events
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -217,6 +219,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             is_mesh_root_ready = true;  // Child nodes are immediately ready
             mesh_layer = esp_mesh_get_layer();
             auth_expire_count = 0;
+            parent_conn_count++;
             
             ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
             ESP_LOGI(TAG, "Parent BSSID: " MACSTR, MAC2STR(connected->connected.bssid));
@@ -247,6 +250,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
             // race during startup where ROOT_FIXED hasn't fired yet
             if (!esp_mesh_is_root()) {
                 bool was_connected = is_mesh_connected;
+                parent_disc_count++;
                 ESP_LOGW(TAG, "Parent disconnected: reason=%d(%s), was_connected=%d, layer=%d",
                          disconnected->reason,
                          wifi_disconnect_reason_to_str(disconnected->reason),
@@ -720,6 +724,8 @@ esp_err_t network_init_mesh(void) {
     // Use RAM storage to prevent stale NVS WiFi state from blocking mesh join
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_TX_POWER_QDBM));
+    ESP_LOGI(TAG, "WiFi TX power set to %.1f dBm", ((float)WIFI_TX_POWER_QDBM) / 4.0f);
     
     // Initialize mesh
     ESP_ERROR_CHECK(esp_mesh_init());
@@ -772,20 +778,19 @@ esp_err_t network_init_mesh(void) {
     // select_parent=true ensures RX immediately begins scanning for the root
     ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_RX));
     
-    // Set maximum layer depth to 2 (root + direct children only)
-    // This forces all RX nodes to connect directly to root, preventing
-    // multi-hop relay when devices are physically close together.
-    // Multi-hop adds latency and creates relay bottlenecks.
-    ESP_ERROR_CHECK(esp_mesh_set_max_layer(2));
+    // Close-range deployment (all nodes within a couple feet): force flat topology
+    // to avoid parent churn from unnecessary relay selection.
+    ESP_ERROR_CHECK(esp_mesh_set_max_layer(MESH_MAX_LAYER));
     
     // Increase mesh queue sizes for multi-node reliability
     // Default RX queue is 32, which backs up with 3+ nodes at 25pps each
-    ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(64));
+    ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(MESH_XON_QSIZE));
     
     // Keep association expiry long enough for auth/assoc retries under RF churn.
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(MESH_AP_ASSOC_EXPIRE_S));
     
-    ESP_LOGI(TAG, "Mesh tuning: xon_qsize=64, ap_assoc_expire=%us", (unsigned)MESH_AP_ASSOC_EXPIRE_S);
+    ESP_LOGI(TAG, "Mesh tuning: max_layer=%u xon_qsize=%u ap_assoc_expire=%us",
+             (unsigned)MESH_MAX_LAYER, (unsigned)MESH_XON_QSIZE, (unsigned)MESH_AP_ASSOC_EXPIRE_S);
     
     // User Designated Root Node pattern (ESP-IDF official approach)
     // TX/COMBO nodes are always the root - no election, no scanning delay
@@ -835,6 +840,13 @@ esp_err_t network_init_mesh(void) {
 
 // Send heartbeat message to mesh
 static void send_heartbeat(void) {
+    // Control-plane shaping: root->descendant heartbeats are not consumed by RX nodes
+    // and add avoidable P2P airtime while audio is active.
+    // Keep child->root heartbeats (for portal/monitoring), skip root mesh heartbeat fanout.
+    if (is_mesh_root) {
+        return;
+    }
+
     mesh_heartbeat_t heartbeat;
     heartbeat.type = NET_PKT_TYPE_HEARTBEAT;
     heartbeat.role = my_node_role;
@@ -845,6 +857,10 @@ static void send_heartbeat(void) {
     heartbeat.rssi = network_get_rssi();
     heartbeat.stream_active = (is_mesh_connected || is_mesh_root_ready) ? 1 : 0;
     memcpy(heartbeat.self_mac, my_sta_mac, 6);
+    heartbeat.parent_conn_count = htons((uint16_t)(parent_conn_count & 0xFFFF));
+    heartbeat.parent_disc_count = htons((uint16_t)(parent_disc_count & 0xFFFF));
+    heartbeat.auth_expire_count = htons((uint16_t)(auth_expire_count & 0xFFFF));
+    heartbeat.no_parent_count = htons((uint16_t)(no_parent_count & 0xFFFF));
     memcpy(heartbeat.src_id, g_src_id, NETWORK_SRC_ID_LEN);
     if (is_mesh_root) {
         memset(heartbeat.parent_mac, 0, 6);
@@ -856,8 +872,10 @@ static void send_heartbeat(void) {
     hb_count++;
     if ((hb_count % 5) == 1) {
         int rt_size = esp_mesh_get_routing_table_size();
-        ESP_LOGI(TAG, "Heartbeat #%lu: root=%d, connected=%d, route_table=%d, children=%d",
-                 hb_count, is_mesh_root, is_mesh_connected, rt_size, mesh_children_count);
+        ESP_LOGI(TAG, "Heartbeat #%lu: root=%d, connected=%d, route_table=%d, children=%d churn(pc=%lu pd=%lu ae=%lu np=%lu)",
+                 hb_count, is_mesh_root, is_mesh_connected, rt_size, mesh_children_count,
+                 (unsigned long)parent_conn_count, (unsigned long)parent_disc_count,
+                 (unsigned long)auth_expire_count, (unsigned long)no_parent_count);
     }
     
     esp_err_t err = network_send_control((uint8_t *)&heartbeat, sizeof(heartbeat));
@@ -871,7 +889,14 @@ static void send_stream_announcement(void) {
     if (my_node_role != NODE_ROLE_TX) {
         return;  // Only TX/COMBO nodes send stream announcements
     }
-    
+
+    // Stream announcements are currently informational-only on RX and not required
+    // for receive pipeline state transitions (audio packet arrival drives stream state).
+    // Skip announcement traffic to preserve airtime for audio payloads.
+    if (is_mesh_root) {
+        return;
+    }
+
     mesh_stream_announce_t announce;
     announce.type = NET_PKT_TYPE_STREAM_ANNOUNCE;
     announce.stream_id = my_stream_id;

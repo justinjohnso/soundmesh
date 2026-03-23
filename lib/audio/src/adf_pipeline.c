@@ -66,6 +66,7 @@ struct adf_pipeline {
     uint16_t tx_seq;
     uint16_t last_rx_seq;
     bool first_rx_packet;
+    bool pending_fec_recovery;
 
     float fft_bins[FFT_PORTAL_BIN_COUNT];
     bool fft_valid;
@@ -84,6 +85,7 @@ static uint8_t s_encode_opus_frame[OPUS_MAX_FRAME_BYTES];         // 512 bytes (
 static uint8_t s_encode_packet_buffer[NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES];  // ~528 bytes
 static int16_t s_decode_pcm_frame[AUDIO_FRAME_SAMPLES];           // 3840 bytes
 static int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];        // 3840 bytes
+static int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];    // 3840 bytes (underrun concealment)
 static int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];  // 7680 bytes
 static int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];       // 7680 bytes (zero-initialized)
 static float s_fft_window[FFT_ANALYSIS_SIZE];
@@ -357,6 +359,8 @@ static esp_err_t init_opus_encoder(adf_pipeline_handle_t pipeline, uint32_t bitr
     opus_encoder_ctl(pipeline->encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
     opus_encoder_ctl(pipeline->encoder, OPUS_SET_VBR(1));
     opus_encoder_ctl(pipeline->encoder, OPUS_SET_VBR_CONSTRAINT(1));
+    opus_encoder_ctl(pipeline->encoder, OPUS_SET_INBAND_FEC(OPUS_ENABLE_INBAND_FEC));
+    opus_encoder_ctl(pipeline->encoder, OPUS_SET_PACKET_LOSS_PERC(OPUS_EXPECTED_LOSS_PCT));
     
     ESP_LOGI(TAG, "Opus encoder initialized: %luHz, %dch, %lubps, complexity=%d",
              (unsigned long)AUDIO_SAMPLE_RATE, AUDIO_CHANNELS_MONO, (unsigned long)bitrate, complexity);
@@ -378,6 +382,10 @@ static esp_err_t init_opus_decoder(adf_pipeline_handle_t pipeline)
         ESP_LOGE(TAG, "Failed to create Opus decoder: %s", opus_strerror(error));
         return ESP_FAIL;
     }
+
+    // Low-overhead concealment tuning for bursty mesh transport.
+    opus_decoder_ctl(pipeline->decoder, OPUS_SET_GAIN(0));
+    pipeline->pending_fec_recovery = false;
     
     ESP_LOGI(TAG, "Opus decoder initialized: %luHz, %dch",
              (unsigned long)AUDIO_SAMPLE_RATE, AUDIO_CHANNELS_MONO);
@@ -824,15 +832,18 @@ esp_err_t adf_pipeline_feed_opus(adf_pipeline_handle_t pipeline,
             int gap = (int16_t)(seq - expected);
             if (gap > 0 && gap < 100) {
                 pipeline->stats.frames_dropped += gap;
-                // Packet-loss concealment (PLC): synthesize a few missing frames by
-                // inserting tiny "PLC markers" (length=0) into the Opus queue.
-                // Decode task converts these into opus_decode(NULL,0,...) frames.
-                // This smooths short loss bursts without extra network traffic.
-                uint8_t plc_frames = (gap > RX_PLC_MAX_FRAMES_PER_GAP) ? RX_PLC_MAX_FRAMES_PER_GAP : (uint8_t)gap;
-                for (uint8_t i = 0; i < plc_frames; i++) {
-                    uint8_t plc_item[2] = {0, 0};  // zero-length opus payload => PLC
-                    if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
-                        break;
+                // For single-frame gaps, request FEC decode on next received frame.
+                // For longer gaps, inject bounded PLC markers to bridge the burst.
+                if (gap == 1) {
+                    pipeline->pending_fec_recovery = true;
+                } else {
+                    pipeline->pending_fec_recovery = false;
+                    uint8_t plc_frames = (gap > RX_PLC_MAX_FRAMES_PER_GAP) ? RX_PLC_MAX_FRAMES_PER_GAP : (uint8_t)gap;
+                    for (uint8_t i = 0; i < plc_frames; i++) {
+                        uint8_t plc_item[2] = {0, 0};  // zero-length opus payload => PLC
+                        if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
+                            break;
+                        }
                     }
                 }
             }
@@ -929,6 +940,28 @@ static void rx_decode_task(void *arg)
                     0
                 );
             } else {
+                // If exactly one frame was missing, first decode the recovered
+                // (missing) frame from this packet's in-band FEC, then decode
+                // this packet's own current frame.
+                if (pipeline->pending_fec_recovery) {
+                    int fec_samples = opus_decode(
+                        pipeline->decoder,
+                        &item[2],
+                        opus_len,
+                        pcm_frame,
+                        AUDIO_FRAME_SAMPLES,
+                        1
+                    );
+                    if (fec_samples > 0) {
+                        fft_process_frame(pipeline, pcm_frame, (size_t)fec_samples);
+                        size_t fec_bytes = fec_samples * sizeof(int16_t);
+                        if (ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)pcm_frame, fec_bytes) == ESP_OK) {
+                            pipeline->stats.frames_processed++;
+                        } else {
+                            pipeline->stats.frames_dropped++;
+                        }
+                    }
+                }
                 samples_decoded = opus_decode(
                     pipeline->decoder,
                     &item[2],
@@ -937,6 +970,7 @@ static void rx_decode_task(void *arg)
                     AUDIO_FRAME_SAMPLES,
                     0
                 );
+                pipeline->pending_fec_recovery = false;
             }
             
             ring_buffer_return_item(pipeline->opus_buffer, item);
@@ -995,11 +1029,13 @@ static void rx_playback_task(void *arg)
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
     // Use static buffers instead of stack allocation (saves ~19KB stack!)
     int16_t *mono_frame = s_playback_mono_frame;
+    int16_t *last_good_mono = s_playback_last_good_mono;
     int16_t *stereo_frame = s_playback_stereo_frame;
     int16_t *silence = s_playback_silence;  // Already zero-initialized in .bss
     
     bool prefilled = false;
     size_t prefill_bytes = AUDIO_FRAME_BYTES * JITTER_PREFILL_FRAMES;  // Initial prefill
+    uint32_t consecutive_misses = 0;
     
     ESP_LOGI(TAG, "RX playback task started (event-driven), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
@@ -1061,13 +1097,22 @@ static void rx_playback_task(void *arg)
             }
         }
         
-        // Consume up to 2 frames per wake-up to catch up if notifications stacked
-        // (ulTaskNotifyTake returns after first notification, but more may have arrived)
+        // Consume ONE frame per wake-up, let I2S blocking provide natural pacing.
+        // With 2-frame packet batches arriving every ~40ms and I2S blocking for ~20ms per write,
+        // this maintains correct average rate while smoothing timing variance.
         int frames_played = 0;
-        const int max_frames_per_wake = 2;
         
-        while (frames_played < max_frames_per_wake && 
-               ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES) {
+        // Re-check available since we may have looped through prefill
+        available = ring_buffer_available(pipeline->pcm_buffer);
+        
+        // Give the decode task a short grace window before declaring underrun.
+        // This reduces false underruns from task scheduling jitter.
+        if (available < AUDIO_FRAME_BYTES && prefilled) {
+            vTaskDelay(pdMS_TO_TICKS(4));
+            available = ring_buffer_available(pipeline->pcm_buffer);
+        }
+
+        if (available >= AUDIO_FRAME_BYTES) {
             esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)mono_frame, AUDIO_FRAME_BYTES);
             if (ret == ESP_OK) {
                 static uint32_t playback_count = 0;
@@ -1084,6 +1129,7 @@ static void rx_playback_task(void *arg)
                     ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d",
                              playback_count, (int)mono_frame[0], (int)mono_frame[100]);
                 }
+                memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES);
                 
 #if defined(CONFIG_USE_ES8388)
                 for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
@@ -1094,34 +1140,45 @@ static void rx_playback_task(void *arg)
 #else
                 i2s_audio_write_mono_as_stereo(mono_frame, AUDIO_FRAME_SAMPLES);
 #endif
-                frames_played++;
-            } else {
-                break;
+                frames_played = 1;
             }
         }
         
         // Check for underrun only if we played nothing
         if (frames_played == 0 && prefilled) {
             pipeline->stats.buffer_underruns++;
-            prefilled = false;
-            
-            // Recalculate prefill based on current network conditions
+            consecutive_misses++;
+
+            // Recalculate prefill target from current network conditions.
             uint8_t dynamic_frames = network_get_jitter_prefill_frames();
             prefill_bytes = AUDIO_FRAME_BYTES * dynamic_frames;
             
             static uint32_t underrun_count = 0;
             underrun_count++;
             if (underrun_count <= 5 || (underrun_count % 20) == 0) {
-                ESP_LOGW(TAG, "Underrun #%lu - new prefill: %d frames (%zu bytes)", 
-                         underrun_count, dynamic_frames, prefill_bytes);
+                ESP_LOGW(TAG, "Underrun #%lu (miss=%lu) - prefill target: %d frames (%zu bytes)",
+                         underrun_count, (unsigned long)consecutive_misses, dynamic_frames, prefill_bytes);
             }
-            
+
 #if defined(CONFIG_USE_ES8388)
-            es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
+            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                stereo_frame[2 * i]     = last_good_mono[i];
+                stereo_frame[2 * i + 1] = last_good_mono[i];
+            }
+            es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
-            static int16_t silence_mono[AUDIO_FRAME_SAMPLES] = {0};
-            i2s_audio_write_mono_as_stereo(silence_mono, AUDIO_FRAME_SAMPLES);
+            i2s_audio_write_mono_as_stereo(last_good_mono, AUDIO_FRAME_SAMPLES);
 #endif
+
+            // Do not immediately drop out of prefilled mode on a single miss.
+            // This keeps playback clock continuity under short burst jitter.
+            // Re-lock only after sustained starvation.
+            if (consecutive_misses >= 3) {
+                prefilled = false;
+                consecutive_misses = 0;
+            }
+        } else if (frames_played > 0) {
+            consecutive_misses = 0;
         }
         
         pipeline->stats.buffer_fill_percent = 

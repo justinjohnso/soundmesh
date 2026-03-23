@@ -108,6 +108,10 @@ typedef struct __attribute__((packed)) {
 	uint8_t stream_active;  // 1 if currently streaming audio
 	uint8_t parent_mac[6];  // Parent node MAC for topology edges
 	uint8_t self_mac[6];    // Own MAC for identification
+	uint16_t parent_conn_count;   // Child: successful parent connects
+	uint16_t parent_disc_count;   // Child: parent disconnect events
+	uint16_t auth_expire_count;   // Child: auth-expire disconnect events
+	uint16_t no_parent_count;     // Child: no-parent-found events
 	char src_id[NETWORK_SRC_ID_LEN];  // "SRC_A1B2C3"/"OUT_A1B2C3" + '\0'
 } mesh_heartbeat_t;
 

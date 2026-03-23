@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "network/uplink_control.h"
 
 // ============================================================================
 // ESP-WIFI-MESH Network API (v0.1)
@@ -118,6 +119,19 @@ typedef struct __attribute__((packed)) {
 // Portal state callback (for root to collect heartbeats)
 typedef void (*network_heartbeat_callback_t)(const uint8_t *self_mac, const mesh_heartbeat_t *hb);
 esp_err_t network_register_heartbeat_callback(network_heartbeat_callback_t callback);
+
+typedef struct {
+    bool enabled;
+    bool configured;
+    bool root_applied;
+    bool pending_apply;
+    char ssid[UPLINK_SSID_MAX_LEN + 1];
+    char last_error[48];
+    uint32_t updated_ms;
+} network_uplink_status_t;
+
+esp_err_t network_set_uplink_config(const char *ssid, const char *password, bool enabled);
+esp_err_t network_get_uplink_status(network_uplink_status_t *out);
 
 // Stream announcement (sent by TX/COMBO on startup and mode change)
 typedef struct __attribute__((packed)) {

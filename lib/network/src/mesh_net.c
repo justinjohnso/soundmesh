@@ -63,6 +63,16 @@ static uint32_t auth_expire_count = 0;  // RX diagnostics: auth timeout loop cou
 static uint32_t recovery_restarts = 0;  // RX diagnostics: mesh restart recoveries
 static uint32_t parent_conn_count = 0;  // RX diagnostics: successful parent connected events
 static uint32_t parent_disc_count = 0;  // RX diagnostics: parent disconnected events
+static network_uplink_status_t s_uplink = {
+    .enabled = false,
+    .configured = false,
+    .root_applied = false,
+    .pending_apply = false,
+    .ssid = {0},
+    .last_error = {0},
+    .updated_ms = 0
+};
+static char s_uplink_password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
 
 // Task handles for event notifications (set to NULL if not created)
 static TaskHandle_t heartbeat_task_handle = NULL;
@@ -139,6 +149,9 @@ static void send_stream_announcement(void);
 static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
+static void handle_uplink_control(const uplink_ctrl_message_t *msg);
+static esp_err_t apply_uplink_router_config(void);
+static void request_uplink_sync_from_root(void);
 static const char *wifi_disconnect_reason_to_str(uint8_t reason);
 typedef struct {
     uint32_t timestamp;
@@ -197,6 +210,116 @@ static void mark_seen(uint8_t stream_id, uint16_t seq) {
     dedupe_cache[dedupe_index].seq = seq;
     dedupe_cache[dedupe_index].timestamp_ms = esp_timer_get_time() / 1000;
     dedupe_index = (dedupe_index + 1) % DEDUPE_CACHE_SIZE;
+}
+
+static void uplink_set_error(const char *err) {
+    if (!err || !*err) {
+        s_uplink.last_error[0] = '\0';
+        return;
+    }
+    snprintf(s_uplink.last_error, sizeof(s_uplink.last_error), "%s", err);
+}
+
+static esp_err_t apply_uplink_router_config(void) {
+    if (!is_mesh_root) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    mesh_router_t router = {0};
+    if (s_uplink.enabled && s_uplink.configured && s_uplink.ssid[0] != '\0') {
+        size_t ssid_len = strnlen(s_uplink.ssid, UPLINK_SSID_MAX_LEN);
+        router.ssid_len = (uint8_t)ssid_len;
+        memcpy(router.ssid, s_uplink.ssid, ssid_len);
+        memcpy(router.password, s_uplink_password, UPLINK_PASSWORD_MAX_LEN);
+        router.allow_router_switch = true;
+    } else {
+        const char *disabled = "MESHNET_DISABLED";
+        size_t ssid_len = strlen(disabled);
+        router.ssid_len = (uint8_t)ssid_len;
+        memcpy(router.ssid, disabled, ssid_len);
+        router.password[0] = '\0';
+        router.allow_router_switch = false;
+    }
+
+    s_uplink.pending_apply = true;
+    esp_err_t err = esp_mesh_set_router(&router);
+    s_uplink.pending_apply = false;
+    s_uplink.root_applied = (err == ESP_OK);
+    s_uplink.updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    if (err == ESP_OK) {
+        uplink_set_error("");
+    } else {
+        uplink_set_error(esp_err_to_name(err));
+    }
+    return err;
+}
+
+static esp_err_t publish_uplink_sync(uplink_ctrl_subtype_t subtype) {
+    uplink_ctrl_message_t msg = {
+        .subtype = subtype,
+        .enabled = s_uplink.enabled
+    };
+    snprintf(msg.ssid, sizeof(msg.ssid), "%s", s_uplink.ssid);
+    snprintf(msg.password, sizeof(msg.password), "%s", s_uplink_password);
+
+    uplink_ctrl_packet_t pkt;
+    if (!uplink_ctrl_encode(&msg, &pkt)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return network_send_control((const uint8_t *)&pkt, sizeof(pkt));
+}
+
+static void request_uplink_sync_from_root(void) {
+    uplink_ctrl_message_t msg = {
+        .subtype = UPLINK_CTRL_REQUEST_SYNC,
+        .enabled = false
+    };
+    uplink_ctrl_packet_t pkt;
+    if (!uplink_ctrl_encode(&msg, &pkt)) {
+        return;
+    }
+    esp_err_t err = network_send_control((const uint8_t *)&pkt, sizeof(pkt));
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "Uplink sync request skipped: %s", esp_err_to_name(err));
+    }
+}
+
+static void handle_uplink_control(const uplink_ctrl_message_t *msg) {
+    if (!msg) {
+        return;
+    }
+
+    if (msg->subtype == UPLINK_CTRL_REQUEST_SYNC) {
+        if (is_mesh_root) {
+            (void)publish_uplink_sync(UPLINK_CTRL_SYNC);
+        }
+        return;
+    }
+
+    if (msg->subtype == UPLINK_CTRL_CLEAR) {
+        s_uplink.enabled = false;
+        s_uplink.configured = false;
+        s_uplink.ssid[0] = '\0';
+        s_uplink_password[0] = '\0';
+    } else {
+        s_uplink.enabled = msg->enabled;
+        s_uplink.configured = (msg->ssid[0] != '\0');
+        snprintf(s_uplink.ssid, sizeof(s_uplink.ssid), "%s", msg->ssid);
+        snprintf(s_uplink_password, sizeof(s_uplink_password), "%s", msg->password);
+    }
+    s_uplink.updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+    if (is_mesh_root) {
+        esp_err_t err = apply_uplink_router_config();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Uplink apply failed: %s", esp_err_to_name(err));
+        }
+        (void)publish_uplink_sync(UPLINK_CTRL_SYNC);
+    } else {
+        s_uplink.root_applied = false;
+        s_uplink.pending_apply = false;
+        uplink_set_error("");
+    }
 }
 
 // Mesh event handler
@@ -258,6 +381,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "Root connected: scan stopped");
             } else {
                 ESP_LOGI(TAG, "RX connected: preserving startup self-organized config");
+                request_uplink_sync_from_root();
             }
             break;
         }
@@ -343,6 +467,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 
                 // Mark root as ready - mesh AP is automatically configured by the stack
                 is_mesh_root_ready = true;
+                (void)apply_uplink_router_config();
                 ESP_LOGI(TAG, "Root ready: mesh AP broadcasting on channel %d", MESH_CHANNEL);
                 
                 // Notify all waiting tasks - root is ready
@@ -510,6 +635,11 @@ static void mesh_rx_task(void *arg) {
             }
         } else if (first_byte == NET_PKT_TYPE_STREAM_ANNOUNCE) {
             ESP_LOGD(TAG, "Stream announcement received");
+        } else if (first_byte == NET_PKT_TYPE_CONTROL) {
+            uplink_ctrl_message_t uplink_msg;
+            if (uplink_ctrl_decode((const uplink_ctrl_packet_t *)data.data, data.size, &uplink_msg)) {
+                handle_uplink_control(&uplink_msg);
+            }
         } else if (first_byte == NET_FRAME_MAGIC) {
             // Audio frame with full header
             if (data.size < NET_FRAME_HEADER_SIZE_V1) {
@@ -1306,5 +1436,46 @@ esp_err_t network_register_audio_callback(network_audio_callback_t callback) {
 esp_err_t network_register_heartbeat_callback(network_heartbeat_callback_t callback) {
     heartbeat_rx_callback = callback;
     ESP_LOGI(TAG, "Heartbeat callback registered");
+    return ESP_OK;
+}
+
+esp_err_t network_set_uplink_config(const char *ssid, const char *password, bool enabled) {
+    uplink_ctrl_message_t msg = {
+        .subtype = enabled ? UPLINK_CTRL_SET : UPLINK_CTRL_CLEAR,
+        .enabled = enabled
+    };
+
+    if (enabled) {
+        if (!ssid || ssid[0] == '\0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        snprintf(msg.ssid, sizeof(msg.ssid), "%s", ssid);
+        snprintf(msg.password, sizeof(msg.password), "%s", password ? password : "");
+    }
+
+    uplink_ctrl_packet_t pkt;
+    if (!uplink_ctrl_encode(&msg, &pkt)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    handle_uplink_control(&msg);
+    if (!is_mesh_root) {
+        return network_send_control((const uint8_t *)&pkt, sizeof(pkt));
+    }
+    esp_err_t sync_err = publish_uplink_sync(UPLINK_CTRL_SYNC);
+    if (sync_err == ESP_ERR_MESH_NO_ROUTE_FOUND) {
+        return ESP_OK;
+    }
+    return sync_err;
+}
+
+esp_err_t network_get_uplink_status(network_uplink_status_t *out) {
+    if (!out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out = s_uplink;
+    if (is_mesh_root && s_uplink.pending_apply) {
+        out->pending_apply = true;
+    }
     return ESP_OK;
 }

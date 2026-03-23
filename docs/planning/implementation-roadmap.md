@@ -439,7 +439,7 @@ npm run build  # → dist/
 - **MIDI control:** Physical faders/knobs via MIDI USB
 
 ### Network Features
-- **Internet gateway:** One node bridges to home WiFi (remote access)
+- **Internet gateway:** One node bridges to home WiFi (remote access) *(Portal-controlled uplink baseline implemented: `/api/uplink`, root apply via `esp_mesh_set_router`, mesh-wide sync propagation)*
 - **Cloud sync:** MQTT to AWS IoT, remote dashboard
 - **OTA updates:** Firmware upgrades via web UI
 - **Multi-mesh bridging:** Link multiple mesh networks

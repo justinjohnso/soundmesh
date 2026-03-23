@@ -1,3 +1,4 @@
 dependencies:
   espressif/esp_tinyusb: "^1.4.0"
   78/esp-opus: "^1.0.5"
+  espressif/esp_https_ota: "^1.0.1"

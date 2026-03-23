@@ -132,7 +132,7 @@
 // USB networking (CDC-NCM)
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
-#define ENABLE_USB_PORTAL_NETWORK   0
+#define ENABLE_USB_PORTAL_NETWORK   1
 
 // ============================================================================
 // Buffer Configuration

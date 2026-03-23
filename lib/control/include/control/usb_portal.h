@@ -5,7 +5,8 @@
 #include <stdbool.h>
 
 // Initialize the portal subsystem (USB networking + HTTP + WebSocket + DNS)
-// Only call on TX/COMBO builds after mesh is ready.
+// Safe to call on SRC/OUT builds after network init; returns ESP_ERR_NOT_SUPPORTED
+// only if TinyUSB/portal support is not compiled for the active target.
 esp_err_t portal_init(void);
 
 // Check if portal is running

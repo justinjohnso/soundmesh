@@ -11,7 +11,7 @@
 #include <freertos/task.h>
 #include <string.h>
 
-#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)
+#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD) || defined(CONFIG_RX_BUILD)
 
 #include "network/mesh_net.h"
 
@@ -280,7 +280,7 @@ const esp_netif_ip_info_t *portal_get_ip_info(void) {
     return &s_portal_ip;
 }
 
-#else /* RX build — portal not supported */
+#else /* Build without portal support */
 
 esp_err_t portal_init(void) {
     return ESP_ERR_NOT_SUPPORTED;

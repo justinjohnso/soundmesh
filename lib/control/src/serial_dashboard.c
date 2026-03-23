@@ -5,12 +5,43 @@
 #include <string.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #define W DASH_WIDTH
 #define DIVIDER "================================================"
 
 static uint32_t uptime_sec(void) {
     return (uint32_t)(esp_timer_get_time() / 1000000);
+}
+
+static char s_monitor_lines[DASH_MONITOR_HISTORY_MAX][DASH_MONITOR_LINE_MAX];
+static uint32_t s_monitor_seq[DASH_MONITOR_HISTORY_MAX];
+static uint16_t s_monitor_head = 0;
+static uint16_t s_monitor_count = 0;
+static uint32_t s_monitor_next_seq = 1;
+static SemaphoreHandle_t s_monitor_mutex = NULL;
+
+static void dashboard_monitor_push(const char *line) {
+    if (!s_monitor_mutex) {
+        s_monitor_mutex = xSemaphoreCreateMutex();
+    }
+    if (!s_monitor_mutex || !line) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_monitor_mutex, pdMS_TO_TICKS(5)) != pdTRUE) {
+        return;
+    }
+
+    strlcpy(s_monitor_lines[s_monitor_head], line, DASH_MONITOR_LINE_MAX);
+    s_monitor_seq[s_monitor_head] = s_monitor_next_seq++;
+    s_monitor_head = (uint16_t)((s_monitor_head + 1U) % DASH_MONITOR_HISTORY_MAX);
+    if (s_monitor_count < DASH_MONITOR_HISTORY_MAX) {
+        s_monitor_count++;
+    }
+
+    xSemaphoreGive(s_monitor_mutex);
 }
 
 static void print_uptime(char *buf, size_t len) {
@@ -34,9 +65,13 @@ static void print_ram(char *buf, size_t len) {
 }
 
 void dashboard_init(void) {
+    if (!s_monitor_mutex) {
+        s_monitor_mutex = xSemaphoreCreateMutex();
+    }
     printf("\n%s\n", DIVIDER);
     printf("  SoundMesh Serial Dashboard\n");
     printf("%s\n\n", DIVIDER);
+    dashboard_monitor_push("SoundMesh Serial Dashboard started");
     fflush(stdout);
 }
 
@@ -51,6 +86,7 @@ void dashboard_log(const char *fmt, ...) {
     va_end(args);
 
     printf("%s\n", buf);
+    dashboard_monitor_push(buf);
     fflush(stdout);
 }
 
@@ -92,6 +128,54 @@ void dashboard_render_tx(const tx_status_t *status) {
            (unsigned long)get_free_heap_kb());
 
     fflush(stdout);
+}
+
+int dashboard_serialize_recent_json(char *buf, size_t buf_size) {
+    if (!buf || buf_size < 32) {
+        return 0;
+    }
+    if (!s_monitor_mutex) {
+        s_monitor_mutex = xSemaphoreCreateMutex();
+    }
+
+    int off = snprintf(buf, buf_size, "{\"monitor\":[");
+    if (off < 0 || off >= (int)buf_size) {
+        return 0;
+    }
+
+    if (!s_monitor_mutex || xSemaphoreTake(s_monitor_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        off += snprintf(buf + off, buf_size - off, "]}");
+        return off;
+    }
+
+    uint16_t count = s_monitor_count;
+    uint16_t start = (uint16_t)((s_monitor_head + DASH_MONITOR_HISTORY_MAX - count) % DASH_MONITOR_HISTORY_MAX);
+
+    for (uint16_t i = 0; i < count && off < (int)buf_size - 32; i++) {
+        uint16_t idx = (uint16_t)((start + i) % DASH_MONITOR_HISTORY_MAX);
+        const char *line = s_monitor_lines[idx];
+        if (i > 0) {
+            off += snprintf(buf + off, buf_size - off, ",");
+        }
+        off += snprintf(buf + off, buf_size - off, "{\"seq\":%lu,\"line\":\"",
+                        (unsigned long)s_monitor_seq[idx]);
+
+        for (const char *p = line; *p && off < (int)buf_size - 8; p++) {
+            if (*p == '"' || *p == '\\') {
+                off += snprintf(buf + off, buf_size - off, "\\%c", *p);
+            } else if ((unsigned char)*p < 0x20) {
+                off += snprintf(buf + off, buf_size - off, " ");
+            } else {
+                buf[off++] = *p;
+                buf[off] = '\0';
+            }
+        }
+        off += snprintf(buf + off, buf_size - off, "\"}");
+    }
+
+    xSemaphoreGive(s_monitor_mutex);
+    off += snprintf(buf + off, buf_size - off, "]}");
+    return off;
 }
 
 void dashboard_render_rx(const rx_status_t *status) {

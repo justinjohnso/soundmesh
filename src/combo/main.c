@@ -5,6 +5,8 @@
  * Uses ESP-ADF pipeline with Opus compression for mesh transmission
  */
 
+#if defined(CONFIG_COMBO_BUILD)
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -125,8 +127,25 @@ void app_main(void) {
     ESP_LOGI(TAG, "Audio pipeline created (heap: %lu bytes remaining)",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-    // Initialize network layer (ESP-WIFI-MESH) - after audio pipeline
-    // WiFi/mesh stack consumes significant heap (~40KB)
+    // Start TX pipeline before mesh init so the encode task can reserve its stack
+    // while contiguous internal RAM is still available.
+    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
+    status.audio_active = false;
+
+#if ENABLE_SRC_USB_PORTAL_NETWORK
+    // Start portal before mesh allocates WiFi/mesh memory so portal can reserve
+    // TinyUSB/HTTP resources without tripping low-heap startup guards.
+    vTaskDelay(pdMS_TO_TICKS(PORTAL_INIT_SETTLE_MS));
+    esp_err_t portal_err = portal_init();
+    if (portal_err != ESP_OK) {
+        ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
+    }
+#else
+    ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
+#endif
+
+    // Initialize network layer (ESP-WIFI-MESH) after pipeline tasks are allocated.
+    // WiFi/mesh stack consumes significant heap (~40KB).
     ESP_LOGI(TAG, "Starting mesh network...");
     ESP_ERROR_CHECK(network_init_mesh());
 
@@ -158,21 +177,6 @@ void app_main(void) {
     ESP_LOGI(TAG, "COMBO STARTED - SRC_ID: %s, Root: %s",
              network_get_src_id(), network_is_root() ? "YES" : "NO");
     dashboard_log("Network ready");
-
-    // Start the TX pipeline BEFORE portal — portal/TinyUSB consumes heap and
-    // can fragment memory, causing the 32KB encode task stack to fail silently.
-    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
-    status.audio_active = false;
-
-#if ENABLE_SRC_USB_PORTAL_NETWORK
-    // Initialize portal (USB networking + web UI) — after audio pipeline
-    esp_err_t portal_err = portal_init();
-    if (portal_err != ESP_OK) {
-        ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
-    }
-#else
-    ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
-#endif
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -241,3 +245,5 @@ void app_main(void) {
         }
     }
 }
+
+#endif  // CONFIG_COMBO_BUILD

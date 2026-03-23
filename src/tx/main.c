@@ -5,6 +5,8 @@
  * No local audio output (use COMBO for headphone monitoring)
  */
 
+#if defined(CONFIG_TX_BUILD)
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -84,10 +86,6 @@ void app_main(void) {
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(buttons_init());
 
-    // Initialize network layer (ESP-WIFI-MESH)
-    ESP_LOGI(TAG, "Starting mesh network...");
-    ESP_ERROR_CHECK(network_init_mesh());
-
     // Initialize audio sources
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
 
@@ -114,6 +112,27 @@ void app_main(void) {
         ESP_LOGE(TAG, "Failed to create TX pipeline");
         return;
     }
+
+    // Start TX pipeline before mesh init so encode task stack allocates while
+    // contiguous internal RAM is still available.
+    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
+    status.audio_active = false;
+
+#if ENABLE_SRC_USB_PORTAL_NETWORK
+    // Start portal before mesh allocates WiFi/mesh memory so portal can reserve
+    // TinyUSB/HTTP resources without tripping low-heap startup guards.
+    vTaskDelay(pdMS_TO_TICKS(PORTAL_INIT_SETTLE_MS));
+    esp_err_t portal_err = portal_init();
+    if (portal_err != ESP_OK) {
+        ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
+    }
+#else
+    ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
+#endif
+
+    // Initialize network layer (ESP-WIFI-MESH) after pipeline task allocation.
+    ESP_LOGI(TAG, "Starting mesh network...");
+    ESP_ERROR_CHECK(network_init_mesh());
 
     // Initialize watchdog
     esp_err_t wdt_err = esp_task_wdt_init(&(esp_task_wdt_config_t){
@@ -143,21 +162,6 @@ void app_main(void) {
     ESP_LOGI(TAG, "TX STARTED - SRC_ID: %s, Root: %s",
              network_get_src_id(), network_is_root() ? "YES" : "NO");
     dashboard_log("Network ready");
-
-    // Start the TX pipeline BEFORE portal — portal/TinyUSB consumes heap and
-    // can fragment memory, causing the 32KB encode task stack to fail silently.
-    ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
-    status.audio_active = false;
-
-#if ENABLE_SRC_USB_PORTAL_NETWORK
-    // Initialize portal (USB networking + web UI) — after audio pipeline
-    esp_err_t portal_err = portal_init();
-    if (portal_err != ESP_OK) {
-        ESP_LOGW(TAG, "Portal init failed: %s (continuing without portal)", esp_err_to_name(portal_err));
-    }
-#else
-    ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
-#endif
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -224,3 +228,5 @@ void app_main(void) {
         }
     }
 }
+
+#endif  // CONFIG_TX_BUILD

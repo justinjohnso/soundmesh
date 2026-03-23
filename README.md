@@ -98,6 +98,15 @@ bash tools/preupload_gate.sh
 
 Do not flash hardware unless this gate passes.
 
+Gate highlights:
+- validates tx/rx/combo build artifacts and emits `.pio/build/preupload_gate_metrics.tsv`
+- enforces conservative role-specific RAM ceilings (TX/COMBO 70%, RX 65%)
+- enforces stack/heap budget floors from `build.h`
+- enforces runtime safety config markers from generated sdkconfig headers
+- preserves historical crash-signature checks
+- fail-closed on portal flags: if enabled, requires approved runtime evidence markers in
+  `docs/operations/runtime-evidence/portal-enable-evidence.env`
+
 For current architecture and operating conventions, see `AGENTS.md`.
 
 ## OTA workflow

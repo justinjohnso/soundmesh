@@ -5,7 +5,7 @@ import gzip
 
 
 ROOT = Path(env["PROJECT_DIR"])
-DIST = ROOT / "portal" / "dist"
+DIST = ROOT / "lib" / "control" / "portal-ui" / "dist"
 DATA = ROOT / "data"
 FILES = ("index.html", "app.js", "app.css")
 
@@ -17,7 +17,7 @@ def should_sync_portal():
 
 def sync_portal_assets():
     if not DIST.exists():
-        print("[portal-sync] portal/dist missing, keeping existing data/ assets")
+        print("[portal-sync] lib/control/portal-ui/dist missing, keeping existing data/ assets")
         return
 
     DATA.mkdir(parents=True, exist_ok=True)
@@ -39,4 +39,3 @@ def sync_portal_assets():
 
 if should_sync_portal():
     sync_portal_assets()
-

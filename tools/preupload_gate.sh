@@ -18,8 +18,26 @@ if grep -q "Flash memory size mismatch detected" "$build_log"; then
 fi
 
 echo "[gate] Checking crash-prone config toggles"
-if grep -q '^#define ENABLE_USB_PORTAL_NETWORK[[:space:]]*1' lib/config/include/config/build.h; then
-  echo "[gate][fail] ENABLE_USB_PORTAL_NETWORK=1 is blocked by crash-recovery gate."
+src_portal_flag="$(grep -E '^#define ENABLE_SRC_USB_PORTAL_NETWORK[[:space:]]+[01]$' lib/config/include/config/build.h | awk '{print $3}')"
+out_portal_flag="$(grep -E '^#define ENABLE_OUT_USB_PORTAL_NETWORK[[:space:]]+[01]$' lib/config/include/config/build.h | awk '{print $3}')"
+
+if [[ -z "${src_portal_flag:-}" || -z "${out_portal_flag:-}" ]]; then
+  echo "[gate][fail] Missing phased portal flags in build.h"
+  exit 1
+fi
+
+if [[ "$src_portal_flag" != "0" && "$src_portal_flag" != "1" ]]; then
+  echo "[gate][fail] ENABLE_SRC_USB_PORTAL_NETWORK must be 0 or 1"
+  exit 1
+fi
+
+if [[ "$out_portal_flag" != "0" && "$out_portal_flag" != "1" ]]; then
+  echo "[gate][fail] ENABLE_OUT_USB_PORTAL_NETWORK must be 0 or 1"
+  exit 1
+fi
+
+if [[ "$out_portal_flag" == "1" ]]; then
+  echo "[gate][fail] ENABLE_OUT_USB_PORTAL_NETWORK=1 is blocked in current rollout phase."
   exit 1
 fi
 
@@ -29,7 +47,7 @@ if grep -q '^CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n' sdkconfig.rx.defaults; then
 fi
 
 if grep -q 'portal_init(' src/rx/main.c; then
-  echo "[gate][fail] RX portal_init path is enabled during crash-recovery mode."
+  echo "[gate][fail] RX portal_init path is enabled while OUT portal flag is blocked."
   exit 1
 fi
 

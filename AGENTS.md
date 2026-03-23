@@ -52,7 +52,7 @@ pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
 ### Portal + OTA Notes
-- USB portal is enabled for SRC and OUT builds (`tx`, `combo`, `rx`) using TinyUSB NCM.
+- USB portal rollout is phased: SRC/COMBO enabled first, OUT disabled until dedicated HIL validation passes.
 - Portal monitor stream is available in UI under "Monitor Output".
 - OTA endpoint: `POST /api/ota` with `{"url":"https://.../firmware.bin"}`.
 - OTA status endpoint: `GET /api/ota`.

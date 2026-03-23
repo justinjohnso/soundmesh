@@ -129,10 +129,13 @@
 #define TX_CONTINUOUS_STREAMING     1
 
 
-// USB networking (CDC-NCM)
+// USB portal rollout toggles (phased re-enable safety controls)
+// - SRC flag gates TX/COMBO portal startup.
+// - OUT flag gates RX portal startup (kept OFF during current recovery phase).
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
-#define ENABLE_USB_PORTAL_NETWORK   0
+#define ENABLE_SRC_USB_PORTAL_NETWORK   1
+#define ENABLE_OUT_USB_PORTAL_NETWORK   0
 
 // ============================================================================
 // Buffer Configuration

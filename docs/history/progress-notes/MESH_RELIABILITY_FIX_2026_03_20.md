@@ -180,7 +180,7 @@
 
 ## Big Picture Analysis
 
-### Original Vision (from docs/planning/mesh-network-architecture.md)
+### Original Vision (from docs/architecture/network.md)
 The system was designed as a **self-healing mesh** with:
 - Automatic root election
 - Multi-hop routing for extended range

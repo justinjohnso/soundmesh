@@ -1,5 +1,7 @@
 # SoundMesh Portal Interface — Implementation Plan
 
+> Status: superseded — see `docs/roadmap/implementation-roadmap.md` for execution priority and `docs/architecture/control.md` for active control-layer reference.
+
 **Date:** March 18, 2026  
 **Status:** MVP Plan  
 **Goal:** USB captive portal providing a "window into the network" with a high-density, three-column telemetry dashboard (Astro-based) for topology, audio analysis, and stream flow visibility
@@ -485,7 +487,7 @@ Auto-reconnect logic in JS with exponential backoff (2s → 4s → 8s → max 30
 ### 4.7 File Structure
 
 ```
-portal/                                     [NEW] — Astro UI source
+lib/control/portal-ui/                      [NEW] — Astro UI source
 ├── src/
 │   ├── pages/
 │   │   └── index.astro                      — Dashboard shell (header/body/footer)
@@ -552,8 +554,8 @@ board_build.spiffs_data_path = data
 
 **Build workflow:**
 ```bash
-# 1. Build web UI (from portal/ directory)
-cd portal
+# 1. Build web UI (from lib/control/portal-ui/ directory)
+cd lib/control/portal-ui
 pnpm install
 pnpm run build               # Astro build -> dist/
 
@@ -609,7 +611,7 @@ All portal tasks on **Core 0** (alongside networking), keeping Core 1 clean for 
 pio run -e tx && pio run -e rx && pio run -e combo
 
 # Flash TX with portal
-cd portal && pnpm install && pnpm run build && pnpm run export:spiffs
+cd lib/control/portal-ui && pnpm install && pnpm run build && pnpm run export:spiffs
 pio run -e tx -t uploadfs
 pio run -e tx -t upload
 
@@ -655,12 +657,12 @@ lib/control/src/usb_portal_dns.c                  — DNS catch-all (UDP/53)
 lib/control/src/portal_http.c                     — HTTP server + static files + captive portal
 lib/control/src/portal_state.c                    — State aggregation + JSON serialization
 lib/control/src/portal_ws.c                       — WebSocket endpoint + 1 Hz push
-portal/src/pages/index.astro                      — Dashboard page shell
-portal/src/components/*.astro                     — Header/panes/footer components
-portal/src/scripts/portal-client.js               — WS client + Canvas draw logic
-portal/src/styles/portal.css                      — TE visual system tokens/styles
-portal/astro.config.mjs                           — Astro build config
-portal/package.json                               — Frontend scripts (build + SPIFFS export)
+lib/control/portal-ui/src/pages/index.astro       — Dashboard page shell
+lib/control/portal-ui/src/components/*.astro      — Header/panes/footer components
+lib/control/portal-ui/src/scripts/portal-client.js — WS client + Canvas draw logic
+lib/control/portal-ui/src/styles/portal.css       — TE visual system tokens/styles
+lib/control/portal-ui/astro.config.mjs            — Astro build config
+lib/control/portal-ui/package.json                — Frontend scripts (build + SPIFFS export)
 ```
 
 ### Modified Files
@@ -687,7 +689,7 @@ src/combo/main.c                                  — Call portal_init() after m
 - **Phase 3: Heartbeat callback** — `network_register_heartbeat_callback()` feeds heartbeats to portal state on root
 - **Phase 2: HTTP server** — `portal_http.c` with SPIFFS static file serving, gzip support, captive portal probe redirects, WebSocket endpoint with 1 Hz push task
 - **Phase 2: DNS catch-all** — `usb_portal_dns.c` responds to all A queries with 10.48.0.1
-- **Phase 4: Web UI prototype** — `portal/` directory includes Canvas 2D prototype with dark theme, demo mode, and animated data flow
+- **Phase 4: Web UI prototype** — `lib/control/portal-ui/` directory includes Canvas 2D prototype with dark theme, demo mode, and animated data flow
 - **Phase 5: Build system** — SPIFFS partition in `partitions.csv`, static asset gzip pipeline to `data/`, all three firmware variants build clean
 - **Phase 5: Conditional compilation** — Portal only initialized on TX/COMBO builds
 

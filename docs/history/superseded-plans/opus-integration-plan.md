@@ -1,5 +1,7 @@
 # ESP-ADF + Opus Integration Plan for MeshNet Audio
 
+> Status: superseded — Opus integration is in place; see `docs/architecture/audio.md` and `docs/roadmap/implementation-roadmap.md`.
+
 **Date:** November 29, 2025  
 **Status:** Implementation Plan  
 **Goal:** Migrate to ESP-ADF with Opus codec for DJ-quality audio over ESP-WIFI-MESH

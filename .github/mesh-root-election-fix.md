@@ -179,4 +179,4 @@ The fix correctly uses the ESP-WIFI-MESH API according to its intended design.
 ## References
 
 - ESP-IDF: [ESP-WIFI-MESH Programming Guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/esp-wifi-mesh.html)
-- Project: [Mesh Network Architecture](../docs/planning/mesh-network-architecture.md)
+- Project: [Mesh Network Architecture](../docs/architecture/network.md)

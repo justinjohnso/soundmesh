@@ -133,6 +133,60 @@ body {
   border-bottom: 1px solid rgba(233, 236, 239, 0.1);
 }
 
+.monitor-block {
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+}
+
+.monitor-output {
+  margin: 0;
+  border: 1px solid rgba(233, 236, 239, 0.16);
+  background: rgba(0, 0, 0, 0.28);
+  color: #bdf9aa;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.uplink-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uplink-input {
+  width: 100%;
+  border: 1px solid rgba(233, 236, 239, 0.2);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.uplink-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.uplink-btn {
+  border: 1px solid rgba(118, 255, 3, 0.35);
+  background: rgba(118, 255, 3, 0.14);
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.uplink-btn-secondary {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(255, 209, 102, 0.12);
+}
+
 .status-dot {
   display: inline-block;
   width: 8px;

@@ -12,7 +12,10 @@
     buildLabel: '--',
     meshState: 'Mesh --',
     bpm: null,
-    fftBins: null
+    fftBins: null,
+    monitor: [],
+    ota: null,
+    uplink: null
   };
   let ws = null;
   let wsAttempts = 0;
@@ -107,8 +110,69 @@
       buildLabel: typeof msg?.buildLabel === 'string' ? msg.buildLabel : state.buildLabel,
       meshState: typeof msg?.meshState === 'string' ? msg.meshState : state.meshState,
       bpm: Number.isFinite(msg?.bpm) ? msg.bpm : null,
-      fftBins: Array.isArray(msg?.fftBins) ? msg.fftBins : null
+      fftBins: Array.isArray(msg?.fftBins) ? msg.fftBins : null,
+      monitor: Array.isArray(msg?.monitor) ? msg.monitor : [],
+      ota: msg?.ota && typeof msg.ota === 'object' ? msg.ota : null,
+      uplink: msg?.uplink && typeof msg.uplink === 'object' ? msg.uplink : null
     };
+  }
+
+  function updateUplinkStatus() {
+    const statusEl = $('uplink-status');
+    if (!statusEl) return;
+    const u = state.uplink;
+    if (!u) {
+      statusEl.textContent = 'Uplink status unavailable';
+      return;
+    }
+    const parts = [u.enabled ? 'Enabled' : 'Disabled'];
+    if (u.ssid) parts.push(`SSID: ${u.ssid}`);
+    if (u.pendingApply) parts.push('Applying...');
+    if (u.rootApplied) parts.push('Root applied');
+    if (u.lastError) parts.push(`Error: ${u.lastError}`);
+    statusEl.textContent = parts.join(' · ');
+  }
+
+  async function postUplink(enabled) {
+    const ssidEl = $('uplink-ssid');
+    const passEl = $('uplink-password');
+    const body = enabled
+      ? { enabled: true, ssid: (ssidEl?.value || '').trim(), password: passEl?.value || '' }
+      : { enabled: false };
+    if (enabled && !body.ssid) {
+      window.alert('SSID is required.');
+      return;
+    }
+    const res = await fetch('/api/uplink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  }
+
+  function updateMonitorOutput() {
+    const monitorEl = $('monitor-output');
+    const monitorEmpty = $('monitor-empty');
+    if (!monitorEl || !monitorEmpty) return;
+    const lines = Array.isArray(state.monitor) ? state.monitor : [];
+    if (!lines.length) {
+      monitorEl.textContent = '';
+      monitorEmpty.style.display = 'block';
+      return;
+    }
+    monitorEmpty.style.display = 'none';
+    monitorEl.textContent = lines
+      .slice(-40)
+      .map((item) => {
+        const seq = typeof item?.seq === 'number' ? String(item.seq).padStart(5, '0') : '-----';
+        const line = typeof item?.line === 'string' ? item.line : '';
+        return `[${seq}] ${line}`;
+      })
+      .join('\n');
+    monitorEl.scrollTop = monitorEl.scrollHeight;
   }
 
   function updateGlobalReadouts() {
@@ -124,7 +188,7 @@
     $('footer-mesh-nodes').textContent = String(nodes.length);
     $('footer-state').textContent = state.meshState || (stale === 0 ? 'Mesh OK' : 'Mesh Degraded');
     $('footer-netif').textContent = state.netIf || 'usb_ncm (10.48.0.1)';
-    $('build-label').textContent = state.buildLabel ? `${state.buildLabel} v1.0.1` : 'TX v1.0.1';
+    $('build-label').textContent = state.buildLabel ? `${state.buildLabel} v1.0.1` : 'SRC v1.0.1';
 
     const uptime = root ? root.uptime : 0;
     $('uptime-value').textContent = formatUptime(uptime);
@@ -133,6 +197,22 @@
 
     $('core0-load').textContent = numOrNA(state.core0LoadPct);
     $('heap-free').textContent = numOrNA(state.heapKb);
+  }
+
+  async function triggerOtaFromPrompt() {
+    const url = window.prompt('Enter HTTPS firmware URL for OTA update:');
+    if (!url) return;
+    try {
+      const res = await fetch('/api/ota', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim() })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      window.alert('OTA accepted. Device will download and reboot when complete.');
+    } catch (err) {
+      window.alert(`OTA request failed: ${err.message || err}`);
+    }
   }
 
   function renderSelectedNode() {
@@ -368,8 +448,33 @@
     renderSelectedNode();
   });
 
+  document.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'U' || ev.key === 'u')) {
+      ev.preventDefault();
+      triggerOtaFromPrompt();
+    }
+  });
+
+  $('uplink-apply')?.addEventListener('click', async () => {
+    try {
+      await postUplink(true);
+    } catch (err) {
+      window.alert(`Failed to apply uplink: ${err.message || err}`);
+    }
+  });
+
+  $('uplink-clear')?.addEventListener('click', async () => {
+    try {
+      await postUplink(false);
+    } catch (err) {
+      window.alert(`Failed to clear uplink: ${err.message || err}`);
+    }
+  });
+
   function updateAll() {
     updateGlobalReadouts();
+    updateMonitorOutput();
+    updateUplinkStatus();
     computeLayout();
     renderSelectedNode();
   }

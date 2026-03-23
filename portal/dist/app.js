@@ -12,7 +12,10 @@
     buildLabel: '--',
     meshState: 'Mesh --',
     bpm: null,
-    fftBins: null
+    fftBins: null,
+    monitor: [],
+    ota: null,
+    uplink: null
   };
   let ws = null;
   let wsAttempts = 0;
@@ -69,12 +72,9 @@
     const parent = typeof rawNode.parent === 'string'
       ? rawNode.parent
       : (!root && fallbackRootMac && fallbackRootMac !== mac ? fallbackRootMac : null);
-    // Map TX→SRC, RX→OUT for display
-    let rawRole = typeof rawNode.role === 'string' ? rawNode.role : 'RX';
-    let displayRole = rawRole === 'TX' ? 'SRC' : (rawRole === 'RX' ? 'OUT' : rawRole);
     return {
       mac,
-      role: displayRole,
+      role: typeof rawNode.role === 'string' ? rawNode.role : 'RX',
       root,
       layer: normalizedLayer,
       rssi: Number.isFinite(rawNode.rssi) ? rawNode.rssi : -100,
@@ -110,8 +110,69 @@
       buildLabel: typeof msg?.buildLabel === 'string' ? msg.buildLabel : state.buildLabel,
       meshState: typeof msg?.meshState === 'string' ? msg.meshState : state.meshState,
       bpm: Number.isFinite(msg?.bpm) ? msg.bpm : null,
-      fftBins: Array.isArray(msg?.fftBins) ? msg.fftBins : null
+      fftBins: Array.isArray(msg?.fftBins) ? msg.fftBins : null,
+      monitor: Array.isArray(msg?.monitor) ? msg.monitor : [],
+      ota: msg?.ota && typeof msg.ota === 'object' ? msg.ota : null,
+      uplink: msg?.uplink && typeof msg.uplink === 'object' ? msg.uplink : null
     };
+  }
+
+  function updateUplinkStatus() {
+    const statusEl = $('uplink-status');
+    if (!statusEl) return;
+    const u = state.uplink;
+    if (!u) {
+      statusEl.textContent = 'Uplink status unavailable';
+      return;
+    }
+    const parts = [u.enabled ? 'Enabled' : 'Disabled'];
+    if (u.ssid) parts.push(`SSID: ${u.ssid}`);
+    if (u.pendingApply) parts.push('Applying...');
+    if (u.rootApplied) parts.push('Root applied');
+    if (u.lastError) parts.push(`Error: ${u.lastError}`);
+    statusEl.textContent = parts.join(' · ');
+  }
+
+  async function postUplink(enabled) {
+    const ssidEl = $('uplink-ssid');
+    const passEl = $('uplink-password');
+    const body = enabled
+      ? { enabled: true, ssid: (ssidEl?.value || '').trim(), password: passEl?.value || '' }
+      : { enabled: false };
+    if (enabled && !body.ssid) {
+      window.alert('SSID is required.');
+      return;
+    }
+    const res = await fetch('/api/uplink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  }
+
+  function updateMonitorOutput() {
+    const monitorEl = $('monitor-output');
+    const monitorEmpty = $('monitor-empty');
+    if (!monitorEl || !monitorEmpty) return;
+    const lines = Array.isArray(state.monitor) ? state.monitor : [];
+    if (!lines.length) {
+      monitorEl.textContent = '';
+      monitorEmpty.style.display = 'block';
+      return;
+    }
+    monitorEmpty.style.display = 'none';
+    monitorEl.textContent = lines
+      .slice(-40)
+      .map((item) => {
+        const seq = typeof item?.seq === 'number' ? String(item.seq).padStart(5, '0') : '-----';
+        const line = typeof item?.line === 'string' ? item.line : '';
+        return `[${seq}] ${line}`;
+      })
+      .join('\n');
+    monitorEl.scrollTop = monitorEl.scrollHeight;
   }
 
   function updateGlobalReadouts() {
@@ -127,7 +188,7 @@
     $('footer-mesh-nodes').textContent = String(nodes.length);
     $('footer-state').textContent = state.meshState || (stale === 0 ? 'Mesh OK' : 'Mesh Degraded');
     $('footer-netif').textContent = state.netIf || 'usb_ncm (10.48.0.1)';
-    $('build-label').textContent = state.buildLabel ? `${state.buildLabel} v1.0.1` : 'TX v1.0.1';
+    $('build-label').textContent = state.buildLabel ? `${state.buildLabel} v1.0.1` : 'SRC v1.0.1';
 
     const uptime = root ? root.uptime : 0;
     $('uptime-value').textContent = formatUptime(uptime);
@@ -138,21 +199,20 @@
     $('heap-free').textContent = numOrNA(state.heapKb);
   }
 
-  function rssiToBars(rssi) {
-    // Map RSSI to 0-5 bars: >-50=5, >-60=4, >-70=3, >-80=2, >-90=1, else=0
-    if (rssi > -50) return 5;
-    if (rssi > -60) return 4;
-    if (rssi > -70) return 3;
-    if (rssi > -80) return 2;
-    if (rssi > -90) return 1;
-    return 0;
-  }
-
-  function renderRssiBars(rssi) {
-    const bars = rssiToBars(rssi);
-    const filled = '█'.repeat(bars);
-    const empty = '░'.repeat(5 - bars);
-    return `[${filled}${empty}] ${rssi} dBm`;
+  async function triggerOtaFromPrompt() {
+    const url = window.prompt('Enter HTTPS firmware URL for OTA update:');
+    if (!url) return;
+    try {
+      const res = await fetch('/api/ota', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim() })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      window.alert('OTA accepted. Device will download and reboot when complete.');
+    } catch (err) {
+      window.alert(`OTA request failed: ${err.message || err}`);
+    }
   }
 
   function renderSelectedNode() {
@@ -167,17 +227,15 @@
     }
 
     empty.style.display = 'none';
-    const streamLabel = node.streaming ? 'Yes' : 'No';
-    const roleLabel = node.root ? `${node.role} (Root)` : node.role;
     box.innerHTML = [
       ['MAC', node.mac],
-      ['Role', roleLabel],
+      ['Role', node.role],
       ['Layer', String(node.layer)],
-      ['RSSI', renderRssiBars(node.rssi)],
+      ['RSSI', `${node.rssi} dBm`],
       ['Children', String(node.children)],
-      ['Streaming', streamLabel],
+      ['Streaming', node.streaming ? 'Yes' : 'No'],
       ['Uptime', formatUptime(node.uptime)],
-      ['Parent', node.parent ? shortMac(node.parent) : '— (root)']
+      ['Parent', node.parent || '— (root)']
     ].map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join('');
   }
 
@@ -201,18 +259,10 @@
     });
 
     const keys = Object.keys(layers).map(Number).sort((a, b) => a - b);
-    const maxR = Math.min(rect.width, rect.height) * 0.40;
-    const minR = 70; // Minimum radius for layer 1 to separate from root
+    const maxR = Math.min(rect.width, rect.height) * 0.38;
     const radiiByLayer = {};
-    keys.forEach((layer) => {
-      if (layer === 0) {
-        radiiByLayer[layer] = 0; // Root at center
-      } else {
-        // Spread layers evenly between minR and maxR
-        const maxLayer = Math.max(...keys.filter(k => k > 0), 1);
-        radiiByLayer[layer] = minR + ((layer - 1) / Math.max(1, maxLayer - 1)) * (maxR - minR);
-        if (maxLayer === 1) radiiByLayer[layer] = minR; // Only one non-root layer
-      }
+    keys.forEach((layer, idx) => {
+      radiiByLayer[layer] = layer === 0 ? 0 : (idx / Math.max(1, keys.length - 1)) * maxR;
     });
 
     return {
@@ -300,66 +350,36 @@
       }
     });
 
-    // Draw a star shape for root node
-    function drawStar(cx, cy, spikes, outerR, innerR) {
-      topologyCtx.beginPath();
-      for (let i = 0; i < spikes * 2; i++) {
-        const r = i % 2 === 0 ? outerR : innerR;
-        const angle = (Math.PI / spikes) * i - Math.PI / 2;
-        const x = cx + r * Math.cos(angle);
-        const y = cy + r * Math.sin(angle);
-        if (i === 0) topologyCtx.moveTo(x, y);
-        else topologyCtx.lineTo(x, y);
-      }
-      topologyCtx.closePath();
-    }
-
     nodes.forEach((n) => {
       const pos = nodePositions[n.mac];
       if (!pos) return;
-      const r = n.root ? 28 : 14;
+      const r = n.root ? 16 : 12;
       const col = n.root ? '#2196f3' : '#76ff03';
       topologyCtx.globalAlpha = n.stale ? 0.45 : 1;
 
-      // Pulsing ring for self node
       if (n.mac === state.self) {
         topologyCtx.beginPath();
-        topologyCtx.arc(pos.x, pos.y, r + 8 + Math.sin(t * 3) * 2, 0, Math.PI * 2);
-        topologyCtx.strokeStyle = 'rgba(255,255,255,0.5)';
-        topologyCtx.lineWidth = 2;
+        topologyCtx.arc(pos.x, pos.y, r + 7 + Math.sin(t * 3), 0, Math.PI * 2);
+        topologyCtx.strokeStyle = '#76ff03';
+        topologyCtx.lineWidth = 1.2;
         topologyCtx.stroke();
       }
 
-      // Draw node circle
       topologyCtx.beginPath();
       topologyCtx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
       topologyCtx.fillStyle = col;
       topologyCtx.fill();
 
-      // Draw star icon for root, text label for others
-      if (n.root) {
-        topologyCtx.fillStyle = '#121212';
-        drawStar(pos.x, pos.y, 5, 14, 6);
-        topologyCtx.fill();
-      } else {
-        topologyCtx.fillStyle = '#121212';
-        topologyCtx.font = '700 10px "IBM Plex Mono", monospace';
-        topologyCtx.textAlign = 'center';
-        topologyCtx.textBaseline = 'middle';
-        topologyCtx.fillText(n.role || 'OUT', pos.x, pos.y);
-      }
+      topologyCtx.fillStyle = '#121212';
+      topologyCtx.font = '700 10px "IBM Plex Mono", monospace';
+      topologyCtx.textAlign = 'center';
+      topologyCtx.textBaseline = 'middle';
+      topologyCtx.fillText(n.role || 'RX', pos.x, pos.y);
 
-      // MAC label below
       topologyCtx.fillStyle = '#e9ecef';
       topologyCtx.font = '10px "IBM Plex Mono", monospace';
-      topologyCtx.textAlign = 'center';
       topologyCtx.textBaseline = 'top';
       topologyCtx.fillText(shortMac(n.mac), pos.x, pos.y + r + 4);
-
-      // Role label for root
-      if (n.root) {
-        topologyCtx.fillText('ROOT ' + (n.role || 'SRC'), pos.x, pos.y + r + 16);
-      }
       topologyCtx.globalAlpha = 1;
     });
   }
@@ -428,8 +448,33 @@
     renderSelectedNode();
   });
 
+  document.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'U' || ev.key === 'u')) {
+      ev.preventDefault();
+      triggerOtaFromPrompt();
+    }
+  });
+
+  $('uplink-apply')?.addEventListener('click', async () => {
+    try {
+      await postUplink(true);
+    } catch (err) {
+      window.alert(`Failed to apply uplink: ${err.message || err}`);
+    }
+  });
+
+  $('uplink-clear')?.addEventListener('click', async () => {
+    try {
+      await postUplink(false);
+    } catch (err) {
+      window.alert(`Failed to clear uplink: ${err.message || err}`);
+    }
+  });
+
   function updateAll() {
     updateGlobalReadouts();
+    updateMonitorOutput();
+    updateUplinkStatus();
     computeLayout();
     renderSelectedNode();
   }

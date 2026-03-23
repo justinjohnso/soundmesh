@@ -19,6 +19,13 @@ pio run -e tx -t clean       # Clean build artifacts
 pio device monitor -b 115200 # Serial monitor
 ```
 
+### Portal Assets (SPIFFS)
+```bash
+pio run -e tx -t uploadfs
+pio run -e rx -t uploadfs
+pio run -e combo -t uploadfs
+```
+
 ### Verify Builds
 After any code change, confirm all three environments compile:
 ```bash
@@ -35,6 +42,15 @@ Recommended full validation:
 ```bash
 pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
 ```
+
+### Portal + OTA Notes
+- USB portal is enabled for SRC and OUT builds (`tx`, `combo`, `rx`) using TinyUSB NCM.
+- Portal monitor stream is available in UI under "Monitor Output".
+- OTA endpoint: `POST /api/ota` with `{"url":"https://.../firmware.bin"}`.
+- OTA status endpoint: `GET /api/ota`.
+- Use `Ctrl/⌘ + Shift + U` in the portal UI to trigger OTA prompt.
+- Uplink endpoint: `POST /api/uplink` with `{"enabled":true,"ssid":"...","password":"..."}`.
+- Uplink status endpoint: `GET /api/uplink` (also included in `/api/status` as `uplink`).
 
 ## Project Goal
 
@@ -88,6 +104,8 @@ Handles mesh formation, root election, packet routing, and audio transport.
   using `MESH_DATA_P2P` flag (standalone mesh has no DS; FROMDS caused stalls).
 - **Startup gating**: `mesh_rx` task and `mesh_hb` task are created before `esp_mesh_start()`
   and wait for readiness notification before operating.
+- **Root-managed uplink**: root can apply upstream Wi-Fi credentials via portal/API. Root updates router config with
+  `esp_mesh_set_router()` and broadcasts sync; non-root nodes request sync after parent connect.
 - Adaptive rate limiting on `network_send_audio()` with gradual backoff/recovery (levels 0-2)
 - Deduplication cache prevents broadcast loops in multi-hop topologies
 

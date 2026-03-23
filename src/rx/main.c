@@ -28,6 +28,7 @@
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
 #include "control/serial_dashboard.h"
+#include "control/usb_portal.h"
 
 static const char *TAG = "rx_main";
 
@@ -305,6 +306,14 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting mesh network...");
     rx_set_connection_state(RX_STATE_MESH_JOINING, "starting mesh");
     ESP_ERROR_CHECK(network_init_mesh());
+
+#if ENABLE_USB_PORTAL_NETWORK
+    // RX/OUT portal runs over USB NCM so telemetry remains available without USB serial.
+    esp_err_t portal_err = portal_init();
+    if (portal_err != ESP_OK) {
+        ESP_LOGW(TAG, "Portal init failed: %s (continuing)", esp_err_to_name(portal_err));
+    }
+#endif
 
     // Register audio callback for mesh audio reception
     ESP_ERROR_CHECK(network_register_audio_callback(audio_rx_callback));

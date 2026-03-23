@@ -52,11 +52,9 @@
 #define ES8388_DIN_IO          GPIO_NUM_2   // A1 - Data FROM codec (new pin)
 
 // ============================================================================
-// Legacy ADC pins (no longer used with ES8388, kept for reference)
+// ADC pins (used by ADC fallback builds)
 // ============================================================================
-// ADC pins were used for aux input before ES8388 integration
-// A0 = GPIO1, A1 = GPIO2 on XIAO ESP32-S3
-// Now GPIO1 = MCLK, GPIO2 = I2S_DIN for ES8388
+// In ES8388 builds these GPIOs are reassigned to I2S clocks/data.
 #define ADC_LEFT_GPIO          GPIO_NUM_1
 #define ADC_RIGHT_GPIO         GPIO_NUM_2
 #define ADC_LEFT_CHANNEL       ADC_CHANNEL_0  // GPIO1 = ADC1_CH0

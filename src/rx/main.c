@@ -73,7 +73,6 @@ static rx_status_t status = {
 
 // Bandwidth tracking (per-second rate, not cumulative)
 static uint32_t bytes_received_this_second = 0;
-static uint32_t last_bandwidth_update = 0;
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t rx_pipeline = NULL;
@@ -101,7 +100,6 @@ static uint16_t last_seq = 0;
 static bool first_packet = true;
 static uint32_t last_packet_time = 0;
 static uint32_t stream_silence_confirm_start = 0;
-static uint32_t last_ping_ms = 0;
 static int64_t last_stream_rx_ms = 0;
 static int64_t last_rejoin_attempt_ms = 0;
 
@@ -231,10 +229,6 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
 }
 
 void app_main(void) {
-    // FIRST THING: Log immediately to confirm app_main is running
-    putchar('!'); putchar('!'); putchar('!'); // Raw output
-    fflush(stdout);
-    
     esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "======================================");
     ESP_LOGI(TAG, "*** APP_MAIN STARTED - RX beginning initialization ***");

@@ -40,7 +40,6 @@
 #define AUDIO_FRAME_BYTES_MONO     (AUDIO_FRAME_SAMPLES * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS_MONO)    // 3840
 #define AUDIO_FRAME_BYTES_STEREO   (AUDIO_FRAME_SAMPLES * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS_STEREO)  // 7680
 
-// Legacy alias for code expecting mono PCM frame size
 #define AUDIO_FRAME_BYTES          AUDIO_FRAME_BYTES_MONO
 
 // ---- Low-Level I2S / DMA Configuration ----
@@ -61,7 +60,7 @@
 // ============================================================================
 
 #define OPUS_BITRATE               24000     // 24 kbps (lower airtime for GROUP multicast stability)
-#define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage (was 5, overflow)
+#define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage
 #define OPUS_EXPECTED_LOSS_PCT     8         // Hint for in-band FEC tuning under mesh burst loss
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 
@@ -108,7 +107,7 @@
 // RF power in quarter-dBm units (80 = 20 dBm max, 52 = 13 dBm).
 // In very close-range setups, reducing TX power can prevent receiver saturation/auth churn.
 #define WIFI_TX_POWER_QDBM     52
-#define UDP_PORT               3333      // Legacy fallback
+#define UDP_PORT               3333
 #define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
 
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce mesh pps.
@@ -161,11 +160,9 @@
 // This prevents long loss bursts from flooding buffers while still smoothing short gaps.
 #define RX_PLC_MAX_FRAMES_PER_GAP  3
 
-// Derived: jitter thresholds in bytes
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)
 #define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_MONO * JITTER_PREFILL_FRAMES)
 
-// Legacy alias
 #define RING_BUFFER_SIZE           PCM_BUFFER_SIZE
 
 // ============================================================================
@@ -178,11 +175,11 @@
 #define STACK_BYTES_TO_WORDS(bytes)  ((bytes) / sizeof(StackType_t))
 
 // TX pipeline tasks
-#define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Increased for FFT processing (was 6KB)
+#define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Includes FFT processing headroom
 #define ENCODE_TASK_STACK_BYTES      (32 * 1024)  // Opus encoder: 20ms @ 48kHz with headroom for analysis buffers
 
 // RX pipeline tasks
-#define DECODE_TASK_STACK_BYTES      (20 * 1024)  // Increased for FFT processing (was 16KB)
+#define DECODE_TASK_STACK_BYTES      (20 * 1024)  // Includes FFT processing headroom
 #define PLAYBACK_TASK_STACK_BYTES    (4 * 1024)   // I2S write only
 
 // Network tasks

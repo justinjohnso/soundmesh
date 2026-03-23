@@ -44,9 +44,6 @@ static combo_status_t status = {
     .nearest_rssi = -100
 };
 
-// Bandwidth tracking
-static uint32_t last_frames_processed = 0;
-
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t tx_pipeline = NULL;
 
@@ -83,7 +80,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
     ESP_LOGI(TAG, "Audio output: ES8388 headphone (monitor)");
 #else
-    ESP_LOGI(TAG, "Audio input: ADC (legacy)");
+    ESP_LOGI(TAG, "Audio input: ADC");
     ESP_LOGI(TAG, "Audio output: UDA1334 DAC");
 #endif
 
@@ -221,8 +218,6 @@ void app_main(void) {
             // Get pipeline stats
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
-                last_frames_processed = stats.frames_processed;
-                
                 // Bandwidth from actual bytes sent over mesh
                 uint32_t tx_bytes = network_get_tx_bytes_and_reset();
                 status.bandwidth_kbps = (tx_bytes * 8) / 1000;

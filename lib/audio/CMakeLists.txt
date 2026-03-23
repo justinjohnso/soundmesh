@@ -6,7 +6,7 @@ idf_component_register(
         "src/i2s_audio.c"
         "src/tone_gen.c"
         "src/ring_buffer.c"
-        "src/opus_codec.c"
+        "src/sequence_tracker.c"
         "src/adf_pipeline.c"
     INCLUDE_DIRS "include"
     REQUIRES driver esp_adc esp-opus

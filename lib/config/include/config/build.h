@@ -179,7 +179,8 @@
 
 // TX pipeline tasks
 #define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Includes FFT processing headroom
-#define ENCODE_TASK_STACK_BYTES      (32 * 1024)  // Opus encoder: 20ms @ 48kHz with headroom for analysis buffers
+// 24KB keeps encode task creation reliable with mesh+portal-linked builds on S3 internal RAM.
+#define ENCODE_TASK_STACK_BYTES      (24 * 1024)  // Opus encoder: 20ms @ 48kHz with practical headroom
 
 // RX pipeline tasks
 #define DECODE_TASK_STACK_BYTES      (20 * 1024)  // Includes FFT processing headroom
@@ -228,7 +229,9 @@
 #define PORTAL_HTTP_STACK_BYTES      (6 * 1024)
 #define PORTAL_WS_PUSH_STACK_BYTES   (4 * 1024)
 #define PORTAL_DNS_STACK_BYTES       (3 * 1024)
-#define PORTAL_MIN_FREE_HEAP         (30 * 1024)  // Don't start portal if heap < 30KB
+#define PORTAL_MIN_FREE_HEAP         (36 * 1024)  // Skip portal if free heap is too low
+#define PORTAL_MIN_LARGEST_BLOCK     (16 * 1024)  // Guard against fragmented heap at startup
+#define PORTAL_INIT_SETTLE_MS        400          // Let audio tasks settle before portal startup
 
 // ============================================================================
 // Audio Output Configuration

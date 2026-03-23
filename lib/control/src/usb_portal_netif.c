@@ -178,10 +178,13 @@ esp_err_t portal_init(void) {
     }
 
     uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "Portal init: free heap = %lu bytes", (unsigned long)free_heap);
-    if (free_heap < PORTAL_MIN_FREE_HEAP) {
-        ESP_LOGW(TAG, "Insufficient heap for portal (%lu < %d), skipping",
-                 (unsigned long)free_heap, PORTAL_MIN_FREE_HEAP);
+    uint32_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "Portal init: free heap = %lu bytes, largest block = %lu bytes",
+             (unsigned long)free_heap, (unsigned long)largest_block);
+    if (free_heap < PORTAL_MIN_FREE_HEAP || largest_block < PORTAL_MIN_LARGEST_BLOCK) {
+        ESP_LOGW(TAG, "Portal startup skipped (free=%lu/%d, largest=%lu/%d)",
+                 (unsigned long)free_heap, PORTAL_MIN_FREE_HEAP,
+                 (unsigned long)largest_block, PORTAL_MIN_LARGEST_BLOCK);
         return ESP_ERR_NO_MEM;
     }
 

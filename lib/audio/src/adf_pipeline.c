@@ -15,6 +15,7 @@
 #include "audio/es8388_audio.h"
 #include "audio/i2s_audio.h"
 #include "audio/ring_buffer.h"
+#include "audio/sequence_tracker.h"
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
 #include "network/mesh_net.h"
@@ -76,13 +77,12 @@ struct adf_pipeline {
 // Buffer and stack sizes are now centralized in config/build.h
 // This ensures consistent memory budgeting across all modules
 
-// Static buffers for audio tasks - MOVED OFF STACK to save heap
-// These live in .bss instead of being allocated on task stacks
+// Static buffers for audio tasks. Keeping large frame buffers in .bss
+// avoids pressure on FreeRTOS task stacks.
 static int16_t s_capture_stereo_frame[AUDIO_FRAME_SAMPLES * 2];  // 7680 bytes
 static int16_t s_capture_mono_frame[AUDIO_FRAME_SAMPLES];         // 3840 bytes
 static int16_t s_encode_pcm_frame[AUDIO_FRAME_SAMPLES];           // 3840 bytes (encode task)
 static uint8_t s_encode_opus_frame[OPUS_MAX_FRAME_BYTES];         // 512 bytes (encode task)
-static uint8_t s_encode_packet_buffer[NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES];  // ~528 bytes
 static int16_t s_decode_pcm_frame[AUDIO_FRAME_SAMPLES];           // 3840 bytes
 static int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];        // 3840 bytes
 static int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];    // 3840 bytes (underrun concealment)
@@ -192,7 +192,6 @@ static void fft_init_once(void)
 
     s_fft_initialized = true;
     ESP_LOGI(TAG, "FFT init complete: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
-    ESP_LOGI(TAG, "esp-dsp FFT init OK: size=%d, bars=%d", FFT_ANALYSIS_SIZE, FFT_PORTAL_BIN_COUNT);
 }
 
 static void fft_process_frame(adf_pipeline_handle_t pipeline, const int16_t *samples, size_t sample_count)
@@ -825,32 +824,26 @@ esp_err_t adf_pipeline_feed_opus(adf_pipeline_handle_t pipeline,
         return ESP_ERR_INVALID_ARG;
     }
     
-    // Sequence gap detection
-    if (!pipeline->first_rx_packet) {
-        uint16_t expected = (pipeline->last_rx_seq + 1) & 0xFFFF;
-        if (seq != expected) {
-            int gap = (int16_t)(seq - expected);
-            if (gap > 0 && gap < 100) {
-                pipeline->stats.frames_dropped += gap;
-                // For single-frame gaps, request FEC decode on next received frame.
-                // For longer gaps, inject bounded PLC markers to bridge the burst.
-                if (gap == 1) {
-                    pipeline->pending_fec_recovery = true;
-                } else {
-                    pipeline->pending_fec_recovery = false;
-                    uint8_t plc_frames = (gap > RX_PLC_MAX_FRAMES_PER_GAP) ? RX_PLC_MAX_FRAMES_PER_GAP : (uint8_t)gap;
-                    for (uint8_t i = 0; i < plc_frames; i++) {
-                        uint8_t plc_item[2] = {0, 0};  // zero-length opus payload => PLC
-                        if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
-                            break;
-                        }
-                    }
-                }
+    sequence_tracker_result_t seq_result =
+        sequence_tracker_update(pipeline->first_rx_packet,
+                                pipeline->last_rx_seq,
+                                seq,
+                                RX_PLC_MAX_FRAMES_PER_GAP);
+    pipeline->first_rx_packet = seq_result.first_packet;
+    pipeline->last_rx_seq = seq_result.last_seq;
+    pipeline->stats.frames_dropped += seq_result.dropped_frames;
+
+    if (seq_result.request_fec) {
+        pipeline->pending_fec_recovery = true;
+    } else if (seq_result.plc_frames_to_inject > 0) {
+        pipeline->pending_fec_recovery = false;
+        for (uint8_t i = 0; i < seq_result.plc_frames_to_inject; i++) {
+            uint8_t plc_item[2] = {0, 0};  // zero-length opus payload => PLC
+            if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
+                break;
             }
         }
     }
-    pipeline->first_rx_packet = false;
-    pipeline->last_rx_seq = seq;
     
     // Pre-check capacity
     size_t needed = 2 + opus_len;

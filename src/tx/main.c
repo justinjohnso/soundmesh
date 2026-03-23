@@ -77,7 +77,7 @@ void app_main(void) {
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
 #else
-    ESP_LOGI(TAG, "Audio input: ADC (legacy)");
+    ESP_LOGI(TAG, "Audio input: ADC");
 #endif
 
     // Initialize control layer

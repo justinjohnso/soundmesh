@@ -1,4 +1,5 @@
 #include "network/mesh_net.h"
+#include "network/frame_codec.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_wifi.h>
@@ -139,6 +140,14 @@ static void send_pong(const mesh_addr_t *dest, uint32_t ping_id);
 static void handle_ping(const mesh_addr_t *from, const mesh_ping_t *ping);
 static void handle_pong(const mesh_ping_t *pong);
 static const char *wifi_disconnect_reason_to_str(uint8_t reason);
+typedef struct {
+    uint32_t timestamp;
+    const char *src_id;
+} audio_batch_callback_ctx_t;
+static void on_audio_batch_frame(const uint8_t *frame,
+                                 uint16_t frame_len,
+                                 uint16_t frame_seq,
+                                 void *ctx);
 
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
@@ -158,6 +167,18 @@ static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
         case WIFI_REASON_NO_AP_FOUND: return "NO_AP_FOUND";
         default: return "OTHER";
     }
+}
+
+static void on_audio_batch_frame(const uint8_t *frame,
+                                 uint16_t frame_len,
+                                 uint16_t frame_seq,
+                                 void *ctx)
+{
+    if (!audio_rx_callback || !ctx) {
+        return;
+    }
+    audio_batch_callback_ctx_t *batch = (audio_batch_callback_ctx_t *)ctx;
+    audio_rx_callback(frame, frame_len, frame_seq, batch->timestamp, batch->src_id);
 }
 
 // Duplicate detection
@@ -188,8 +209,8 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "RX discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
                          MESH_CHANNEL, MESH_ID, g_src_id);
             }
-            // For designated root: ROOT_FIXED won't fire if type was set before start
-            // Mark root as ready immediately since mesh AP is now broadcasting
+            // TX/COMBO is pre-configured as designated root, so mark it ready as
+            // soon as mesh start completes and the root AP is advertising.
             if (my_node_role == NODE_ROLE_TX && esp_mesh_is_root()) {
                 is_mesh_root = true;
                 is_mesh_root_ready = true;
@@ -200,9 +221,7 @@ static void mesh_event_handler(void *arg, esp_event_base_t event_base,
                         xTaskNotifyGive(waiting_task_handles[i]);
                     }
                 }
-                // Don't disable self-organized or call esp_wifi_disconnect() here —
-                // doing so immediately at start can prevent children from joining.
-                // Self-organized will be disabled after first child connects.
+                // Keep startup state simple and avoid extra Wi-Fi churn.
                 esp_log_level_set("wifi", ESP_LOG_ERROR);
             }
             break;
@@ -526,39 +545,39 @@ static void mesh_rx_task(void *arg) {
                 hdr->ttl--;
                 
                 if (audio_rx_callback) {
-                    // Auto-detect header size for backward compatibility with
-                    // old 14-byte headers (main branch) vs new 26-byte headers.
+                    // Accept both current and older header formats.
                     uint16_t total_payload_len = ntohs(hdr->payload_len);
-                    size_t hdr_size;
-                    if (data.size == NET_FRAME_HEADER_SIZE + total_payload_len) {
-                        hdr_size = NET_FRAME_HEADER_SIZE;
-                    } else if (data.size == NET_FRAME_HEADER_SIZE_V1 + total_payload_len) {
-                        hdr_size = NET_FRAME_HEADER_SIZE_V1;
-                    } else {
+                    size_t hdr_size = 0;
+                    if (!network_frame_resolve_header_size(data.size,
+                                                           total_payload_len,
+                                                           NET_FRAME_HEADER_SIZE,
+                                                           NET_FRAME_HEADER_SIZE_V1,
+                                                           &hdr_size)) {
                         // Unknown size — skip
                         continue;
                     }
                     
                     uint8_t *payload = data.data + hdr_size;
                     uint32_t timestamp = ntohl(hdr->timestamp);
-                    // frame_count lives at byte 13 in both old (reserved) and new (frame_count)
-                    uint8_t frame_count = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->frame_count
-                                          : data.data[13];  // old header: reserved byte
+                    // Older frames store frame_count in byte 13 (reserved in v1).
+                    uint8_t frame_count = network_frame_extract_frame_count(data.data,
+                                                                            data.size,
+                                                                            NET_FRAME_HEADER_SIZE,
+                                                                            hdr_size,
+                                                                            hdr->frame_count,
+                                                                            13);
                     const char *src_id = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->src_id : "";
                     
                     if (frame_count <= 1) {
                         audio_rx_callback(payload, total_payload_len, seq, timestamp, src_id);
                     } else {
-                        // Unpack batched Opus frames: [len_hi][len_lo][data...]...
-                        size_t offset = 0;
-                        for (uint8_t f = 0; f < frame_count && offset + 2 <= total_payload_len; f++) {
-                            uint16_t frame_len = (payload[offset] << 8) | payload[offset + 1];
-                            offset += 2;
-                            if (frame_len > 0 && offset + frame_len <= total_payload_len) {
-                                audio_rx_callback(&payload[offset], frame_len, seq + f, timestamp, src_id);
-                                offset += frame_len;
-                            }
-                        }
+                        audio_batch_callback_ctx_t cb_ctx = {.timestamp = timestamp, .src_id = src_id};
+                        network_frame_unpack_batch(payload,
+                                                  total_payload_len,
+                                                  frame_count,
+                                                  seq,
+                                                  on_audio_batch_frame,
+                                                  &cb_ctx);
                     }
                 }
                 else {

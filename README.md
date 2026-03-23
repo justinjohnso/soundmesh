@@ -90,6 +90,14 @@ Recommended full validation pass:
 pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
+Required pre-upload crash-risk gate:
+
+```bash
+bash tools/preupload_gate.sh
+```
+
+Do not flash hardware unless this gate passes.
+
 For current architecture and operating conventions, see `AGENTS.md`.
 
 ## OTA workflow

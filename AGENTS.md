@@ -332,6 +332,7 @@ soundmesh/
 6. **Test with tone first** — use `RX_TEST_TONE_MODE` / `TX_TEST_TONE_MODE` to isolate issues.
 7. **Always verify all three environments build** after any change.
 8. **Never add `Co-authored-by` trailers** to git commit messages.
+9. **No hardware upload before gate pass:** run `bash tools/preupload_gate.sh` and block uploads on any failure.
 
 ## Roadmap & Docs Governance (Mandatory)
 

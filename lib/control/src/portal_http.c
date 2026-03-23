@@ -1,6 +1,7 @@
 #include "control/usb_portal.h"
 #include "control/portal_state.h"
 #include "control/portal_ota.h"
+#include "control/json_extract.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_http_server.h>
@@ -18,55 +19,6 @@ static int ws_fd = -1;
 static TaskHandle_t ws_push_task_handle = NULL;
 
 static char ws_json_buf[4096];
-
-static bool extract_json_string_field(const char *body, const char *field, char *out, size_t out_size) {
-    if (!body || !field || !out || out_size == 0) {
-        return false;
-    }
-    char key[40];
-    snprintf(key, sizeof(key), "\"%s\":\"", field);
-    char *start = strstr((char *)body, key);
-    if (!start) {
-        return false;
-    }
-    start += strlen(key);
-    char *end = strchr(start, '"');
-    if (!end) {
-        return false;
-    }
-    size_t len = (size_t)(end - start);
-    if (len >= out_size) {
-        return false;
-    }
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return true;
-}
-
-static bool extract_json_bool_field(const char *body, const char *field, bool *out) {
-    if (!body || !field || !out) {
-        return false;
-    }
-    char key[40];
-    snprintf(key, sizeof(key), "\"%s\":", field);
-    char *start = strstr((char *)body, key);
-    if (!start) {
-        return false;
-    }
-    start += strlen(key);
-    while (*start == ' ' || *start == '\t') {
-        start++;
-    }
-    if (strncmp(start, "true", 4) == 0) {
-        *out = true;
-        return true;
-    }
-    if (strncmp(start, "false", 5) == 0) {
-        *out = false;
-        return true;
-    }
-    return false;
-}
 
 // ---- SPIFFS Initialization ----
 
@@ -195,7 +147,7 @@ static esp_err_t handle_api_ota(httpd_req_t *req) {
     }
 
     char url[192];
-    if (!extract_json_string_field(body, "url", url, sizeof(url))) {
+    if (!json_extract_string_field(body, "url", url, sizeof(url))) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"missing url\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -255,7 +207,7 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
     }
 
     bool enabled = false;
-    if (!extract_json_bool_field(body, "enabled", &enabled)) {
+    if (!json_extract_bool_field(body, "enabled", &enabled)) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"missing enabled\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -264,12 +216,12 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
     char ssid[UPLINK_SSID_MAX_LEN + 1] = {0};
     char password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
     if (enabled) {
-        if (!extract_json_string_field(body, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+        if (!json_extract_string_field(body, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_send(req, "{\"error\":\"missing ssid\"}", HTTPD_RESP_USE_STRLEN);
             return ESP_OK;
         }
-        if (!extract_json_string_field(body, "password", password, sizeof(password))) {
+        if (!json_extract_string_field(body, "password", password, sizeof(password))) {
             password[0] = '\0';
         }
     }

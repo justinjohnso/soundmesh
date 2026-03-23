@@ -1,5 +1,7 @@
 # Plan: Stabilize Node Identity & Connection State Visibility
 
+> Status: superseded — use `docs/roadmap/implementation-roadmap.md` for active execution priorities.
+
 **Created:** March 18, 2026  
 **Branch:** `feat/node-identity-connection-state`  
 **Status:** Ready for implementation

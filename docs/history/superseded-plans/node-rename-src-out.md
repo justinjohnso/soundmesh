@@ -1,5 +1,7 @@
 # Node Rename: SRC / OUT
 
+> Status: superseded — use `docs/roadmap/implementation-roadmap.md` for active execution priorities.
+
 **Status:** Planned  
 **Date:** 2025-03-19
 
@@ -199,12 +201,12 @@ Replace direct `CONFIG_*_BUILD` checks with `build_role.h` macros:
 
 | File | Change |
 |------|--------|
-| `portal/public/app.js` L74 | Default role `'RX'` → `'OUT'` |
-| `portal/public/app.js` L127 | Fallback label `'TX v1.0.1'` → `'SRC v1.0.1'` |
-| `portal/public/app.js` L297 | Fallback text `'RX'` → `'OUT'` |
-| `portal/public/app.css` | CSS vars `--rx` → `--out`, `--tx` → `--src`. Classes `.node-rx` → `.node-out`. |
-| `portal/src/components/PortalFooter.astro` | `"TX v1.0.1"` → dynamic from state |
-| `portal/dist/` | Rebuild after source changes |
+| `lib/control/portal-ui/public/app.js` L74 | Default role `'RX'` → `'OUT'` |
+| `lib/control/portal-ui/public/app.js` L127 | Fallback label `'TX v1.0.1'` → `'SRC v1.0.1'` |
+| `lib/control/portal-ui/public/app.js` L297 | Fallback text `'RX'` → `'OUT'` |
+| `lib/control/portal-ui/public/app.css` | CSS vars `--rx` → `--out`, `--tx` → `--src`. Classes `.node-rx` → `.node-out`. |
+| `lib/control/portal-ui/src/components/PortalFooter.astro` | `"TX v1.0.1"` → dynamic from state |
+| `lib/control/portal-ui/dist/` | Rebuild after source changes |
 
 ### Phase 8: VS Code Configuration
 

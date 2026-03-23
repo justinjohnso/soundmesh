@@ -920,7 +920,7 @@ if (backoff_level == 0 && total_drops == last_snapshot_drops) {
 2. [ESP-IDF mesh internal_communication example](https://github.com/espressif/esp-idf/tree/master/examples/mesh/internal_communication)
 3. [esp_mesh.h API reference](https://github.com/espressif/esp-idf/blob/master/components/esp_wifi/include/esp_mesh.h)
 4. SoundMesh codebase: `lib/network/src/mesh_net.c`
-5. SoundMesh architecture: `docs/planning/mesh-network-architecture.md`
+5. SoundMesh architecture: `docs/architecture/network.md`
 
 ---
 

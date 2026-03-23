@@ -26,6 +26,13 @@ pio run -e rx -t uploadfs
 pio run -e combo -t uploadfs
 ```
 
+### Portal UI (local)
+```bash
+cd lib/control/portal-ui
+pnpm install
+pnpm run dev --demo
+```
+
 ### Verify Builds
 After any code change, confirm all three environments compile:
 ```bash
@@ -33,7 +40,8 @@ pio run -e tx && pio run -e rx && pio run -e combo
 ```
 
 ### Run Tests
-Run native Unity unit tests for transport/frame parsing and sequence-gap tracking:
+Run native Unity unit tests for transport/frame parsing, sequence-gap tracking, and portal API contract validation (`/api/status`, `/api/uplink`, `/api/ota`).
+PlatformIO auto-discovers every `test/native/test_*` suite, including `test_portal_api_contract`:
 ```bash
 pio test -e native
 ```
@@ -289,14 +297,15 @@ soundmesh/
 │   │   └── include/config/    # build.h (all constants), pins.h (GPIO map)
 │   ├── control/
 │   │   ├── include/control/   # display.h, buttons.h, status.h
-│   │   └── src/               # display_ssd1306.c, buttons.c
+│   │   ├── src/               # display_ssd1306.c, buttons.c, portal_http.c, portal_state.c
+│   │   └── portal-ui/         # Astro portal UI source (builds to dist/, exported to data/)
 │   └── network/
 │       ├── include/network/   # mesh_net.h (API + packet types)
 │       └── src/               # mesh_net.c
 ├── components/
 │   └── esp-opus/              # Opus codec component (git submodule)
 ├── docs/
-│   ├── planning/              # Architecture docs (audio, network, control, roadmap)
+│   ├── planning/              # Active planning + audits
 │   ├── posts/                 # Development blog posts
 │   └── progress/              # Fix documentation
 ├── platformio.ini             # Build environments (tx, rx, combo)
@@ -320,3 +329,17 @@ soundmesh/
 6. **Test with tone first** — use `RX_TEST_TONE_MODE` / `TX_TEST_TONE_MODE` to isolate issues.
 7. **Always verify all three environments build** after any change.
 8. **Never add `Co-authored-by` trailers** to git commit messages.
+
+## Roadmap & Docs Governance (Mandatory)
+
+1. **Single canonical roadmap:** `docs/roadmap/implementation-roadmap.md` is the only source of truth for "what's next".
+   - `docs/history/superseded-plans/professionalization-roadmap.md` is supporting reference, not execution authority.
+2. **Linear priority policy:** execute Stage 0 pilot hardening items before feature expansion.
+3. **Docs relevance policy:** new docs must be clearly classified as one of:
+   - canonical active
+   - supporting reference
+   - historical archive
+   - superseded
+4. **Superseded handling:** if a doc is replaced, mark it as superseded at the top and point to the canonical replacement.
+5. **Anti-clutter rule:** avoid creating one-off planning docs when updating an existing canonical doc is sufficient.
+6. **Restructure direction:** keep active docs easy to scan; aggressively archive non-canonical materials during docs cleanup passes.

@@ -230,3 +230,173 @@ body {
     padding-bottom: 6px;
   }
 }
+
+/* ── Mixer Pane ─────────────────────────────────────────────── */
+.pane-mixer {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+}
+
+.mixer-block {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mixer-block:last-child {
+  border-bottom: none;
+}
+
+.mixer-block-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+
+.mixer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Fader (horizontal range input) */
+.fader {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--line);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 4px rgba(118, 255, 3, 0.5);
+}
+
+.fader::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 4px rgba(118, 255, 3, 0.5);
+}
+
+.fader::-webkit-slider-runnable-track {
+  background: var(--line);
+  height: 3px;
+  border-radius: 2px;
+}
+
+.fader::-moz-range-track {
+  background: var(--line);
+  height: 3px;
+  border-radius: 2px;
+}
+
+.fader-db {
+  font-size: 10px;
+  color: var(--accent);
+  font-family: var(--mono);
+  width: 60px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* Mute button */
+.mute-btn {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 3px 7px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.mute-btn:hover {
+  border-color: #ff5d73;
+  color: #ff5d73;
+}
+
+.mute-btn.mute-btn-active,
+.mute-btn[aria-pressed='true'] {
+  background: #ff5d73;
+  border-color: #ff5d73;
+  color: #121212;
+}
+
+/* Segmented button group */
+.seg-group {
+  display: flex;
+  gap: 4px;
+}
+
+.seg-btn {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 2px;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 1.4;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.seg-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.seg-btn.seg-btn-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #121212;
+}
+
+.seg-sub {
+  font-size: 8px;
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+.mixer-note {
+  font-size: 9px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+/* BPM block removed from left pane, uptime moved into mixer */
+.uptime-value {
+  font-size: 16px;
+  font-family: var(--mono);
+  color: var(--accent);
+  letter-spacing: 0.05em;
+}

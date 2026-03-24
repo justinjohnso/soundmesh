@@ -506,6 +506,23 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         }
     }
 
+    if (off < (int)buf_size - 128) {
+        const char *input_mode_str =
+            (adf_pipeline_get_input_mode() == ADF_INPUT_MODE_TONE) ? "tone" : "aux";
+        off += snprintf(
+            buf + off,
+            buf_size - off,
+            ",\"mixer\":{\"outputGainDb\":%.2f,\"outputMute\":%s"
+            ",\"inputGainDb\":%.2f,\"inputMute\":%s"
+            ",\"jitterFrames\":%d,\"inputMode\":\"%s\"}",
+            (double)adf_pipeline_get_output_gain_db(),
+            adf_pipeline_get_output_mute() ? "true" : "false",
+            (double)adf_pipeline_get_input_gain_db(),
+            adf_pipeline_get_input_mute() ? "true" : "false",
+            network_get_jitter_override(),
+            input_mode_str);
+    }
+
     off += snprintf(buf + off, buf_size - off, "}");
     
     return off;

@@ -8,6 +8,8 @@
 
 static const char *TAG = "network_mesh";
 
+static int s_jitter_override = -1;  // -1 = auto; 1-16 = fixed override
+
 bool network_is_root(void) {
     return esp_mesh_is_root();
 }
@@ -33,6 +35,12 @@ uint32_t network_get_latency_ms(void) {
 }
 
 uint8_t network_get_jitter_prefill_frames(void) {
+    if (s_jitter_override >= 1) {
+        uint8_t v = (uint8_t)s_jitter_override;
+        if (v > JITTER_BUFFER_FRAMES) v = JITTER_BUFFER_FRAMES;
+        return v;
+    }
+
     uint8_t base = JITTER_PREFILL_FRAMES;
     uint8_t extra = 0;
 
@@ -55,6 +63,22 @@ uint8_t network_get_jitter_prefill_frames(void) {
     }
 
     return result;
+}
+
+void network_set_jitter_override(int frames)
+{
+    if (frames < 1) {
+        s_jitter_override = -1;
+    } else if (frames > JITTER_BUFFER_FRAMES) {
+        s_jitter_override = JITTER_BUFFER_FRAMES;
+    } else {
+        s_jitter_override = frames;
+    }
+}
+
+int network_get_jitter_override(void)
+{
+    return s_jitter_override;
 }
 
 bool network_is_connected(void) {

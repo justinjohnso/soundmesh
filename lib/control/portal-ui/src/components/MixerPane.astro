@@ -1,0 +1,84 @@
+<section class="pane pane-mixer">
+  <div class="pane-title"><span id="mixer-pane-title">MIXER</span></div>
+
+  <!-- ── Global Mixer (SRC/TX/COMBO) ─────────────────────────── -->
+  <div id="mixer-global" class="mixer-role" style="display:none">
+
+    <div class="mixer-block">
+      <div class="mixer-block-label">INPUT TRIM <span id="input-gain-mute-label"></span></div>
+      <div class="mixer-row">
+        <input id="input-gain-slider" class="fader" type="range"
+               min="-18" max="18" step="0.5" value="0"
+               aria-label="Input gain trim" />
+        <span id="input-gain-db" class="fader-db">0.0 dB</span>
+        <button id="input-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+      </div>
+    </div>
+
+    <div class="mixer-block">
+      <div class="mixer-block-label">MASTER OUTPUT</div>
+      <div class="mixer-row">
+        <input id="output-gain-slider-g" class="fader" type="range"
+               min="-60" max="12" step="0.5" value="6"
+               aria-label="Master output level" />
+        <span id="output-gain-db-g" class="fader-db">+6.0 dB</span>
+        <button id="output-mute-btn-g" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+      </div>
+    </div>
+
+    <div class="mixer-block">
+      <div class="mixer-block-label">INPUT SOURCE</div>
+      <div class="seg-group">
+        <button id="src-aux-btn"  class="seg-btn seg-btn-active" type="button" data-mode="aux">LINE IN</button>
+        <button id="src-tone-btn" class="seg-btn" type="button" data-mode="tone">TEST TONE</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Local Mixer (OUT/RX) ─────────────────────────────────── -->
+  <div id="mixer-local" class="mixer-role" style="display:none">
+
+    <div class="mixer-block">
+      <div class="mixer-block-label">OUTPUT LEVEL</div>
+      <div class="mixer-row">
+        <input id="output-gain-slider-l" class="fader" type="range"
+               min="-60" max="12" step="0.5" value="6"
+               aria-label="Output volume" />
+        <span id="output-gain-db-l" class="fader-db">+6.0 dB</span>
+        <button id="output-mute-btn-l" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Latency Target (all roles) ──────────────────────────── -->
+  <div class="mixer-block">
+    <div class="mixer-block-label">LATENCY TARGET</div>
+    <div class="seg-group">
+      <button class="seg-btn latency-btn" type="button" data-frames="14">
+        STABLE<br/><span class="seg-sub">~280ms</span>
+      </button>
+      <button class="seg-btn latency-btn" type="button" data-frames="4">
+        BALANCED<br/><span class="seg-sub">~80ms</span>
+      </button>
+      <button class="seg-btn latency-btn" type="button" data-frames="2">
+        LOW LAT<br/><span class="seg-sub">~40ms</span>
+      </button>
+    </div>
+    <div id="latency-note" class="mixer-note">Lower latency increases dropout risk on noisy WiFi.</div>
+  </div>
+
+  <!-- ── Signal Meter / FFT ───────────────────────────────────── -->
+  <div class="mixer-block">
+    <div class="mixer-block-label">SIGNAL</div>
+    <canvas id="fft-canvas" aria-label="Log frequency FFT"></canvas>
+    <div class="fft-axis"><span>20Hz</span><span>20kHz</span></div>
+  </div>
+
+  <div class="mixer-block">
+    <div class="mixer-block-label">UPTIME</div>
+    <div id="uptime-value" class="uptime-value">0h 00m 00s</div>
+  </div>
+
+</section>

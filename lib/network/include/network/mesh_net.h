@@ -50,6 +50,10 @@ esp_err_t network_trigger_rejoin(void);  // Force child rejoin to refresh parent
 // Base is JITTER_PREFILL_FRAMES, adds extra for multi-hop or busy networks
 uint8_t network_get_jitter_prefill_frames(void);
 
+// Jitter buffer override: set to 1-16 to pin prefill depth; -1 restores auto mode
+void network_set_jitter_override(int frames);
+int  network_get_jitter_override(void);
+
 // TX bandwidth measurement
 uint32_t network_get_tx_bytes_and_reset(void);  // Returns bytes sent since last call
 

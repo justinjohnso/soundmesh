@@ -237,6 +237,14 @@
 // Start at 2.0x to compensate for quiet Opus decoder output
 #define RX_OUTPUT_VOLUME           2.0f   // 200% = +6dB amplification
 
+// Mixer gain range constants (dB). Used by portal API and adf_pipeline gain setters.
+// Values <= MIXER_MIN_GAIN_DB are treated as -inf (silence).
+#define MIXER_MIN_GAIN_DB          (-60.0f)
+#define MIXER_MAX_OUTPUT_GAIN_DB   (12.0f)
+#define MIXER_MAX_INPUT_GAIN_DB    (18.0f)
+// Epsilon for float unity-gain check: skip gain loop when linear ≈ 1.0
+#define MIXER_GAIN_UNITY_EPSILON   (0.0001f)
+
 // ============================================================================
 // Memory Monitoring Thresholds
 // ============================================================================

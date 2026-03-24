@@ -359,9 +359,9 @@ static float db_to_linear(float db, float min_db, float max_db)
 
 static float linear_to_db(float lin)
 {
-    if (lin <= 0.0f) return -60.0f;
+    if (lin <= 0.0f) return MIXER_MIN_GAIN_DB;
     float db = 20.0f * log10f(lin);
-    if (db < -60.0f) return -60.0f;
+    if (db < MIXER_MIN_GAIN_DB) return MIXER_MIN_GAIN_DB;
     return db;
 }
 
@@ -369,7 +369,7 @@ void adf_pipeline_set_output_gain_db(float db)
 {
     adf_pipeline_handle_t p = s_latest_pipeline;
     if (!p) return;
-    p->output_gain_linear = db_to_linear(db, -60.0f, 12.0f);
+    p->output_gain_linear = db_to_linear(db, MIXER_MIN_GAIN_DB, MIXER_MAX_OUTPUT_GAIN_DB);
 }
 
 float adf_pipeline_get_output_gain_db(void)
@@ -397,7 +397,7 @@ void adf_pipeline_set_input_gain_db(float db)
 {
     adf_pipeline_handle_t p = s_latest_pipeline;
     if (!p) return;
-    p->input_gain_linear = db_to_linear(db, -18.0f, 18.0f);
+    p->input_gain_linear = db_to_linear(db, MIXER_MIN_GAIN_DB, MIXER_MAX_INPUT_GAIN_DB);
 }
 
 float adf_pipeline_get_input_gain_db(void)

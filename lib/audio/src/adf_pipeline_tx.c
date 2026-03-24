@@ -151,7 +151,7 @@ void tx_capture_task(void *arg)
 
                 if (pipeline->input_mute) {
                     memset(mono_frame, 0, frames_read * sizeof(int16_t));
-                } else if (pipeline->input_gain_linear != 1.0f) {
+                } else if (fabsf(pipeline->input_gain_linear - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
                     for (size_t i = 0; i < frames_read; i++) {
                         int32_t s = (int32_t)(mono_frame[i] * pipeline->input_gain_linear);
                         if (s > 32767) s = 32767;

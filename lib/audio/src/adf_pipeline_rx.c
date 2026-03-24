@@ -286,7 +286,7 @@ void rx_playback_task(void *arg)
 
                 if (pipeline->output_mute) {
                     memset(mono_frame, 0, AUDIO_FRAME_BYTES);
-                } else {
+                } else if (fabsf(pipeline->output_gain_linear - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
                     float gain = pipeline->output_gain_linear;
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                         int32_t scaled = (int32_t)(mono_frame[i] * gain);

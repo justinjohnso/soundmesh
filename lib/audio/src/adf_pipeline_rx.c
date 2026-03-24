@@ -284,11 +284,16 @@ void rx_playback_task(void *arg)
                 static uint32_t playback_count = 0;
                 playback_count++;
 
-                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                    int32_t scaled = (int32_t)(mono_frame[i] * RX_OUTPUT_VOLUME);
-                    if (scaled > 32767) scaled = 32767;
-                    else if (scaled < -32768) scaled = -32768;
-                    mono_frame[i] = (int16_t)scaled;
+                if (pipeline->output_mute) {
+                    memset(mono_frame, 0, AUDIO_FRAME_BYTES);
+                } else {
+                    float gain = pipeline->output_gain_linear;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        int32_t scaled = (int32_t)(mono_frame[i] * gain);
+                        if (scaled > 32767) scaled = 32767;
+                        else if (scaled < -32768) scaled = -32768;
+                        mono_frame[i] = (int16_t)scaled;
+                    }
                 }
 
                 if (playback_count <= 5 || (playback_count % 500) == 0) {

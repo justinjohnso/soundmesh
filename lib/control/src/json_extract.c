@@ -1,6 +1,7 @@
 #include "control/json_extract.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static bool build_json_string_key(const char *field, char *key, size_t key_size) {
@@ -78,4 +79,62 @@ bool json_extract_bool_field(const char *body, const char *field, bool *out) {
         return true;
     }
     return false;
+}
+
+bool json_extract_float_field(const char *body, const char *field, float *out)
+{
+    if (!body || !field || !out) {
+        return false;
+    }
+
+    char key[64];
+    if (!build_json_bool_key(field, key, sizeof(key))) {
+        return false;
+    }
+
+    const char *start = strstr(body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+
+    char *end;
+    float val = strtof(start, &end);
+    if (end == start) {
+        return false;
+    }
+    *out = val;
+    return true;
+}
+
+bool json_extract_int_field(const char *body, const char *field, int *out)
+{
+    if (!body || !field || !out) {
+        return false;
+    }
+
+    char key[64];
+    if (!build_json_bool_key(field, key, sizeof(key))) {
+        return false;
+    }
+
+    const char *start = strstr(body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+
+    char *end;
+    long val = strtol(start, &end, 10);
+    if (end == start) {
+        return false;
+    }
+    *out = (int)val;
+    return true;
 }

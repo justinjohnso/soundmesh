@@ -145,6 +145,37 @@ esp_err_t adf_pipeline_get_fft_bins(adf_pipeline_handle_t pipeline,
  */
 esp_err_t adf_pipeline_get_latest_fft_bins(float *bins_out, size_t bin_count, bool *valid_out);
 
+/**
+ * Output gain and mute controls (primarily for RX/COMBO playback).
+ * Changes take effect on the next audio frame; no restart required.
+ * db clamped to [-60.0, +12.0]. Values <= -60 dB are treated as –inf (silence).
+ */
+void  adf_pipeline_set_output_gain_db(float db);
+float adf_pipeline_get_output_gain_db(void);
+void  adf_pipeline_set_output_mute(bool mute);
+bool  adf_pipeline_get_output_mute(void);
+
+/**
+ * Input gain and mute controls (TX capture trim, applied before Opus encode).
+ * db clamped to [-18.0, +18.0].
+ */
+void  adf_pipeline_set_input_gain_db(float db);
+float adf_pipeline_get_input_gain_db(void);
+void  adf_pipeline_set_input_mute(bool mute);
+bool  adf_pipeline_get_input_mute(void);
+
+/**
+ * Query the current input mode of the active pipeline (for portal serialization).
+ * Returns ADF_INPUT_MODE_AUX when no pipeline is active.
+ */
+adf_input_mode_t adf_pipeline_get_input_mode(void);
+
+/**
+ * Set the input mode on the active (latest) pipeline without needing the handle.
+ * No-op when no pipeline is active.
+ */
+void adf_pipeline_set_input_mode_latest(adf_input_mode_t mode);
+
 #ifdef __cplusplus
 }
 #endif

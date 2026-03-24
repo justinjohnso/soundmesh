@@ -2,6 +2,8 @@
 #include "control/portal_state.h"
 #include "control/portal_ota.h"
 #include "control/json_extract.h"
+#include "audio/adf_pipeline.h"
+#include "network/mesh_net.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_http_server.h>
@@ -238,6 +240,73 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t handle_api_mixer(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        char buf[256];
+        const char *input_mode_str =
+            (adf_pipeline_get_input_mode() == ADF_INPUT_MODE_TONE) ? "tone" : "aux";
+        int len = snprintf(
+            buf, sizeof(buf),
+            "{\"outputGainDb\":%.2f,\"outputMute\":%s"
+            ",\"inputGainDb\":%.2f,\"inputMute\":%s"
+            ",\"jitterFrames\":%d,\"inputMode\":\"%s\"}",
+            (double)adf_pipeline_get_output_gain_db(),
+            adf_pipeline_get_output_mute() ? "true" : "false",
+            (double)adf_pipeline_get_input_gain_db(),
+            adf_pipeline_get_input_mute() ? "true" : "false",
+            network_get_jitter_override(),
+            input_mode_str);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, buf, len);
+        return ESP_OK;
+    }
+
+    if (req->method != HTTP_POST) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+
+    char body[256] = {0};
+    int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rcvd <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    float fval;
+    bool bval;
+    int ival;
+
+    if (json_extract_float_field(body, "outputGainDb", &fval)) {
+        adf_pipeline_set_output_gain_db(fval);
+    }
+    if (json_extract_bool_field(body, "outputMute", &bval)) {
+        adf_pipeline_set_output_mute(bval);
+    }
+    if (json_extract_float_field(body, "inputGainDb", &fval)) {
+        adf_pipeline_set_input_gain_db(fval);
+    }
+    if (json_extract_bool_field(body, "inputMute", &bval)) {
+        adf_pipeline_set_input_mute(bval);
+    }
+    if (json_extract_int_field(body, "jitterFrames", &ival)) {
+        network_set_jitter_override(ival);
+    }
+
+    char input_mode[8] = {0};
+    if (json_extract_string_field(body, "inputMode", input_mode, sizeof(input_mode))) {
+        adf_input_mode_t mode = (strncmp(input_mode, "tone", 4) == 0)
+            ? ADF_INPUT_MODE_TONE : ADF_INPUT_MODE_AUX;
+        adf_pipeline_set_input_mode_latest(mode);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 static esp_err_t handle_captive_redirect(httpd_req_t *req) {
     const esp_netif_ip_info_t *info = portal_get_ip_info();
     char location[48];
@@ -303,7 +372,7 @@ esp_err_t portal_http_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.max_open_sockets = 4;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     // Let wildcard handler catch unrecognized captive-check URIs from different OSes.
     config.uri_match_fn = httpd_uri_match_wildcard;
@@ -353,6 +422,19 @@ esp_err_t portal_http_start(void) {
     httpd_register_uri_handler(server, &uri_ota_post);
     httpd_register_uri_handler(server, &uri_uplink_get);
     httpd_register_uri_handler(server, &uri_uplink_post);
+
+    httpd_uri_t uri_mixer_get = {
+        .uri = "/api/mixer",
+        .method = HTTP_GET,
+        .handler = handle_api_mixer
+    };
+    httpd_uri_t uri_mixer_post = {
+        .uri = "/api/mixer",
+        .method = HTTP_POST,
+        .handler = handle_api_mixer
+    };
+    httpd_register_uri_handler(server, &uri_mixer_get);
+    httpd_register_uri_handler(server, &uri_mixer_post);
     
     httpd_uri_t uri_ws = {
         .uri = "/ws",

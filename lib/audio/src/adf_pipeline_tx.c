@@ -149,6 +149,17 @@ void tx_capture_task(void *arg)
                 tx_update_input_activity(pipeline, peak >= AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD, peak);
                 fft_process_frame(pipeline, mono_frame, frames_read);
 
+                if (pipeline->input_mute) {
+                    memset(mono_frame, 0, frames_read * sizeof(int16_t));
+                } else if (pipeline->input_gain_linear != 1.0f) {
+                    for (size_t i = 0; i < frames_read; i++) {
+                        int32_t s = (int32_t)(mono_frame[i] * pipeline->input_gain_linear);
+                        if (s > 32767) s = 32767;
+                        else if (s < -32768) s = -32768;
+                        mono_frame[i] = (int16_t)s;
+                    }
+                }
+
                 static uint32_t capture_count = 0;
                 capture_count++;
                 if (capture_count <= 5 || (capture_count % 1000) == 0) {

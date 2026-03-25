@@ -244,6 +244,7 @@
 #define PORTAL_CONTROL_METRICS_SCHEMA_VERSION 1   // /api/control/metrics schema version
 #define PORTAL_CONTROL_RATE_LIMIT_WINDOW_MS 5000  // 5s rate limit window
 #define PORTAL_CONTROL_RATE_LIMIT_MAX_REQUESTS 10 // Max 10 requests per window
+#define PORTAL_CDC_LOG_MIRROR_ENABLED 1           // Mirror ESP logs to TinyUSB CDC ACM channel 0
 
 // ============================================================================
 // Audio Output Configuration

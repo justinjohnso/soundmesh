@@ -7,9 +7,13 @@
 #include <esp_netif.h>
 #include <esp_event.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <lwip/esp_netif_net_stack.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #if BUILD_HAS_PORTAL
@@ -26,12 +30,88 @@
  */
 #include "tinyusb.h"
 #include "tinyusb_net.h"
+#include "tusb_cdc_acm.h"
 
 static const char *TAG = "portal_usb";
 
 static bool portal_running = false;
 static esp_netif_t *s_portal_netif = NULL;
 static esp_netif_ip_info_t s_portal_ip;  // computed at runtime from mesh ID + node MAC
+static vprintf_like_t s_prev_vprintf = NULL;
+static bool s_cdc_log_mirror_ready = false;
+static bool s_cdc_log_mirror_enabled = false;
+static SemaphoreHandle_t s_cdc_log_lock = NULL;
+
+#if PORTAL_CDC_LOG_MIRROR_ENABLED
+static int portal_cdc_mirror_vprintf(const char *fmt, va_list args) {
+    int len = 0;
+    if (s_prev_vprintf) {
+        va_list copy;
+        va_copy(copy, args);
+        len = s_prev_vprintf(fmt, copy);
+        va_end(copy);
+    }
+
+    if (!s_cdc_log_mirror_ready || !s_cdc_log_mirror_enabled) {
+        return len;
+    }
+    if (!s_cdc_log_lock) {
+        return len;
+    }
+
+    if (xSemaphoreTake(s_cdc_log_lock, 0) != pdTRUE) {
+        return len;
+    }
+
+    char buf[256];
+    int wrote = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (wrote > 0) {
+        size_t out_len = (wrote < (int)sizeof(buf)) ? (size_t)wrote : (sizeof(buf) - 1);
+        tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)buf, out_len);
+        tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+    }
+    xSemaphoreGive(s_cdc_log_lock);
+    return len;
+}
+
+static void portal_enable_cdc_log_mirror(void) {
+    if (s_cdc_log_mirror_enabled) {
+        return;
+    }
+    if (!s_cdc_log_lock) {
+        s_cdc_log_lock = xSemaphoreCreateMutex();
+        if (!s_cdc_log_lock) {
+            ESP_LOGW(TAG, "CDC log mirror disabled: lock create failed");
+            return;
+        }
+    }
+
+    if (!tusb_cdc_acm_initialized(TINYUSB_CDC_ACM_0)) {
+        tinyusb_config_cdcacm_t acm_cfg = {
+            .usb_dev = TINYUSB_USBDEV_0,
+            .cdc_port = TINYUSB_CDC_ACM_0,
+            .callback_rx = NULL,
+            .callback_rx_wanted_char = NULL,
+            .callback_line_state_changed = NULL,
+            .callback_line_coding_changed = NULL,
+        };
+        esp_err_t cdc_ret = tusb_cdc_acm_init(&acm_cfg);
+        if (cdc_ret != ESP_OK) {
+            ESP_LOGW(TAG, "CDC log mirror disabled: CDC init failed (%s)", esp_err_to_name(cdc_ret));
+            return;
+        }
+    }
+
+    s_cdc_log_mirror_ready = true;
+    if (!s_prev_vprintf) {
+        s_prev_vprintf = esp_log_set_vprintf(portal_cdc_mirror_vprintf);
+    } else {
+        esp_log_set_vprintf(portal_cdc_mirror_vprintf);
+    }
+    s_cdc_log_mirror_enabled = true;
+    ESP_LOGI(TAG, "CDC log mirror enabled on TinyUSB ACM0");
+}
+#endif
 
 // Forward declarations for services in other files
 esp_err_t portal_http_start(void);
@@ -231,6 +311,10 @@ esp_err_t portal_init(void) {
         return ret;
     }
     ESP_LOGI(TAG, "TinyUSB driver installed");
+
+#if PORTAL_CDC_LOG_MIRROR_ENABLED
+    portal_enable_cdc_log_mirror();
+#endif
 
     // Initialize USB NCM network class
     ESP_LOGI(TAG, "Initializing USB NCM network class...");

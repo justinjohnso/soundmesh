@@ -32,6 +32,11 @@ sdkconfig.rx
 sdkconfig.combo
 sdkconfig.src
 sdkconfig.out
+sdkconfig.*.bak
+
+# Local debug/IDE artifacts
+compile_commands.json
+screenlog.0
 
 # AMP AI
 .aider*

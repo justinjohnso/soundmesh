@@ -15,18 +15,18 @@
 #define BUTTON_GPIO            GPIO_NUM_43
 
 // ============================================================================
-// I2S pins for UDA1334 DAC (RX only - receives from mesh network)
+// I2S pins for UDA1334 DAC (OUT only - receives from mesh network)
 // ============================================================================
-#define I2S_MCLK_IO            GPIO_NUM_1   // Master clock to UDA1334 (GPIO1/A0, not used by ES8388 in RX build)
+#define I2S_MCLK_IO            GPIO_NUM_1   // Master clock to UDA1334 (GPIO1/A0, not used by ES8388 in OUT build)
 #define I2S_BCK_IO             GPIO_NUM_7
 #define I2S_WS_IO              GPIO_NUM_8
 #define I2S_DO_IO              GPIO_NUM_9
 #define I2S_PORT               I2S_NUM_0
 
 // ============================================================================
-// ES8388 Audio Codec pins (TX/COMBO - PCBArtists ES8388 Module)
+// ES8388 Audio Codec pins (SRC - PCBArtists ES8388 Module)
 // 
-// The ES8388 replaces the ADC-based audio input for TX/COMBO devices.
+// The ES8388 replaces the ADC-based audio input for SRC devices.
 // It provides both line input (LIN2/RIN2) and headphone output.
 //
 // Wiring:

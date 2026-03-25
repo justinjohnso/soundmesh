@@ -5,8 +5,9 @@
 #include <esp_log.h>
 
 #include "audio/ring_buffer.h"
+#include "config/build_role.h"
 
-#ifdef CONFIG_TX_BUILD
+#if BUILD_IS_SOURCE
 // TODO: USB audio support (v0.2) - requires usb_device_uac.h from ESP-IDF
 // #include "usb_device_uac.h"
 // #include "esp_private/usb_phy.h"
@@ -47,7 +48,7 @@ esp_err_t usb_audio_init(void) {
 }
 
 esp_err_t usb_audio_read_frames(int16_t *frames, size_t frame_count, size_t *frames_read) {
-#ifdef CONFIG_TX_BUILD
+#if BUILD_IS_SOURCE
     if (!usb_audio_buffer) {
         *frames_read = 0;
         return ESP_FAIL;

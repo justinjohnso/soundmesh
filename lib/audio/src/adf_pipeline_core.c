@@ -21,8 +21,6 @@ int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
 int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];
 
-uint8_t s_batch_buffer[NET_FRAME_HEADER_SIZE + MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES)];
-
 static adf_pipeline_handle_t s_latest_pipeline = NULL;
 
 static esp_err_t init_opus_encoder(adf_pipeline_handle_t pipeline, uint32_t bitrate, uint8_t complexity)
@@ -160,6 +158,22 @@ esp_err_t adf_pipeline_start_impl(adf_pipeline_handle_t pipeline)
     if (pipeline->running) {
         xSemaphoreGive(pipeline->mutex);
         return ESP_OK;
+    }
+
+    // Pre-flight memory check before allocating task stacks
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    size_t required_stack = (pipeline->type == ADF_PIPELINE_TX)
+        ? (ENCODE_TASK_STACK_BYTES + CAPTURE_TASK_STACK_BYTES)
+        : (DECODE_TASK_STACK_BYTES + PLAYBACK_TASK_STACK_BYTES);
+    
+    if (largest_block < required_stack) {
+        ESP_LOGW(TAG, "Heap fragmented: largest_block=%lu < required_stack=%lu (free=%lu)",
+                 (unsigned long)largest_block, (unsigned long)required_stack, (unsigned long)free_heap);
+    }
+    if (free_heap < required_stack + MIN_FREE_HEAP_BYTES) {
+        ESP_LOGW(TAG, "Low heap: free=%lu < required=%lu + reserve=%u",
+                 (unsigned long)free_heap, (unsigned long)required_stack, MIN_FREE_HEAP_BYTES);
     }
 
     pipeline->running = true;
@@ -341,4 +355,24 @@ esp_err_t adf_pipeline_set_input_mode_impl(adf_pipeline_handle_t pipeline, adf_i
 adf_pipeline_handle_t adf_pipeline_get_latest_pipeline(void)
 {
     return s_latest_pipeline;
+}
+
+TaskHandle_t adf_pipeline_get_capture_task(adf_pipeline_handle_t pipeline)
+{
+    return pipeline ? pipeline->capture_task : NULL;
+}
+
+TaskHandle_t adf_pipeline_get_encode_task(adf_pipeline_handle_t pipeline)
+{
+    return pipeline ? pipeline->encode_task : NULL;
+}
+
+TaskHandle_t adf_pipeline_get_decode_task(adf_pipeline_handle_t pipeline)
+{
+    return pipeline ? pipeline->decode_task : NULL;
+}
+
+TaskHandle_t adf_pipeline_get_playback_task(adf_pipeline_handle_t pipeline)
+{
+    return pipeline ? pipeline->playback_task : NULL;
 }

@@ -1,3 +1,13 @@
+# SUPERSEDED — Pre-Upload Gate: Before vs. After
+
+This comparison is retained for historical context only.
+
+Current operator references:
+
+- `docs/operations/deployment-checklists.md`
+- `docs/operations/runbook.md`
+- `docs/operations/troubleshooting.md`
+
 # Pre-Upload Gate: Before vs. After
 
 ## Overview
@@ -314,4 +324,3 @@ Crash signatures: None detected
 - [ ] Integrate into CI/CD (GitHub Actions, GitLab, etc.)
 - [ ] Add gate override policy to security docs
 - [ ] Train team on threshold interpretation
-

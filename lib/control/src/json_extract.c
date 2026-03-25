@@ -1,5 +1,6 @@
 #include "control/json_extract.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -78,4 +79,38 @@ bool json_extract_bool_field(const char *body, const char *field, bool *out) {
         return true;
     }
     return false;
+}
+
+bool json_extract_uint16_field(const char *body, const char *field, uint16_t *out) {
+    if (!body || !field || !out) {
+        return false;
+    }
+
+    char key[64];
+    if (!build_json_bool_key(field, key, sizeof(key))) {
+        return false;
+    }
+
+    const char *start = strstr(body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+    if (!isdigit((unsigned char)*start)) {
+        return false;
+    }
+
+    uint32_t value = 0;
+    while (isdigit((unsigned char)*start)) {
+        value = (value * 10u) + (uint32_t)(*start - '0');
+        if (value > 65535u) {
+            return false;
+        }
+        start++;
+    }
+    *out = (uint16_t)value;
+    return true;
 }

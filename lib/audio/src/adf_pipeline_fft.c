@@ -10,6 +10,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "config/build_role.h"
+
 static const char *TAG = "adf_pipeline";
 
 static float s_fft_window[FFT_ANALYSIS_SIZE];
@@ -26,8 +28,8 @@ static void fft_init_once(void)
     }
     s_fft_init_attempted = true;
 
-#ifdef CONFIG_COMBO_BUILD
-    ESP_LOGW(TAG, "FFT disabled on COMBO build");
+#if BUILD_IS_SOURCE
+    ESP_LOGW(TAG, "FFT disabled on SRC build");
     return;
 #endif
 

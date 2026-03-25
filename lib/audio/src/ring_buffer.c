@@ -3,9 +3,13 @@
 #include <freertos/ringbuf.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <string.h>
 
 static const char *TAG = "ring_buffer";
+
+// Forward declaration for xRingbufferCreateWithCaps which may be missing in some headers
+RingbufHandle_t xRingbufferCreateWithCaps(size_t xBufferSize, RingbufferType_t xBufferType, UBaseType_t uxCaps);
 
 struct ring_buffer_t {
     RingbufHandle_t handle;
@@ -16,11 +20,31 @@ ring_buffer_t* ring_buffer_create(size_t size) {
     return ring_buffer_create_ex(size, false);
 }
 
+// PSRAM allocation threshold - larger buffers go to PSRAM
+#define PSRAM_ALLOCATION_THRESHOLD (1024)
+
 ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode) {
     ring_buffer_t *rb = malloc(sizeof(ring_buffer_t));
     if (!rb) return NULL;
     
     RingbufferType_t type = item_mode ? RINGBUF_TYPE_NOSPLIT : RINGBUF_TYPE_BYTEBUF;
+    
+#if CONFIG_SPIRAM_USE_MALLOC
+    // If PSRAM is enabled and buffer is large enough, try PSRAM first
+    if (size >= PSRAM_ALLOCATION_THRESHOLD) {
+        // Must use xRingbufferCreateStatic or xRingbufferCreateWithCaps if available
+        // But ESP-IDF 5.2 has xRingbufferCreateWithCaps
+        rb->handle = xRingbufferCreateWithCaps(size, type, MALLOC_CAP_SPIRAM);
+        if (rb->handle) {
+             ESP_LOGI(TAG, "Ring buffer created in PSRAM: %u bytes, mode=%s", size, 
+                      item_mode ? "ITEM" : "BYTE");
+             rb->consumer = NULL;
+             return rb;
+        }
+        ESP_LOGW(TAG, "PSRAM allocation failed for %u bytes, falling back to internal RAM", size);
+    }
+#endif
+
     rb->handle = xRingbufferCreate(size, type);
     if (!rb->handle) {
         free(rb);
@@ -29,7 +53,7 @@ ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode) {
     
     rb->consumer = NULL;
     
-    ESP_LOGI(TAG, "Ring buffer created: %u bytes, mode=%s", size, 
+    ESP_LOGI(TAG, "Ring buffer created in SRAM: %u bytes, mode=%s", size, 
              item_mode ? "ITEM" : "BYTE");
     return rb;
 }

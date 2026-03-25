@@ -508,171 +508,8 @@ static void display_draw_signal_bars(uint8_t x, uint8_t y, int rssi) {
     }
 }
 
-// Render TX display
-void display_render_tx(display_view_t view, const tx_status_t *status) {
-    if (!display_initialized) return;
-    display_clear();
-
-    static uint32_t animation_counter = 0;
-    animation_counter++;
-
-    if (view == DISPLAY_VIEW_NETWORK) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Con. Nodes: %lu", status->connected_nodes);
-        display_draw_string(0, 0, buf);
-
-        snprintf(buf, sizeof(buf), "Latency: %lu ms", status->latency_ms);
-        display_draw_string(0, 1, buf);
-
-        if (status->rssi == -100) {
-            display_draw_string(0, 2, "RSSI: -- dBm");
-        } else {
-            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-            display_draw_string(0, 2, buf);
-        }
-
-        const esp_netif_ip_info_t *pip = portal_get_ip_info();
-        if (pip && portal_is_running()) {
-            snprintf(buf, sizeof(buf), IPSTR, IP2STR(&pip->ip));
-            display_draw_string(0, 3, buf);
-        }
-    } else {
-    const char *mode_str = "Unknown";
-    if (status->input_mode == INPUT_MODE_TONE) mode_str = "Tone";
-    else if (status->input_mode == INPUT_MODE_USB) mode_str = "USB";
-    else if (status->input_mode == INPUT_MODE_AUX) mode_str = "Aux";
-
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Source: %s", mode_str);
-    display_draw_string(0, 0, buf);
-
-    if (status->input_mode == INPUT_MODE_TONE) {
-        snprintf(buf, sizeof(buf), "Freq: %lu Hz", status->tone_freq_hz);
-            display_draw_string(0, 1, buf);
-    } else {
-        const char *status_str = status->audio_active ? "Playing..." : "Idle...";
-            display_draw_string(0, 1, status_str);
-        }
-
-        snprintf(buf, sizeof(buf), "Bandwidth: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 2, buf);
-
-        if (status->audio_active) {
-            // Draw animated waveform
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 16 + (int)(sinf(phase) * 10.0f);
-                if (y >= 0 && y < DISPLAY_HEIGHT) {
-                    display_draw_pixel(x, y);
-                }
-            }
-        } else {
-            // Flat line
-            int y = 16;
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                display_draw_pixel(x, y);
-            }
-        }
-    }
-
-    display_update();
-}
-
-// Render RX display
-void display_render_rx(display_view_t view, const rx_status_t *status) {
-    if (!display_initialized) return;
-    
-    display_clear();
-    
-    static uint32_t animation_counter = 0;
-    animation_counter++;
-
-    display_draw_signal_bars(112, 0, status->rssi);
-
-    const char *state_str = status->connection_state[0] ? status->connection_state :
-                            (status->receiving_audio ? "Streaming" : "Waiting");
-
-    if (view == DISPLAY_VIEW_AUDIO) {
-        char buf[22];
-        snprintf(buf, sizeof(buf), "State:%.14s", state_str);
-        display_draw_string(0, 0, buf);
-
-        if (status->source_src_id[0]) {
-            snprintf(buf, sizeof(buf), "From: %s", status->source_src_id);
-        } else {
-            snprintf(buf, sizeof(buf), "Wait: %lus", status->state_elapsed_s);
-        }
-        display_draw_string(0, 1, buf);
-
-        snprintf(buf, sizeof(buf), "Opus %dk %dkHz", OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
-        display_draw_string(0, 2, buf);
-
-        snprintf(buf, sizeof(buf), "RX: %lu kbps", status->bandwidth_kbps);
-        display_draw_string(0, 3, buf);
-
-        if (status->receiving_audio) {
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
-                int y = 23 + (int)(sinf(phase) * 2.0f);
-                if (y >= 0 && y < DISPLAY_HEIGHT) {
-                    display_draw_pixel(x, y);
-                }
-            }
-        }
-    } else if (view == DISPLAY_VIEW_NETWORK) {
-        char buf[22];
-        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
-        display_draw_string(0, 0, buf);
-
-        if (status->rssi == -100) {
-            display_draw_string(0, 1, "RSSI: --");
-        } else {
-            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
-            display_draw_string(0, 1, buf);
-        }
-
-        if (status->latency_ms > 0) {
-            snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
-        } else {
-            snprintf(buf, sizeof(buf), "Ping: --");
-        }
-        display_draw_string(0, 2, buf);
-
-        snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
-        display_draw_string(0, 3, buf);
-    } else {
-        char buf[22];
-        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
-        display_draw_string(0, 0, buf);
-        
-        snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
-        display_draw_string(0, 1, buf);
-        
-        snprintf(buf, sizeof(buf), "Batt: %u%%", status->battery_pct);
-        display_draw_string(0, 2, buf);
-        
-        uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
-        uint32_t hours = uptime_s / 3600;
-        uint32_t mins = (uptime_s % 3600) / 60;
-        uint32_t secs = uptime_s % 60;
-        snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
-        display_draw_string(0, 3, buf);
-    }
-
-    display_update();
-}
-
-// Show a simple two-line message (e.g. startup/searching screens)
-void display_show_message(const char *line1, const char *line2) {
-    if (!display_initialized) return;
-    display_clear();
-    if (line1) display_draw_string(0, 1, line1);
-    if (line2) display_draw_string(0, 2, line2);
-    display_update();
-}
-
-// Render COMBO display
-void display_render_combo(display_view_t view, const combo_status_t *status) {
+// Render SRC display
+void display_render_src(display_view_t view, const src_status_t *status) {
     if (!display_initialized) return;
     
     display_clear();
@@ -717,7 +554,7 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
             display_draw_string(0, 1, buf);
         }
 
-        snprintf(buf, sizeof(buf), "TX: %lu kbps", status->bandwidth_kbps);
+        snprintf(buf, sizeof(buf), "SRC: %lu kbps", status->bandwidth_kbps);
         display_draw_string(0, 3, buf);
     } else if (view == DISPLAY_VIEW_NETWORK) {
         char buf[24];
@@ -765,5 +602,98 @@ void display_render_combo(display_view_t view, const combo_status_t *status) {
         display_draw_string(0, 3, buf);
     }
 
+    display_update();
+}
+
+// Render OUT display
+void display_render_out(display_view_t view, const out_status_t *status) {
+    if (!display_initialized) return;
+
+    display_clear();
+
+    static uint32_t animation_counter = 0;
+    animation_counter++;
+
+    display_draw_signal_bars(112, 0, status->rssi);
+
+    const char *state_str = status->connection_state[0] ? status->connection_state :
+                            (status->receiving_audio ? "Streaming" : "Waiting");
+
+    if (view == DISPLAY_VIEW_AUDIO) {
+        char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.14s", state_str);
+        display_draw_string(0, 0, buf);
+
+        if (status->source_src_id[0]) {
+            snprintf(buf, sizeof(buf), "From: %s", status->source_src_id);
+        } else {
+            snprintf(buf, sizeof(buf), "Wait: %lus", status->state_elapsed_s);
+        }
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "Opus %dk %dkHz", OPUS_BITRATE / 1000, AUDIO_SAMPLE_RATE / 1000);
+        display_draw_string(0, 2, buf);
+
+        snprintf(buf, sizeof(buf), "OUT: %lu kbps", status->bandwidth_kbps);
+        display_draw_string(0, 3, buf);
+
+        if (status->receiving_audio) {
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                float phase = ((float)x / DISPLAY_WIDTH) * 2.0f * M_PI + (float)(animation_counter % 100) * 0.1f;
+                int y = 23 + (int)(sinf(phase) * 2.0f);
+                if (y >= 0 && y < DISPLAY_HEIGHT) {
+                    display_draw_pixel(x, y);
+                }
+            }
+        }
+    } else if (view == DISPLAY_VIEW_NETWORK) {
+        char buf[22];
+        snprintf(buf, sizeof(buf), "State:%.15s", state_str);
+        display_draw_string(0, 0, buf);
+
+        if (status->rssi == -100) {
+            display_draw_string(0, 1, "RSSI: --");
+        } else {
+            snprintf(buf, sizeof(buf), "RSSI: %d dBm", status->rssi);
+            display_draw_string(0, 1, buf);
+        }
+
+        if (status->latency_ms > 0) {
+            snprintf(buf, sizeof(buf), "Ping: %lu ms", status->latency_ms);
+        } else {
+            snprintf(buf, sizeof(buf), "Ping: --");
+        }
+        display_draw_string(0, 2, buf);
+
+        snprintf(buf, sizeof(buf), "Loss: %.1f%%", status->loss_pct);
+        display_draw_string(0, 3, buf);
+    } else {
+        char buf[22];
+        snprintf(buf, sizeof(buf), "ID:%.17s", network_get_src_id());
+        display_draw_string(0, 0, buf);
+
+        snprintf(buf, sizeof(buf), "Buffer: %u%%", status->buffer_pct);
+        display_draw_string(0, 1, buf);
+
+        snprintf(buf, sizeof(buf), "Batt: %u%%", status->battery_pct);
+        display_draw_string(0, 2, buf);
+
+        uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        uint32_t hours = uptime_s / 3600;
+        uint32_t mins = (uptime_s % 3600) / 60;
+        uint32_t secs = uptime_s % 60;
+        snprintf(buf, sizeof(buf), "Up: %luh%02lum%02lus", hours, mins, secs);
+        display_draw_string(0, 3, buf);
+    }
+
+    display_update();
+}
+
+// Show a simple two-line message (e.g. startup/searching screens)
+void display_show_message(const char *line1, const char *line2) {
+    if (!display_initialized) return;
+    display_clear();
+    if (line1) display_draw_string(0, 1, line1);
+    if (line2) display_draw_string(0, 2, line2);
     display_update();
 }

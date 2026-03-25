@@ -12,7 +12,7 @@ FILES = ("index.html", "app.js", "app.css")
 
 def should_sync_portal():
     pio_env = env["PIOENV"]
-    return pio_env in ("tx", "rx", "combo")
+    return pio_env in ("src", "out")
 
 
 def sync_portal_assets():

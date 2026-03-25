@@ -14,6 +14,36 @@ static const char *TAG = "adf_pipeline";
 
 #define RX_TEST_TONE_MODE 0
 
+// Static buffers moved from stack to reduce task stack usage
+static uint8_t s_feed_opus_tmp[2 + OPUS_MAX_FRAME_BYTES];  // 514 bytes
+static int16_t s_prefill_silence[AUDIO_FRAME_SAMPLES];     // 3840 bytes
+
+static volatile uint16_t s_runtime_out_gain_pct = OUT_OUTPUT_GAIN_DEFAULT_PCT;
+
+static float current_out_gain_multiplier(void) {
+    uint16_t gain = s_runtime_out_gain_pct;
+    if (gain < OUT_OUTPUT_GAIN_MIN_PCT) {
+        gain = OUT_OUTPUT_GAIN_MIN_PCT;
+    } else if (gain > OUT_OUTPUT_GAIN_MAX_PCT) {
+        gain = OUT_OUTPUT_GAIN_MAX_PCT;
+    }
+    return (float)gain / 100.0f;
+}
+
+esp_err_t adf_pipeline_set_out_gain_percent(uint16_t out_gain_pct)
+{
+    if (out_gain_pct < OUT_OUTPUT_GAIN_MIN_PCT || out_gain_pct > OUT_OUTPUT_GAIN_MAX_PCT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_runtime_out_gain_pct = out_gain_pct;
+    return ESP_OK;
+}
+
+uint16_t adf_pipeline_get_out_gain_percent(void)
+{
+    return s_runtime_out_gain_pct;
+}
+
 esp_err_t adf_pipeline_feed_opus_impl(adf_pipeline_handle_t pipeline,
                                       const uint8_t *opus_data,
                                       size_t opus_len,
@@ -58,12 +88,12 @@ esp_err_t adf_pipeline_feed_opus_impl(adf_pipeline_handle_t pipeline,
         return ESP_ERR_NO_MEM;
     }
 
-    uint8_t tmp[2 + OPUS_MAX_FRAME_BYTES];
-    tmp[0] = (opus_len >> 8) & 0xFF;
-    tmp[1] = opus_len & 0xFF;
-    memcpy(&tmp[2], opus_data, opus_len);
+    // Use static buffer instead of stack allocation (was 514 bytes on stack)
+    s_feed_opus_tmp[0] = (opus_len >> 8) & 0xFF;
+    s_feed_opus_tmp[1] = opus_len & 0xFF;
+    memcpy(&s_feed_opus_tmp[2], opus_data, opus_len);
 
-    esp_err_t ret = ring_buffer_write(pipeline->opus_buffer, tmp, 2 + opus_len);
+    esp_err_t ret = ring_buffer_write(pipeline->opus_buffer, s_feed_opus_tmp, 2 + opus_len);
     if (ret != ESP_OK) {
         pipeline->stats.frames_dropped++;
         return ESP_ERR_NO_MEM;
@@ -76,8 +106,10 @@ void rx_decode_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
     int16_t *pcm_frame = s_decode_pcm_frame;
+    uint32_t decode_iteration = 0;
 
-    ESP_LOGI(TAG, "RX decode task started (event-driven, item-based)");
+    ESP_LOGI(TAG, "RX decode task started (event-driven, item-based), stack_hwm=%u",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
     while (pipeline->running) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
@@ -187,6 +219,14 @@ void rx_decode_task(void *arg)
                 pipeline->stats.frames_dropped++;
             } else {
                 pipeline->stats.frames_processed++;
+                decode_iteration++;
+                // Log stack HWM every 1000 successful decodes
+                if ((decode_iteration % 1000) == 0) {
+                    ESP_LOGI(TAG, "Decode #%lu: avg_time=%luus, stack_hwm=%u",
+                             (unsigned long)decode_iteration,
+                             (unsigned long)pipeline->stats.avg_decode_time_us,
+                             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                }
             }
         }
     }
@@ -262,8 +302,8 @@ void rx_playback_task(void *arg)
 #if defined(CONFIG_USE_ES8388)
                 es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
 #else
-                static int16_t prefill_silence[AUDIO_FRAME_SAMPLES] = {0};
-                i2s_audio_write_mono_as_stereo(prefill_silence, AUDIO_FRAME_SAMPLES);
+                // Use file-scope static buffer (was 3840 bytes on stack in conditional)
+                i2s_audio_write_mono_as_stereo(s_prefill_silence, AUDIO_FRAME_SAMPLES);
 #endif
                 continue;
             }
@@ -283,17 +323,19 @@ void rx_playback_task(void *arg)
             if (ret == ESP_OK) {
                 static uint32_t playback_count = 0;
                 playback_count++;
+                float out_gain = current_out_gain_multiplier();
 
                 for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                    int32_t scaled = (int32_t)(mono_frame[i] * RX_OUTPUT_VOLUME);
+                    int32_t scaled = (int32_t)(mono_frame[i] * out_gain);
                     if (scaled > 32767) scaled = 32767;
                     else if (scaled < -32768) scaled = -32768;
                     mono_frame[i] = (int16_t)scaled;
                 }
 
-                if (playback_count <= 5 || (playback_count % 500) == 0) {
-                    ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d",
-                             playback_count, (int)mono_frame[0], (int)mono_frame[100]);
+                if (playback_count <= 5 || (playback_count % 1000) == 0) {
+                    ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d stack_hwm=%u",
+                             playback_count, (int)mono_frame[0], (int)mono_frame[100],
+                             (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
                 memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES);
 

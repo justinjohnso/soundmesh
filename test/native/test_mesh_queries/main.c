@@ -18,10 +18,11 @@ static esp_err_t stub_ap_get_sta_list_result = ESP_OK;
 static int stub_disconnect_calls = 0;
 static int stub_connect_calls = 0;
 static uint32_t stub_last_delay_ticks = 0;
+static int64_t stub_time_us = 0;
 static wifi_ap_record_t stub_ap_info = {0};
 static wifi_sta_list_t stub_sta_list = {0};
 
-node_role_t my_node_role = NODE_ROLE_RX;
+node_role_t my_node_role = NODE_ROLE_OUT;
 uint8_t my_stream_id = 0;
 uint8_t my_sta_mac[6] = {0};
 char g_src_id[NETWORK_SRC_ID_LEN] = {0};
@@ -42,8 +43,8 @@ bool child_ping_pending = false;
 int64_t last_ping_sent_us = 0;
 int64_t last_child_ping_sent_us = 0;
 
-mesh_addr_t cached_root_addr = {{0}};
-bool have_root_addr = false;
+static mesh_addr_t stub_cached_root_addr = {{0}};
+static bool stub_have_root_addr = false;
 
 uint32_t ping_seq = 0;
 uint32_t child_ping_seq = 0;
@@ -56,6 +57,9 @@ uint32_t auth_expire_count = 0;
 uint32_t recovery_restarts = 0;
 uint32_t parent_conn_count = 0;
 uint32_t parent_disc_count = 0;
+uint32_t rejoin_attempt_count = 0;
+uint32_t rejoin_window_start_ms = 0;
+uint32_t rejoin_cooldown_until_ms = 0;
 
 network_uplink_status_t s_uplink = {0};
 char s_uplink_password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
@@ -117,6 +121,11 @@ esp_err_t esp_wifi_ap_get_sta_list(wifi_sta_list_t *sta_list)
     return stub_ap_get_sta_list_result;
 }
 
+int64_t esp_timer_get_time(void)
+{
+    return stub_time_us;
+}
+
 void vTaskDelay(uint32_t ticks)
 {
     stub_last_delay_ticks = ticks;
@@ -124,6 +133,31 @@ void vTaskDelay(uint32_t ticks)
 
 void mesh_state_notify_waiting_tasks(void)
 {
+}
+
+bool mesh_state_has_root_addr(void)
+{
+    return stub_have_root_addr;
+}
+
+const mesh_addr_t *mesh_state_get_root_addr(void)
+{
+    return stub_have_root_addr ? &stub_cached_root_addr : NULL;
+}
+
+void mesh_state_set_root_addr(const mesh_addr_t *root_addr)
+{
+    if (!root_addr) {
+        return;
+    }
+    stub_cached_root_addr = *root_addr;
+    stub_have_root_addr = true;
+}
+
+void mesh_state_clear_root_addr(void)
+{
+    memset(&stub_cached_root_addr, 0, sizeof(stub_cached_root_addr));
+    stub_have_root_addr = false;
 }
 
 static void reset_state(void)
@@ -138,6 +172,7 @@ static void reset_state(void)
     stub_disconnect_calls = 0;
     stub_connect_calls = 0;
     stub_last_delay_ticks = 0;
+    stub_time_us = 0;
     stub_ap_info.rssi = 0;
     memset(&stub_sta_list, 0, sizeof(stub_sta_list));
 
@@ -146,9 +181,13 @@ static void reset_state(void)
     is_mesh_root_ready = false;
     mesh_layer = 0;
     measured_latency_ms = 0;
-    have_root_addr = true;
+    stub_have_root_addr = true;
+    memset(&stub_cached_root_addr, 0, sizeof(stub_cached_root_addr));
     tx_bytes_counter = 0;
     nearest_child_rssi = -100;
+    rejoin_attempt_count = 0;
+    rejoin_window_start_ms = 0;
+    rejoin_cooldown_until_ms = 0;
     memset(nearest_child_addr.addr, 0, sizeof(nearest_child_addr.addr));
 }
 
@@ -225,6 +264,7 @@ void test_stream_ready_requires_root_ready_on_root_node(void)
 void test_trigger_rejoin_rejects_when_called_on_root(void)
 {
     is_mesh_root = true;
+    stub_time_us = 1000;
 
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_STATE, network_trigger_rejoin());
     TEST_ASSERT_EQUAL_INT(0, stub_disconnect_calls);
@@ -235,23 +275,79 @@ void test_trigger_rejoin_resets_state_and_reconnects_child(void)
 {
     is_mesh_root = false;
     is_mesh_connected = true;
-    have_root_addr = true;
+    stub_have_root_addr = true;
     stub_disconnect_result = ESP_ERR_MESH_DISCONNECTED;
     stub_connect_result = ESP_OK;
+    stub_time_us = 1000;
 
     TEST_ASSERT_EQUAL_INT(ESP_OK, network_trigger_rejoin());
-    TEST_ASSERT_FALSE(have_root_addr);
+    TEST_ASSERT_FALSE(stub_have_root_addr);
     TEST_ASSERT_FALSE(is_mesh_connected);
     TEST_ASSERT_EQUAL_INT(1, stub_disconnect_calls);
     TEST_ASSERT_EQUAL_INT(1, stub_connect_calls);
     TEST_ASSERT_EQUAL_UINT32(50, stub_last_delay_ticks);
+    TEST_ASSERT_EQUAL_UINT32(1, rejoin_attempt_count);
 }
 
 void test_trigger_rejoin_surfaces_connect_failure(void)
 {
+    stub_time_us = 1000;
     stub_connect_result = ESP_ERR_INVALID_STATE;
 
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_STATE, network_trigger_rejoin());
+    TEST_ASSERT_EQUAL_INT(1, stub_disconnect_calls);
+    TEST_ASSERT_EQUAL_INT(1, stub_connect_calls);
+}
+
+void test_rejoin_allowed_rejects_root_and_honors_cooldown(void)
+{
+    is_mesh_root = true;
+    TEST_ASSERT_FALSE(network_rejoin_allowed());
+
+    is_mesh_root = false;
+    rejoin_cooldown_until_ms = 5000;
+    stub_time_us = 4000 * 1000;
+    TEST_ASSERT_FALSE(network_rejoin_allowed());
+
+    stub_time_us = 5000 * 1000;
+    TEST_ASSERT_TRUE(network_rejoin_allowed());
+}
+
+void test_trigger_rejoin_blocked_during_cooldown(void)
+{
+    is_mesh_root = false;
+    rejoin_cooldown_until_ms = 5000;
+    stub_time_us = 4500 * 1000;
+
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_STATE, network_trigger_rejoin());
+    TEST_ASSERT_EQUAL_INT(0, stub_disconnect_calls);
+    TEST_ASSERT_EQUAL_INT(0, stub_connect_calls);
+}
+
+void test_trigger_rejoin_trips_circuit_breaker_at_attempt_limit(void)
+{
+    is_mesh_root = false;
+    rejoin_window_start_ms = 1000;
+    rejoin_attempt_count = OUT_REJOIN_MAX_ATTEMPTS;
+    stub_time_us = 1500 * 1000;
+
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_STATE, network_trigger_rejoin());
+    TEST_ASSERT_TRUE(rejoin_cooldown_until_ms > 1500);
+    TEST_ASSERT_EQUAL_INT(0, stub_disconnect_calls);
+    TEST_ASSERT_EQUAL_INT(0, stub_connect_calls);
+}
+
+void test_trigger_rejoin_resets_attempt_window_after_timeout(void)
+{
+    is_mesh_root = false;
+    is_mesh_connected = true;
+    stub_have_root_addr = true;
+    rejoin_window_start_ms = 1000;
+    rejoin_attempt_count = OUT_REJOIN_MAX_ATTEMPTS;
+    stub_time_us = (1000 + OUT_REJOIN_WINDOW_MS + 1) * 1000LL;
+
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_trigger_rejoin());
+    TEST_ASSERT_EQUAL_UINT32(1, rejoin_attempt_count);
     TEST_ASSERT_EQUAL_INT(1, stub_disconnect_calls);
     TEST_ASSERT_EQUAL_INT(1, stub_connect_calls);
 }
@@ -303,6 +399,10 @@ int main(void)
     RUN_TEST(test_trigger_rejoin_rejects_when_called_on_root);
     RUN_TEST(test_trigger_rejoin_resets_state_and_reconnects_child);
     RUN_TEST(test_trigger_rejoin_surfaces_connect_failure);
+    RUN_TEST(test_rejoin_allowed_rejects_root_and_honors_cooldown);
+    RUN_TEST(test_trigger_rejoin_blocked_during_cooldown);
+    RUN_TEST(test_trigger_rejoin_trips_circuit_breaker_at_attempt_limit);
+    RUN_TEST(test_trigger_rejoin_resets_attempt_window_after_timeout);
     RUN_TEST(test_get_tx_bytes_and_reset_clears_counter);
     RUN_TEST(test_get_rssi_returns_default_on_wifi_error);
     RUN_TEST(test_get_nearest_child_rssi_returns_default_when_not_root);

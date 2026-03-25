@@ -1,4 +1,5 @@
 #include "control/usb_portal.h"
+#include "config/build.h"
 #include <esp_log.h>
 #include <lwip/sockets.h>
 #include <lwip/ip4_addr.h>
@@ -101,6 +102,11 @@ static void dns_server_task(void *arg) {
 }
 
 esp_err_t portal_dns_start(void) {
+    if (dns_task_handle != NULL) {
+        ESP_LOGW(TAG, "DNS server already running");
+        return ESP_OK;
+    }
+
     dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (dns_sock < 0) {
         ESP_LOGE(TAG, "DNS socket create failed");
@@ -120,7 +126,14 @@ esp_err_t portal_dns_start(void) {
         return ESP_FAIL;
     }
     
-    xTaskCreatePinnedToCore(dns_server_task, "dns_srv", 3072, NULL, 2, &dns_task_handle, 0);
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        dns_server_task, "dns_srv", PORTAL_DNS_STACK_BYTES, NULL, 2, &dns_task_handle, 0);
+    if (task_created != pdPASS || dns_task_handle == NULL) {
+        ESP_LOGE(TAG, "DNS task create failed");
+        close(dns_sock);
+        dns_sock = -1;
+        return ESP_ERR_NO_MEM;
+    }
     
     ESP_LOGI(TAG, "DNS catch-all server started on port %d", DNS_PORT);
     return ESP_OK;

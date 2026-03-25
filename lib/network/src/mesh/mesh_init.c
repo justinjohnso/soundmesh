@@ -4,7 +4,9 @@
 #include "mesh/mesh_events.h"
 #include "mesh/mesh_rx.h"
 #include "mesh/mesh_heartbeat.h"
+#include "mesh/mesh_dedupe.h"
 #include "config/build.h"
+#include "config/build_role.h"
 #include "network/mesh_net.h"
 #include <esp_event.h>
 #include <esp_log.h>
@@ -17,15 +19,33 @@
 
 static const char *TAG = "network_mesh";
 
+static void unregister_waiting_task(TaskHandle_t task_handle) {
+    if (task_handle == NULL) {
+        return;
+    }
+    for (int i = 0; i < waiting_task_count; i++) {
+        if (waiting_task_handles[i] == task_handle) {
+            for (int j = i; j < waiting_task_count - 1; j++) {
+                waiting_task_handles[j] = waiting_task_handles[j + 1];
+            }
+            waiting_task_handles[waiting_task_count - 1] = NULL;
+            waiting_task_count--;
+            break;
+        }
+    }
+}
+
 esp_err_t network_init_mesh(void) {
     ESP_LOGI(TAG, "Initializing ESP-WIFI-MESH");
 
-#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)
-    my_node_role = NODE_ROLE_TX;
-    ESP_LOGI(TAG, "Node role: TX/COMBO (root preference enabled)");
+    mesh_dedupe_reset();
+
+#if BUILD_IS_SOURCE
+    my_node_role = NODE_ROLE_SRC;
+    ESP_LOGI(TAG, "Node role: SRC (root preference enabled)");
 #else
-    my_node_role = NODE_ROLE_RX;
-    ESP_LOGI(TAG, "Node role: RX");
+    my_node_role = NODE_ROLE_OUT;
+    ESP_LOGI(TAG, "Node role: OUT");
 #endif
 
     esp_read_mac(my_sta_mac, ESP_MAC_WIFI_STA);
@@ -42,8 +62,20 @@ esp_err_t network_init_mesh(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    if (ret == ESP_ERR_INVALID_STATE) {
+        ESP_LOGI(TAG, "Default event loop already initialized");
+    }
 
     ESP_ERROR_CHECK(esp_netif_create_default_wifi_mesh_netifs(NULL, NULL));
 
@@ -74,7 +106,7 @@ esp_err_t network_init_mesh(void) {
              mesh_id_bytes[0], mesh_id_bytes[1], mesh_id_bytes[2],
              mesh_id_bytes[3], mesh_id_bytes[4], mesh_id_bytes[5], MESH_ID);
     ESP_LOGI(TAG, "Mesh config: role=%s channel=%d fixed_root=1 src_id=%s",
-             my_node_role == NODE_ROLE_TX ? "TX/COMBO" : "RX", MESH_CHANNEL, g_src_id);
+             my_node_role == NODE_ROLE_SRC ? "SRC" : "OUT", MESH_CHANNEL, g_src_id);
 
     mesh_config.channel = MESH_CHANNEL;
 
@@ -91,7 +123,7 @@ esp_err_t network_init_mesh(void) {
 
     ESP_ERROR_CHECK(esp_mesh_set_config(&mesh_config));
 
-    ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_RX));
+    ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_OUT));
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(MESH_MAX_LAYER));
     ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(MESH_XON_QSIZE));
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(MESH_AP_ASSOC_EXPIRE_S));
@@ -99,32 +131,62 @@ esp_err_t network_init_mesh(void) {
     ESP_LOGI(TAG, "Mesh tuning: max_layer=%u xon_qsize=%u ap_assoc_expire=%us",
              (unsigned)MESH_MAX_LAYER, (unsigned)MESH_XON_QSIZE, (unsigned)MESH_AP_ASSOC_EXPIRE_S);
 
-    if (my_node_role == NODE_ROLE_TX) {
+    if (my_node_role == NODE_ROLE_SRC) {
         ESP_ERROR_CHECK(esp_mesh_set_type(MESH_ROOT));
-        ESP_LOGI(TAG, "Designated root: TX/COMBO node set as MESH_ROOT");
+        ESP_LOGI(TAG, "Designated root: SRC node set as MESH_ROOT");
     }
     ESP_ERROR_CHECK(esp_mesh_fix_root(true));
 
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    xTaskCreate(mesh_rx_task, "mesh_rx", MESH_RX_TASK_STACK, NULL, MESH_RX_TASK_PRIO, NULL);
-    xTaskCreate(mesh_heartbeat_task, "mesh_hb", HEARTBEAT_TASK_STACK, NULL, HEARTBEAT_TASK_PRIO, &heartbeat_task_handle);
-
-    network_register_startup_notification(heartbeat_task_handle);
-
-    ESP_ERROR_CHECK(esp_mesh_start());
-
-    if (my_node_role == NODE_ROLE_TX) {
-        esp_wifi_scan_stop();
-        ESP_LOGI(TAG, "TX/COMBO: stopped startup scanning");
+    TaskHandle_t mesh_rx_handle = NULL;
+    if (xTaskCreate(mesh_rx_task, "mesh_rx", MESH_RX_TASK_STACK, NULL, MESH_RX_TASK_PRIO, &mesh_rx_handle) != pdPASS ||
+        mesh_rx_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create mesh_rx task");
+        return ESP_ERR_NO_MEM;
+    }
+    if (xTaskCreate(mesh_heartbeat_task,
+                    "mesh_hb",
+                    HEARTBEAT_TASK_STACK,
+                    NULL,
+                    HEARTBEAT_TASK_PRIO,
+                    &heartbeat_task_handle) != pdPASS ||
+        heartbeat_task_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create mesh_hb task");
+        vTaskDelete(mesh_rx_handle);
+        return ESP_ERR_NO_MEM;
     }
 
-    if (my_node_role == NODE_ROLE_RX) {
+    ret = network_register_startup_notification(heartbeat_task_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register startup notification: %s", esp_err_to_name(ret));
+        vTaskDelete(mesh_rx_handle);
+        vTaskDelete(heartbeat_task_handle);
+        heartbeat_task_handle = NULL;
+        return ret;
+    }
+
+    ret = esp_mesh_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_mesh_start failed: %s", esp_err_to_name(ret));
+        unregister_waiting_task(heartbeat_task_handle);
+        vTaskDelete(mesh_rx_handle);
+        vTaskDelete(heartbeat_task_handle);
+        heartbeat_task_handle = NULL;
+        return ret;
+    }
+
+    if (my_node_role == NODE_ROLE_SRC) {
+        esp_wifi_scan_stop();
+        ESP_LOGI(TAG, "SRC: stopped startup scanning");
+    }
+
+    if (my_node_role == NODE_ROLE_OUT) {
         esp_err_t grp_err = esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
         if (grp_err == ESP_OK) {
-            ESP_LOGI(TAG, "RX: subscribed to audio multicast group");
+            ESP_LOGI(TAG, "OUT: subscribed to audio multicast group");
         } else {
-            ESP_LOGW(TAG, "RX: failed to subscribe to multicast group: %s", esp_err_to_name(grp_err));
+            ESP_LOGW(TAG, "OUT: failed to subscribe to multicast group: %s", esp_err_to_name(grp_err));
         }
     }
 

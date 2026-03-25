@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "network/uplink_control.h"
+#include "network/mixer_control.h"
 
 // ============================================================================
 // ESP-WIFI-MESH Network API (v0.1)
@@ -45,6 +46,7 @@ bool network_is_stream_ready(void);  // True when connected to mesh
 bool network_is_connected(void);     // True when connected to mesh (non-root) or root
 esp_err_t network_send_ping(void);   // Send ping to root (RX nodes only)
 esp_err_t network_trigger_rejoin(void);  // Force child rejoin to refresh parent path
+bool network_rejoin_allowed(void);   // Circuit-breaker status for rejoin attempts
 
 // Dynamic jitter buffer: returns recommended prefill frames based on network state
 // Base is JITTER_PREFILL_FRAMES, adds extra for multi-hop or busy networks
@@ -100,7 +102,7 @@ typedef struct __attribute__((packed)) {
 // Heartbeat packet (sent every 2 seconds by all nodes)
 typedef struct __attribute__((packed)) {
 	uint8_t type;           // 0x02 = HEARTBEAT
-	uint8_t role;           // 0=RX, 1=TX (COMBO reports as TX)
+	uint8_t role;           // 0=OUT, 1=SRC
 	uint8_t is_root;        // 1 if this node is mesh root
 	uint8_t layer;          // Hop count from root
 	uint32_t uptime_ms;     // Milliseconds since boot
@@ -132,6 +134,19 @@ typedef struct {
 
 esp_err_t network_set_uplink_config(const char *ssid, const char *password, bool enabled);
 esp_err_t network_get_uplink_status(network_uplink_status_t *out);
+
+typedef struct {
+    uint16_t out_gain_pct;
+    bool applied;
+    bool pending_apply;
+    char last_error[48];
+    uint32_t updated_ms;
+} network_mixer_status_t;
+
+typedef esp_err_t (*network_mixer_apply_callback_t)(uint16_t out_gain_pct);
+esp_err_t network_register_mixer_apply_callback(network_mixer_apply_callback_t callback);
+esp_err_t network_set_mixer_config(uint16_t out_gain_pct);
+esp_err_t network_get_mixer_status(network_mixer_status_t *out);
 
 // Stream announcement (sent by TX/COMBO on startup and mode change)
 typedef struct __attribute__((packed)) {

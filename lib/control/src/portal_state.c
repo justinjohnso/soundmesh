@@ -1,8 +1,10 @@
 #include "control/portal_state.h"
 #include "control/usb_portal.h"
 #include "control/serial_dashboard.h"
+#include "control/memory_monitor.h"
 #include "audio/adf_pipeline.h"
 #include "config/build.h"
+#include "config/build_role.h"
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_mac.h>
@@ -232,10 +234,10 @@ void portal_state_update_self(void) {
     }
 
     node->has_heartbeat = 1;
-    #if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD)
-        node->role = 1;  // TX
+    #if BUILD_IS_SOURCE
+        node->role = 1;  // SRC
     #else
-        node->role = 0;  // RX
+        node->role = 0;  // OUT
     #endif
 
     node->is_root = esp_mesh_is_root() ? 1 : 0;
@@ -285,11 +287,9 @@ static void mac_to_str(const uint8_t *mac, char *str) {
 }
 
 static const char *portal_build_label(void) {
-#if defined(CONFIG_COMBO_BUILD)
+#if BUILD_IS_SOURCE
     return "SRC";
-#elif defined(CONFIG_TX_BUILD)
-    return "SRC";
-#elif defined(CONFIG_RX_BUILD)
+#elif BUILD_IS_OUTPUT
     return "OUT";
 #else
     return "UNKNOWN";
@@ -397,15 +397,26 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
     bool fft_valid = false;
     adf_pipeline_get_latest_fft_bins(fft_bins, FFT_PORTAL_BIN_COUNT, &fft_valid);
 
+    // Get detailed memory stats
+    memory_stats_t mem_stats;
+    memory_monitor_get_stats(&mem_stats);
+
     int off = snprintf(
         buf,
         buf_size,
-        "{\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,\"core0LoadPct\":%s,"
+        "{\"schemaVersion\":%u,\"ts\":%lld,\"self\":\"%s\",\"heapKb\":%lu,"
+        "\"memory\":{\"freeHeap\":%lu,\"largestBlock\":%lu,\"fragPct\":%u,\"minEverFree\":%lu},"
+        "\"core0LoadPct\":%s,"
         "\"latencyMs\":%lu,\"netIf\":\"%s\",\"buildLabel\":\"%s\","
         "\"meshState\":\"%s\",\"bpm\":null,\"fftBins\":",
+        (unsigned)PORTAL_STATUS_SCHEMA_VERSION,
         (long long)(esp_timer_get_time() / 1000),
         self_mac_str,
         (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
+        (unsigned long)mem_stats.free_heap,
+        (unsigned long)mem_stats.largest_block,
+        (unsigned)mem_stats.fragmentation_pct,
+        (unsigned long)mem_stats.min_ever_free_heap,
         core0_load_str,
         (unsigned long)network_get_latency_ms(),
         netif_str,
@@ -441,7 +452,7 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
             "\"layer\":%d,\"rssi\":%d,\"children\":%d,"
             "\"streaming\":%s,",
             mac_str,
-            n->role == 1 ? "TX" : "RX",
+            n->role == 1 ? "SRC" : "OUT",
             n->is_root ? "true" : "false",
             n->layer,
             n->rssi,
@@ -500,9 +511,25 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
                 uplink.configured ? "true" : "false",
                 uplink.root_applied ? "true" : "false",
                 uplink.pending_apply ? "true" : "false",
-                uplink.ssid,
+                uplink.configured ? "<configured>" : "",
                 uplink.last_error,
                 (unsigned long)uplink.updated_ms);
+        }
+    }
+
+    if (off < (int)buf_size - 160) {
+        network_mixer_status_t mixer = {0};
+        if (network_get_mixer_status(&mixer) == ESP_OK) {
+            off += snprintf(
+                buf + off,
+                buf_size - off,
+                ",\"mixer\":{\"outGainPct\":%u,\"applied\":%s,\"pendingApply\":%s,"
+                "\"lastError\":\"%s\",\"updatedMs\":%lu}",
+                (unsigned)mixer.out_gain_pct,
+                mixer.applied ? "true" : "false",
+                mixer.pending_apply ? "true" : "false",
+                mixer.last_error,
+                (unsigned long)mixer.updated_ms);
         }
     }
 

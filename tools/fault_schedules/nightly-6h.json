@@ -1,0 +1,38 @@
+[
+  {
+    "at_seconds": 900,
+    "action": "log_marker",
+    "target": "BOTH",
+    "label": "15m-health-checkpoint"
+  },
+  {
+    "at_seconds": 3600,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "1h-out-reset"
+  },
+  {
+    "at_seconds": 7200,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "2h-src-reset"
+  },
+  {
+    "at_seconds": 10800,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "3h-out-reset"
+  },
+  {
+    "at_seconds": 14400,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "4h-src-reset"
+  },
+  {
+    "at_seconds": 18000,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "5h-out-reset"
+  }
+]

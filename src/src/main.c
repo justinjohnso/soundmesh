@@ -1,11 +1,11 @@
 /**
- * MeshNet Audio TX Node
+ * MeshNet Audio SRC Node
  * 
- * Pure TX mode: ES8388 input → Opus encode → mesh broadcast
- * No local audio output (use COMBO for headphone monitoring)
+ * Source capture + local headphone monitor via ES8388.
+ * Uses ESP-ADF pipeline with Opus compression for mesh transmission.
  */
 
-#if defined(CONFIG_TX_BUILD)
+#if defined(CONFIG_SRC_BUILD)
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -13,6 +13,7 @@
 #include <esp_log.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
+#include <esp_mesh.h>
 #include <string.h>
 #include <math.h>
 #include "config/build.h"
@@ -20,31 +21,34 @@
 #include "control/display.h"
 #include "control/buttons.h"
 #include "control/status.h"
-#include "network/mesh_net.h"
 #include "audio/tone_gen.h"
 #include "audio/adf_pipeline.h"
 #include "control/usb_portal.h"
+#include "control/portal_ota.h"
+#include "network/mesh_net.h"
 #include "control/serial_dashboard.h"
+#include "control/memory_monitor.h"
 
 #ifdef CONFIG_USE_ES8388
 #include "audio/es8388_audio.h"
 #else
 #include "audio/adc_audio.h"
+#include "audio/i2s_audio.h"
 #endif
 
-static const char *TAG = "tx_main";
+static const char *TAG = "src_main";
 
-static tx_status_t status = {
+static src_status_t status = {
     .input_mode = INPUT_MODE_AUX,
     .audio_active = false,
     .connected_nodes = 0,
-    .latency_ms = 10,
     .bandwidth_kbps = 0,
-    .rssi = 0,
-    .tone_freq_hz = 440
+    .tone_freq_hz = 440,
+    .output_volume = 1.0f,
+    .nearest_rssi = -100
 };
 
-static display_view_t current_view = DISPLAY_VIEW_NETWORK;
+static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t tx_pipeline = NULL;
 
 void update_tone_oscillate(int64_t now_ms) {
@@ -70,40 +74,62 @@ void update_tone_oscillate(int64_t now_ms) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "======================================");
-    ESP_LOGI(TAG, "MeshNet Audio TX starting (Opus)...");
+    ESP_LOGI(TAG, "MeshNet Audio SRC starting (Opus)...");
     ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
     ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames, Opus %d kbps",
              AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS, OPUS_BITRATE / 1000);
     ESP_LOGI(TAG, "======================================");
 
+    // Initialize memory monitor early for pre-flight checks
+    ESP_ERROR_CHECK(memory_monitor_init());
+
+    portal_ota_confirm_running_image();
+
 #ifdef CONFIG_USE_ES8388
     ESP_LOGI(TAG, "Audio input: ES8388 codec (LIN2/RIN2)");
+    ESP_LOGI(TAG, "Audio output: ES8388 headphone (monitor)");
 #else
     ESP_LOGI(TAG, "Audio input: ADC");
+    ESP_LOGI(TAG, "Audio output: UDA1334 DAC");
 #endif
 
     // Initialize control layer
-    ESP_ERROR_CHECK(display_init());
+    if (display_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Display init failed, continuing without display");
+    }
     ESP_ERROR_CHECK(buttons_init());
 
-    // Initialize audio sources
+    // Initialize audio sources (tone generator)
     ESP_ERROR_CHECK(tone_gen_init(status.tone_freq_hz));
 
 #ifdef CONFIG_USE_ES8388
-    // TX mode: ES8388 ADC only (no DAC output)
-    if (es8388_audio_init(false) != ESP_OK) {
+    // Initialize ES8388 with DAC enabled for headphone monitor
+    if (es8388_audio_init(true) != ESP_OK) {
         ESP_LOGW(TAG, "ES8388 init failed — check wiring (SDA=%d, SCL=%d, addr=0x10)",
                  I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
-        ESP_LOGW(TAG, "Continuing without audio input");
+        ESP_LOGW(TAG, "Continuing without audio");
     }
 #else
     ESP_ERROR_CHECK(adc_audio_init());
+    ESP_ERROR_CHECK(i2s_audio_init());
 #endif
 
-    // Create TX pipeline with Opus encoding (no local output)
+    // Create TX pipeline with Opus encoding BEFORE network init
+    // Opus codec needs ~20KB heap - allocate before WiFi/mesh consumes heap
+    ESP_LOGI(TAG, "Creating audio pipeline (heap: %lu bytes)...", 
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    
+    // Pre-flight heap check before pipeline creation
+    if (!memory_monitor_is_heap_healthy()) {
+        ESP_LOGE(TAG, "Insufficient heap for audio pipeline! Free: %lu, Largest: %lu",
+                 (unsigned long)memory_monitor_get_free_heap(),
+                 (unsigned long)memory_monitor_get_largest_free_block());
+        // Continue with warning - let pipeline creation fail gracefully if needed
+    }
+    
     adf_pipeline_config_t pipeline_cfg = ADF_PIPELINE_CONFIG_DEFAULT();
     pipeline_cfg.type = ADF_PIPELINE_TX;
-    pipeline_cfg.enable_local_output = false;  // TX only - no headphones
+    pipeline_cfg.enable_local_output = true;  // Enable headphone monitoring
     pipeline_cfg.opus_bitrate = OPUS_BITRATE;
     pipeline_cfg.opus_complexity = OPUS_COMPLEXITY;
     
@@ -112,11 +138,27 @@ void app_main(void) {
         ESP_LOGE(TAG, "Failed to create TX pipeline");
         return;
     }
+    
+    ESP_LOGI(TAG, "Audio pipeline created (heap: %lu bytes remaining)",
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-    // Start TX pipeline before mesh init so encode task stack allocates while
-    // contiguous internal RAM is still available.
+    // Start TX pipeline before mesh init so the encode task can reserve its stack
+    // while contiguous internal RAM is still available.
     ESP_ERROR_CHECK(adf_pipeline_start(tx_pipeline));
     status.audio_active = false;
+
+    // Register audio pipeline tasks for stack monitoring
+    // Task handles are internal to adf_pipeline, so we use the global getter
+    adf_pipeline_handle_t p = tx_pipeline;
+    if (p) {
+        // TX pipeline has capture and encode tasks
+        extern TaskHandle_t adf_pipeline_get_capture_task(adf_pipeline_handle_t);
+        extern TaskHandle_t adf_pipeline_get_encode_task(adf_pipeline_handle_t);
+        TaskHandle_t cap = adf_pipeline_get_capture_task(p);
+        TaskHandle_t enc = adf_pipeline_get_encode_task(p);
+        if (cap) memory_monitor_register_task(cap, "adf_cap");
+        if (enc) memory_monitor_register_task(enc, "adf_enc");
+    }
 
 #if ENABLE_SRC_USB_PORTAL_NETWORK
     // Start portal before mesh allocates WiFi/mesh memory so portal can reserve
@@ -130,7 +172,8 @@ void app_main(void) {
     ESP_LOGW(TAG, "USB portal networking disabled by config; serial monitor remains available");
 #endif
 
-    // Initialize network layer (ESP-WIFI-MESH) after pipeline task allocation.
+    // Initialize network layer (ESP-WIFI-MESH) after pipeline tasks are allocated.
+    // WiFi/mesh stack consumes significant heap (~40KB).
     ESP_LOGI(TAG, "Starting mesh network...");
     ESP_ERROR_CHECK(network_init_mesh());
 
@@ -147,7 +190,7 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     }
 
-    ESP_LOGI(TAG, "TX initialized, waiting for network...");
+    ESP_LOGI(TAG, "SRC initialized, waiting for network...");
     dashboard_init();
 
     // Wait for network to be ready (event-driven, not polling)
@@ -159,14 +202,17 @@ void app_main(void) {
         esp_task_wdt_reset();  // Feed watchdog while waiting
     }
     ESP_LOGI(TAG, "Network ready - starting audio pipeline");
-    ESP_LOGI(TAG, "TX STARTED - SRC_ID: %s, Root: %s",
+    ESP_LOGI(TAG, "SRC STARTED - SRC_ID: %s, Root: %s",
              network_get_src_id(), network_is_root() ? "YES" : "NO");
     dashboard_log("Network ready");
 
     ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
 
-    // Main control loop
+    // Start periodic memory monitoring (logs every 10 seconds)
+    memory_monitor_start_periodic(10000);
+
+    // Main control loop - just handles UI, pipeline runs in separate tasks
     int64_t last_button_ms = esp_timer_get_time() / 1000;
     int64_t last_display_ms = last_button_ms;
     int64_t last_stats_ms = last_button_ms;
@@ -182,13 +228,15 @@ void app_main(void) {
             last_button_ms = now_ms;
             button_event_t btn_event = buttons_poll();
             if (btn_event == BUTTON_EVENT_SHORT_PRESS) {
-                current_view = (current_view == DISPLAY_VIEW_NETWORK) ?
-                              DISPLAY_VIEW_AUDIO : DISPLAY_VIEW_NETWORK;
-                dashboard_log("View changed to %s",
-                        current_view == DISPLAY_VIEW_NETWORK ? "Network" : "Audio");
+                current_view = (current_view + 1) % DISPLAY_VIEW_COUNT;
+                dashboard_log("View: %d", current_view);
             } else if (btn_event == BUTTON_EVENT_LONG_PRESS) {
                 status.input_mode = (status.input_mode + 1) % 3;
-                dashboard_log("Input mode changed to %d", status.input_mode);
+                adf_input_mode_t adf_mode = (status.input_mode == INPUT_MODE_TONE) ? ADF_INPUT_MODE_TONE :
+                                            (status.input_mode == INPUT_MODE_USB) ? ADF_INPUT_MODE_USB :
+                                            ADF_INPUT_MODE_AUX;
+                adf_pipeline_set_input_mode(tx_pipeline, adf_mode);
+                dashboard_log("Input: %d", status.input_mode);
             }
         }
         
@@ -200,20 +248,20 @@ void app_main(void) {
         // Stats update every 1000ms
         if (now_ms - last_stats_ms >= 1000) {
             status.connected_nodes = network_get_connected_nodes();
-            status.rssi = network_get_rssi();
-            status.latency_ms = network_get_latency_ms();
+            status.nearest_rssi = network_get_nearest_child_rssi();
             
             // Get pipeline stats
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
-                status.bandwidth_kbps = (stats.frames_processed * 100 * 8) / 1000;
+                // Bandwidth from actual bytes sent over mesh
+                uint32_t tx_bytes = network_get_tx_bytes_and_reset();
+                status.bandwidth_kbps = (tx_bytes * 8) / 1000;
                 
-                dashboard_log("TX: %lu frames, %lu drops, enc=%luus",
-                         stats.frames_processed, stats.frames_dropped,
-                         stats.avg_encode_time_us);
+                dashboard_log("TX: %lu frames, %lu nodes, %lukbps",
+                             stats.frames_processed, status.connected_nodes, status.bandwidth_kbps);
             }
             
-            dashboard_render_tx(&status);
+            dashboard_render_src(&status);
             last_stats_ms = now_ms;
         }
 
@@ -224,9 +272,9 @@ void app_main(void) {
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
                 status.audio_active = stats.input_signal_present;
             }
-            display_render_tx(current_view, &status);
+            display_render_src(current_view, &status);
         }
     }
 }
 
-#endif  // CONFIG_TX_BUILD
+#endif  // CONFIG_SRC_BUILD

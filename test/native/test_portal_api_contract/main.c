@@ -293,7 +293,37 @@ static bool validate_uplink_contract(const char *json)
     }
 
     (void)enabled;
-    if (strlen(ssid) > 32) {
+    if (configured && strcmp(ssid, "<configured>") != 0) {
+        return false;
+    }
+    if (!configured && ssid[0] != '\0') {
+        return false;
+    }
+    if (strlen(last_error) > 47) {
+        return false;
+    }
+    return updated_ms >= 0;
+}
+
+static bool validate_mixer_contract(const char *json)
+{
+    long out_gain_pct = -1;
+    bool applied = false;
+    bool pending_apply = false;
+    char last_error[96] = {0};
+    long updated_ms = -1;
+
+    if (!field_int(json, "outGainPct", &out_gain_pct) ||
+        !field_bool(json, "applied", &applied) ||
+        !field_bool(json, "pendingApply", &pending_apply) ||
+        !field_string(json, "lastError", last_error, sizeof(last_error)) ||
+        !field_int(json, "updatedMs", &updated_ms)) {
+        return false;
+    }
+
+    (void)applied;
+    (void)pending_apply;
+    if (out_gain_pct < 0 || out_gain_pct > 400) {
         return false;
     }
     if (strlen(last_error) > 47) {
@@ -330,7 +360,13 @@ static bool validate_ota_contract(const char *json)
         strcmp(phase, "restarting") != 0) {
         return false;
     }
-    return strlen(last_url) < 192;
+    if (strlen(last_url) >= 192) {
+        return false;
+    }
+    if (last_url[0] != '\0' && strcmp(last_url, "<configured>") != 0) {
+        return false;
+    }
+    return true;
 }
 
 static bool validate_fft_bins_field(const char *json)
@@ -370,6 +406,7 @@ static bool validate_fft_bins_field(const char *json)
 
 static bool validate_status_contract(const char *json)
 {
+    long schema_version = -1;
     long ts = -1;
     long heap_kb = -1;
     long latency_ms = -1;
@@ -384,7 +421,8 @@ static bool validate_status_contract(const char *json)
     const char *nodes_start = NULL;
     const char *nodes_end = NULL;
 
-    if (!field_int(json, "ts", &ts) ||
+    if (!field_int(json, "schemaVersion", &schema_version) ||
+        !field_int(json, "ts", &ts) ||
         !field_string(json, "self", self, sizeof(self)) ||
         !field_int(json, "heapKb", &heap_kb) ||
         !field_null_or_int(json, "core0LoadPct", &core0_is_null, &core0_load) ||
@@ -401,7 +439,8 @@ static bool validate_status_contract(const char *json)
         return false;
     }
 
-    if (ts < 0 || heap_kb < 0 || latency_ms < 0 || !is_mac_string(self) || strlen(net_if) == 0) {
+    if (schema_version <= 0 ||
+        ts < 0 || heap_kb < 0 || latency_ms < 0 || !is_mac_string(self) || strlen(net_if) == 0) {
         return false;
     }
     if (!core0_is_null && (core0_load < 0 || core0_load > 100)) {
@@ -484,7 +523,7 @@ static bool validate_status_contract(const char *json)
         }
 
         if (!is_mac_string(mac) ||
-            (strcmp(role, "TX") != 0 && strcmp(role, "RX") != 0) ||
+            (strcmp(role, "SRC") != 0 && strcmp(role, "OUT") != 0) ||
             layer < 0 ||
             children < 0 ||
             uptime < 0) {
@@ -525,6 +564,21 @@ static bool validate_status_contract(const char *json)
         memcpy(uplink_json, uplink_start, len);
         uplink_json[len] = '\0';
         if (!validate_uplink_contract(uplink_json)) {
+            return false;
+        }
+    }
+
+    const char *mixer_start = NULL;
+    const char *mixer_end = NULL;
+    if (field_object_span(json, "mixer", &mixer_start, &mixer_end)) {
+        size_t len = (size_t)(mixer_end - mixer_start + 1);
+        char mixer_json[256];
+        if (len >= sizeof(mixer_json)) {
+            return false;
+        }
+        memcpy(mixer_json, mixer_start, len);
+        mixer_json[len] = '\0';
+        if (!validate_mixer_contract(mixer_json)) {
             return false;
         }
     }
@@ -581,6 +635,129 @@ static api_result_t simulate_uplink_post(const char *body, bool apply_ok)
     return (api_result_t){.status = 200, .error = NULL, .ok = true};
 }
 
+static api_result_t simulate_mixer_post(const char *body, bool apply_ok)
+{
+    if (!body || body[0] == '\0') {
+        return (api_result_t){.status = 400, .error = "empty body", .ok = false};
+    }
+
+    uint16_t out_gain_pct = 0;
+    if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
+        return (api_result_t){.status = 400, .error = "missing outGainPct", .ok = false};
+    }
+    if (out_gain_pct > 400) {
+        return (api_result_t){.status = 400, .error = "invalid outGainPct", .ok = false};
+    }
+    if (!apply_ok) {
+        return (api_result_t){.status = 409, .error = "mixer apply failed", .ok = false};
+    }
+
+    return (api_result_t){.status = 200, .error = NULL, .ok = true};
+}
+
+typedef struct {
+    uint32_t window_start_ms;
+    uint32_t request_count;
+    uint32_t rejected_count;
+} test_rate_limiter_t;
+
+static bool test_allow_rate_limited_request(
+    test_rate_limiter_t *limiter,
+    uint32_t now_ms,
+    uint32_t window_ms,
+    uint32_t max_requests)
+{
+    if (!limiter || window_ms == 0 || max_requests == 0) {
+        return false;
+    }
+    if (limiter->window_start_ms == 0 || (now_ms - limiter->window_start_ms) >= window_ms) {
+        limiter->window_start_ms = now_ms;
+        limiter->request_count = 0;
+    }
+    limiter->request_count++;
+    if (limiter->request_count > max_requests) {
+        limiter->rejected_count++;
+        return false;
+    }
+    return true;
+}
+
+static bool validate_control_metrics_contract(const char *json)
+{
+    long schema_version = -1;
+    long auth_rejects = -1;
+    long ota_rejects = -1;
+    long uplink_rejects = -1;
+    long mixer_rejects = -1;
+    long ota_requests = -1;
+    long uplink_requests = -1;
+    long mixer_requests = -1;
+    long ota_apply_fails = -1;
+    long uplink_apply_fails = -1;
+    long mixer_apply_fails = -1;
+    long bad_requests = -1;
+    const char *rl_start = NULL;
+    const char *rl_end = NULL;
+    if (!field_int(json, "schemaVersion", &schema_version) ||
+        !field_int(json, "authRejects", &auth_rejects) ||
+        !field_int(json, "otaRejects", &ota_rejects) ||
+        !field_int(json, "uplinkRejects", &uplink_rejects) ||
+        !field_int(json, "mixerRejects", &mixer_rejects) ||
+        !field_int(json, "otaRequests", &ota_requests) ||
+        !field_int(json, "uplinkRequests", &uplink_requests) ||
+        !field_int(json, "mixerRequests", &mixer_requests) ||
+        !field_int(json, "otaApplyFails", &ota_apply_fails) ||
+        !field_int(json, "uplinkApplyFails", &uplink_apply_fails) ||
+        !field_int(json, "mixerApplyFails", &mixer_apply_fails) ||
+        !field_int(json, "badRequests", &bad_requests) ||
+        !field_object_span(json, "rateLimit", &rl_start, &rl_end)) {
+        return false;
+    }
+
+    size_t rl_len = (size_t)(rl_end - rl_start + 1);
+    if (rl_len == 0 || rl_len >= 128) {
+        return false;
+    }
+    char rl_json[128];
+    memcpy(rl_json, rl_start, rl_len);
+    rl_json[rl_len] = '\0';
+
+    long window_ms = -1;
+    long max_requests = -1;
+    if (!field_int(rl_json, "windowMs", &window_ms) ||
+        !field_int(rl_json, "maxRequests", &max_requests)) {
+        return false;
+    }
+    return schema_version > 0 &&
+           auth_rejects >= 0 && ota_rejects >= 0 && uplink_rejects >= 0 && mixer_rejects >= 0 &&
+           ota_requests >= 0 && uplink_requests >= 0 && mixer_requests >= 0 &&
+           ota_apply_fails >= 0 && uplink_apply_fails >= 0 && mixer_apply_fails >= 0 &&
+           bad_requests >= 0 &&
+           window_ms > 0 && max_requests > 0;
+}
+
+static bool is_token_valid(const char *auth_header,
+                           const char *x_soundmesh_token,
+                           const char *query_token,
+                           const char *expected_token)
+{
+    if (!expected_token || expected_token[0] == '\0') {
+        return false;
+    }
+
+    if (auth_header && strncmp(auth_header, "Bearer ", 7) == 0 &&
+        strcmp(auth_header + 7, expected_token) == 0) {
+        return true;
+    }
+    if (x_soundmesh_token && strcmp(x_soundmesh_token, expected_token) == 0) {
+        return true;
+    }
+    if (query_token && strcmp(query_token, expected_token) == 0) {
+        return true;
+    }
+    return false;
+}
+
 static api_result_t simulate_ota_post(const char *body, bool start_ok)
 {
     if (!body || body[0] == '\0') {
@@ -602,6 +779,7 @@ static api_result_t simulate_ota_post(const char *body, bool start_ok)
 
 static const char *VALID_STATUS_JSON =
     "{"
+    "\"schemaVersion\":1,"
     "\"ts\":123456,"
     "\"self\":\"AA:BB:CC:DD:EE:FF\","
     "\"heapKb\":256,"
@@ -614,11 +792,11 @@ static const char *VALID_STATUS_JSON =
     "\"fftBins\":[0.1,1.25,2.5],"
     "\"nodes\":["
       "{"
-      "\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"TX\",\"root\":true,\"layer\":0,\"rssi\":-30,"
+      "\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"SRC\",\"root\":true,\"layer\":0,\"rssi\":-30,"
       "\"children\":1,\"streaming\":true,\"parent\":null,\"uptime\":1000,\"stale\":false"
       "},"
       "{"
-      "\"mac\":\"11:22:33:44:55:66\",\"role\":\"RX\",\"root\":false,\"layer\":1,\"rssi\":-50,"
+      "\"mac\":\"11:22:33:44:55:66\",\"role\":\"OUT\",\"root\":false,\"layer\":1,\"rssi\":-50,"
       "\"children\":0,\"streaming\":false,\"parent\":\"AA:BB:CC:DD:EE:FF\",\"uptime\":900,\"stale\":false"
       "}"
     "],"
@@ -626,12 +804,16 @@ static const char *VALID_STATUS_JSON =
     "\"ota\":{\"enabled\":true,\"mode\":\"https\"},"
     "\"uplink\":{"
       "\"enabled\":true,\"configured\":true,\"rootApplied\":false,\"pendingApply\":true,"
-      "\"ssid\":\"MeshNet\",\"lastError\":\"\",\"updatedMs\":99"
+      "\"ssid\":\"<configured>\",\"lastError\":\"\",\"updatedMs\":99"
+    "},"
+    "\"mixer\":{"
+      "\"outGainPct\":200,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":101"
     "}"
     "}";
 
 static const char *STATUS_WITH_ADDITIONAL_FIELDS =
     "{"
+    "\"schemaVersion\":1,"
     "\"ts\":42,"
     "\"self\":\"AA:BB:CC:DD:EE:FF\","
     "\"heapKb\":128,"
@@ -645,7 +827,7 @@ static const char *STATUS_WITH_ADDITIONAL_FIELDS =
     "\"extraTop\":\"future\","
     "\"nodes\":["
       "{"
-      "\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"RX\",\"root\":false,\"layer\":1,\"rssi\":-60,"
+      "\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"OUT\",\"root\":false,\"layer\":1,\"rssi\":-60,"
       "\"children\":0,\"streaming\":false,\"parent\":null,\"uptime\":1,\"stale\":false,"
       "\"futureNodeFlag\":true"
       "}"
@@ -666,12 +848,12 @@ void test_status_rejects_duplicate_node_mac(void)
 {
     const char *json =
         "{"
-        "\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
+        "\"schemaVersion\":1,\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
         "\"latencyMs\":1,\"netIf\":\"n\",\"buildLabel\":\"SRC\",\"meshState\":\"Mesh OK\","
         "\"bpm\":null,\"fftBins\":null,"
         "\"nodes\":["
-        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"TX\",\"root\":true,\"layer\":0,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":null,\"uptime\":1,\"stale\":false},"
-        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"RX\",\"root\":false,\"layer\":1,\"rssi\":-2,\"children\":0,\"streaming\":false,\"parent\":\"AA:BB:CC:DD:EE:FF\",\"uptime\":2,\"stale\":false}"
+        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"SRC\",\"root\":true,\"layer\":0,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":null,\"uptime\":1,\"stale\":false},"
+        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"OUT\",\"root\":false,\"layer\":1,\"rssi\":-2,\"children\":0,\"streaming\":false,\"parent\":\"AA:BB:CC:DD:EE:FF\",\"uptime\":2,\"stale\":false}"
         "]"
         "}";
     TEST_ASSERT_FALSE(validate_status_contract(json));
@@ -681,11 +863,11 @@ void test_status_rejects_root_node_nonzero_layer(void)
 {
     const char *json =
         "{"
-        "\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
+        "\"schemaVersion\":1,\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
         "\"latencyMs\":1,\"netIf\":\"n\",\"buildLabel\":\"SRC\",\"meshState\":\"Mesh OK\","
         "\"bpm\":null,\"fftBins\":null,"
         "\"nodes\":["
-        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"TX\",\"root\":true,\"layer\":2,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":null,\"uptime\":1,\"stale\":false}"
+        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"SRC\",\"root\":true,\"layer\":2,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":null,\"uptime\":1,\"stale\":false}"
         "]"
         "}";
     TEST_ASSERT_FALSE(validate_status_contract(json));
@@ -695,11 +877,11 @@ void test_status_rejects_invalid_parent_mac(void)
 {
     const char *json =
         "{"
-        "\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
+        "\"schemaVersion\":1,\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
         "\"latencyMs\":1,\"netIf\":\"n\",\"buildLabel\":\"SRC\",\"meshState\":\"Mesh OK\","
         "\"bpm\":null,\"fftBins\":null,"
         "\"nodes\":["
-        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"TX\",\"root\":false,\"layer\":1,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":\"BAD-MAC\",\"uptime\":1,\"stale\":false}"
+        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"SRC\",\"root\":false,\"layer\":1,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":\"BAD-MAC\",\"uptime\":1,\"stale\":false}"
         "]"
         "}";
     TEST_ASSERT_FALSE(validate_status_contract(json));
@@ -715,7 +897,7 @@ void test_uplink_get_required_fields_contract(void)
     const char *json =
         "{"
         "\"enabled\":true,\"configured\":true,\"rootApplied\":false,\"pendingApply\":true,"
-        "\"ssid\":\"MeshNet\",\"lastError\":\"\",\"updatedMs\":88"
+        "\"ssid\":\"<configured>\",\"lastError\":\"\",\"updatedMs\":88"
         "}";
     TEST_ASSERT_TRUE(validate_uplink_contract(json));
 }
@@ -728,6 +910,24 @@ void test_uplink_get_allows_additional_fields(void)
         "\"ssid\":\"\",\"lastError\":\"none\",\"updatedMs\":1,\"future\":123"
         "}";
     TEST_ASSERT_TRUE(validate_uplink_contract(json));
+}
+
+void test_mixer_get_required_fields_contract(void)
+{
+    const char *json =
+        "{"
+        "\"outGainPct\":200,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":42"
+        "}";
+    TEST_ASSERT_TRUE(validate_mixer_contract(json));
+}
+
+void test_mixer_get_rejects_out_of_range(void)
+{
+    const char *json =
+        "{"
+        "\"outGainPct\":401,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":42"
+        "}";
+    TEST_ASSERT_FALSE(validate_mixer_contract(json));
 }
 
 void test_uplink_post_enable_valid(void)
@@ -779,12 +979,61 @@ void test_uplink_post_apply_failure_409(void)
     TEST_ASSERT_EQUAL_STRING("uplink apply failed", res.error);
 }
 
+void test_uplink_post_rejects_whitespace_before_colon(void)
+{
+    api_result_t res = simulate_uplink_post("{\"enabled\" :true,\"ssid\":\"Mesh\"}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing enabled", res.error);
+}
+
+void test_uplink_post_rejects_non_boolean_enabled(void)
+{
+    api_result_t res = simulate_uplink_post("{\"enabled\":1,\"ssid\":\"Mesh\"}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing enabled", res.error);
+}
+
+void test_uplink_post_rejects_overlong_ssid(void)
+{
+    api_result_t res = simulate_uplink_post("{\"enabled\":true,\"ssid\":\"123456789012345678901234567890123\"}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing ssid", res.error);
+}
+
+void test_mixer_post_valid(void)
+{
+    api_result_t res = simulate_mixer_post("{\"outGainPct\":250}", true);
+    TEST_ASSERT_EQUAL_INT(200, res.status);
+    TEST_ASSERT_TRUE(res.ok);
+}
+
+void test_mixer_post_missing_field_400(void)
+{
+    api_result_t res = simulate_mixer_post("{\"enabled\":true}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing outGainPct", res.error);
+}
+
+void test_mixer_post_invalid_range_400(void)
+{
+    api_result_t res = simulate_mixer_post("{\"outGainPct\":401}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("invalid outGainPct", res.error);
+}
+
+void test_mixer_post_apply_failure_409(void)
+{
+    api_result_t res = simulate_mixer_post("{\"outGainPct\":220}", false);
+    TEST_ASSERT_EQUAL_INT(409, res.status);
+    TEST_ASSERT_EQUAL_STRING("mixer apply failed", res.error);
+}
+
 void test_ota_get_required_fields_contract(void)
 {
     const char *json =
         "{"
         "\"enabled\":true,\"inProgress\":false,\"phase\":\"idle\","
-        "\"lastOk\":false,\"lastErr\":0,\"lastUrl\":\"https://example.com/fw.bin\""
+        "\"lastOk\":false,\"lastErr\":0,\"lastUrl\":\"<configured>\""
         "}";
     TEST_ASSERT_TRUE(validate_ota_contract(json));
 }
@@ -794,10 +1043,52 @@ void test_ota_get_allows_additional_fields(void)
     const char *json =
         "{"
         "\"enabled\":true,\"inProgress\":true,\"phase\":\"downloading\","
-        "\"lastOk\":false,\"lastErr\":-1,\"lastUrl\":\"https://example.com/fw.bin\","
+        "\"lastOk\":false,\"lastErr\":-1,\"lastUrl\":\"<configured>\","
         "\"extra\":\"future\""
         "}";
     TEST_ASSERT_TRUE(validate_ota_contract(json));
+}
+
+void test_uplink_contract_rejects_exposed_ssid_when_configured(void)
+{
+    const char *json =
+        "{"
+        "\"enabled\":true,\"configured\":true,\"rootApplied\":true,\"pendingApply\":false,"
+        "\"ssid\":\"MeshNet\",\"lastError\":\"\",\"updatedMs\":88"
+        "}";
+    TEST_ASSERT_FALSE(validate_uplink_contract(json));
+}
+
+void test_ota_contract_rejects_exposed_last_url(void)
+{
+    const char *json =
+        "{"
+        "\"enabled\":true,\"inProgress\":false,\"phase\":\"idle\","
+        "\"lastOk\":false,\"lastErr\":0,\"lastUrl\":\"https://example.com/fw.bin\""
+        "}";
+    TEST_ASSERT_FALSE(validate_ota_contract(json));
+}
+
+void test_control_auth_accepts_bearer_token(void)
+{
+    TEST_ASSERT_TRUE(is_token_valid("Bearer soundmesh-control", NULL, NULL, "soundmesh-control"));
+}
+
+void test_control_auth_accepts_x_soundmesh_token_header(void)
+{
+    TEST_ASSERT_TRUE(is_token_valid(NULL, "soundmesh-control", NULL, "soundmesh-control"));
+}
+
+void test_control_auth_accepts_query_token_for_ws(void)
+{
+    TEST_ASSERT_TRUE(is_token_valid(NULL, NULL, "soundmesh-control", "soundmesh-control"));
+}
+
+void test_control_auth_rejects_missing_or_invalid_tokens(void)
+{
+    TEST_ASSERT_FALSE(is_token_valid(NULL, NULL, NULL, "soundmesh-control"));
+    TEST_ASSERT_FALSE(is_token_valid("Bearer wrong", NULL, NULL, "soundmesh-control"));
+    TEST_ASSERT_FALSE(is_token_valid(NULL, "wrong", NULL, "soundmesh-control"));
 }
 
 void test_ota_post_valid_https_url(void)
@@ -835,6 +1126,61 @@ void test_ota_post_extra_fields_ignored(void)
     TEST_ASSERT_TRUE(res.ok);
 }
 
+void test_ota_post_rejects_whitespace_before_colon(void)
+{
+    api_result_t res = simulate_ota_post("{\"url\" :\"https://example.com/fw.bin\"}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing url", res.error);
+}
+
+void test_ota_post_rejects_non_string_url(void)
+{
+    api_result_t res = simulate_ota_post("{\"url\":123}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("missing url", res.error);
+}
+
+void test_control_rate_limit_allows_up_to_window_budget_then_rejects(void)
+{
+    test_rate_limiter_t limiter = {0};
+    const uint32_t now = 1000;
+    TEST_ASSERT_TRUE(test_allow_rate_limited_request(&limiter, now, 1000, 3));
+    TEST_ASSERT_TRUE(test_allow_rate_limited_request(&limiter, now + 10, 1000, 3));
+    TEST_ASSERT_TRUE(test_allow_rate_limited_request(&limiter, now + 20, 1000, 3));
+    TEST_ASSERT_FALSE(test_allow_rate_limited_request(&limiter, now + 30, 1000, 3));
+    TEST_ASSERT_EQUAL_UINT32(1, limiter.rejected_count);
+}
+
+void test_control_rate_limit_resets_after_window_elapsed(void)
+{
+    test_rate_limiter_t limiter = {0};
+    TEST_ASSERT_TRUE(test_allow_rate_limited_request(&limiter, 100, 1000, 1));
+    TEST_ASSERT_FALSE(test_allow_rate_limited_request(&limiter, 200, 1000, 1));
+    TEST_ASSERT_TRUE(test_allow_rate_limited_request(&limiter, 1300, 1000, 1));
+    TEST_ASSERT_EQUAL_UINT32(1, limiter.rejected_count);
+}
+
+void test_control_metrics_contract_fields(void)
+{
+    const char *json =
+        "{"
+        "\"schemaVersion\":1,"
+        "\"authRejects\":2,"
+        "\"otaRejects\":1,"
+        "\"uplinkRejects\":3,"
+        "\"mixerRejects\":0,"
+        "\"otaRequests\":6,"
+        "\"uplinkRequests\":7,"
+        "\"mixerRequests\":5,"
+        "\"otaApplyFails\":1,"
+        "\"uplinkApplyFails\":2,"
+        "\"mixerApplyFails\":1,"
+        "\"badRequests\":4,"
+        "\"rateLimit\":{\"windowMs\":1000,\"maxRequests\":6}"
+        "}";
+    TEST_ASSERT_TRUE(validate_control_metrics_contract(json));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -846,6 +1192,9 @@ int main(void)
     RUN_TEST(test_ws_payload_matches_status_contract);
     RUN_TEST(test_uplink_get_required_fields_contract);
     RUN_TEST(test_uplink_get_allows_additional_fields);
+    RUN_TEST(test_mixer_get_required_fields_contract);
+    RUN_TEST(test_mixer_get_rejects_out_of_range);
+    RUN_TEST(test_uplink_contract_rejects_exposed_ssid_when_configured);
     RUN_TEST(test_uplink_post_enable_valid);
     RUN_TEST(test_uplink_post_disable_valid);
     RUN_TEST(test_uplink_post_missing_enabled_400);
@@ -853,12 +1202,29 @@ int main(void)
     RUN_TEST(test_uplink_post_extra_fields_ignored);
     RUN_TEST(test_uplink_post_string_spacing_compat_limit_documented);
     RUN_TEST(test_uplink_post_apply_failure_409);
+    RUN_TEST(test_uplink_post_rejects_whitespace_before_colon);
+    RUN_TEST(test_uplink_post_rejects_non_boolean_enabled);
+    RUN_TEST(test_uplink_post_rejects_overlong_ssid);
+    RUN_TEST(test_mixer_post_valid);
+    RUN_TEST(test_mixer_post_missing_field_400);
+    RUN_TEST(test_mixer_post_invalid_range_400);
+    RUN_TEST(test_mixer_post_apply_failure_409);
     RUN_TEST(test_ota_get_required_fields_contract);
     RUN_TEST(test_ota_get_allows_additional_fields);
+    RUN_TEST(test_ota_contract_rejects_exposed_last_url);
     RUN_TEST(test_ota_post_valid_https_url);
     RUN_TEST(test_ota_post_missing_url_400);
     RUN_TEST(test_ota_post_empty_url_400);
     RUN_TEST(test_ota_post_invalid_scheme_maps_to_409_start_failure);
     RUN_TEST(test_ota_post_extra_fields_ignored);
+    RUN_TEST(test_ota_post_rejects_whitespace_before_colon);
+    RUN_TEST(test_ota_post_rejects_non_string_url);
+    RUN_TEST(test_control_rate_limit_allows_up_to_window_budget_then_rejects);
+    RUN_TEST(test_control_rate_limit_resets_after_window_elapsed);
+    RUN_TEST(test_control_metrics_contract_fields);
+    RUN_TEST(test_control_auth_accepts_bearer_token);
+    RUN_TEST(test_control_auth_accepts_x_soundmesh_token_header);
+    RUN_TEST(test_control_auth_accepts_query_token_for_ws);
+    RUN_TEST(test_control_auth_rejects_missing_or_invalid_tokens);
     return UNITY_END();
 }

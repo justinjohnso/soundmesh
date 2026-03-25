@@ -79,6 +79,31 @@ void test_bool_extract_fails_on_malformed_value(void)
     TEST_ASSERT_FALSE(ok);
 }
 
+void test_uint16_extract_succeeds(void)
+{
+    const char *body = "{\"outGainPct\":250}";
+    uint16_t value = 0;
+    bool ok = json_extract_uint16_field(body, "outGainPct", &value);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_UINT16(250, value);
+}
+
+void test_uint16_extract_rejects_overflow(void)
+{
+    const char *body = "{\"outGainPct\":70000}";
+    uint16_t value = 0;
+    bool ok = json_extract_uint16_field(body, "outGainPct", &value);
+    TEST_ASSERT_FALSE(ok);
+}
+
+void test_uint16_extract_rejects_non_numeric(void)
+{
+    const char *body = "{\"outGainPct\":\"250\"}";
+    uint16_t value = 0;
+    bool ok = json_extract_uint16_field(body, "outGainPct", &value);
+    TEST_ASSERT_FALSE(ok);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -91,5 +116,8 @@ int main(void)
     RUN_TEST(test_bool_extract_accepts_whitespace_before_false);
     RUN_TEST(test_bool_extract_fails_on_missing_key);
     RUN_TEST(test_bool_extract_fails_on_malformed_value);
+    RUN_TEST(test_uint16_extract_succeeds);
+    RUN_TEST(test_uint16_extract_rejects_overflow);
+    RUN_TEST(test_uint16_extract_rejects_non_numeric);
     return UNITY_END();
 }

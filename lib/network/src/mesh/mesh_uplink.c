@@ -48,6 +48,7 @@ esp_err_t mesh_uplink_apply_router_config(void) {
     } else {
         uplink_set_error(esp_err_to_name(err));
     }
+    ESP_LOGI(TAG, "Uplink router apply %s (configured=%d)", err == ESP_OK ? "ok" : "failed", s_uplink.configured);
     return err;
 }
 

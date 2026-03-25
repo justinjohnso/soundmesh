@@ -15,8 +15,7 @@ int64_t esp_timer_get_time(void)
 
 static void reset_dedupe_state(void)
 {
-    memset(dedupe_cache, 0, sizeof(dedupe_cache));
-    dedupe_index = 0;
+    mesh_dedupe_reset();
     stub_time_us = 0;
 }
 

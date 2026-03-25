@@ -127,6 +127,13 @@ typedef enum {
 esp_err_t adf_pipeline_set_input_mode(adf_pipeline_handle_t pipeline, adf_input_mode_t mode);
 
 /**
+ * Runtime OUT playback gain control (software mixer).
+ * Value is percentage where 100 = unity gain.
+ */
+esp_err_t adf_pipeline_set_out_gain_percent(uint16_t out_gain_pct);
+uint16_t adf_pipeline_get_out_gain_percent(void);
+
+/**
  * Get latest normalized FFT bins for portal visualization.
  * @param pipeline Pipeline handle (TX or RX)
  * @param bins_out Output array

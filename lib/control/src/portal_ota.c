@@ -3,10 +3,12 @@
 #include <esp_log.h>
 #include <esp_https_ota.h>
 #include <esp_crt_bundle.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <string.h>
+#include "config/build.h"
 
 static const char *TAG = "portal_ota";
 
@@ -28,6 +30,10 @@ static portal_ota_state_t s_ota = {
 
 static TaskHandle_t s_ota_task = NULL;
 static char s_pending_url[192];
+
+static const char *ota_redacted_url(void) {
+    return (s_ota.last_url[0] != '\0') ? "<configured>" : "";
+}
 
 static void ota_task(void *arg) {
     (void)arg;
@@ -83,7 +89,8 @@ esp_err_t portal_ota_start(const char *url) {
     s_ota.last_err = 0;
     strlcpy(s_ota.phase, "queued", sizeof(s_ota.phase));
 
-    BaseType_t ok = xTaskCreatePinnedToCore(ota_task, "portal_ota", 8192, NULL, 4, &s_ota_task, 0);
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        ota_task, "portal_ota", PORTAL_OTA_STACK_BYTES, NULL, 4, &s_ota_task, 0);
     if (ok != pdPASS) {
         s_ota.in_progress = false;
         s_ota_task = NULL;
@@ -91,7 +98,7 @@ esp_err_t portal_ota_start(const char *url) {
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "OTA start requested: %s", url);
+    ESP_LOGI(TAG, "OTA start requested");
     return ESP_OK;
 }
 
@@ -110,6 +117,31 @@ int portal_ota_serialize_json(char *buf, size_t buf_size) {
                     s_ota.phase,
                     s_ota.last_ok ? "true" : "false",
                     s_ota.last_err,
-                    s_ota.last_url);
+                    ota_redacted_url());
 }
 
+void portal_ota_confirm_running_image(void) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) {
+        return;
+    }
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    esp_err_t state_ret = esp_ota_get_state_partition(running, &state);
+    if (state_ret == ESP_ERR_NOT_SUPPORTED || state_ret == ESP_ERR_NOT_FOUND) {
+        return;
+    }
+    if (state_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed reading OTA image state: %s", esp_err_to_name(state_ret));
+        return;
+    }
+
+    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+        esp_err_t confirm_ret = esp_ota_mark_app_valid_cancel_rollback();
+        if (confirm_ret == ESP_OK) {
+            ESP_LOGI(TAG, "OTA image confirmed valid; rollback canceled");
+        } else {
+            ESP_LOGE(TAG, "Failed to confirm OTA image: %s", esp_err_to_name(confirm_ret));
+        }
+    }
+}

@@ -10,9 +10,8 @@
 
 void dashboard_init(void);
 
-void dashboard_render_tx(const tx_status_t *status);
-void dashboard_render_rx(const rx_status_t *status);
-void dashboard_render_combo(const combo_status_t *status);
+void dashboard_render_src(const src_status_t *status);
+void dashboard_render_out(const out_status_t *status);
 
 void dashboard_log(const char *fmt, ...);
 int dashboard_serialize_recent_json(char *buf, size_t buf_size);

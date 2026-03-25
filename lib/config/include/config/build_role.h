@@ -1,0 +1,23 @@
+#pragma once
+
+#if defined(CONFIG_SRC_BUILD)
+#define BUILD_IS_SOURCE 1
+#define BUILD_IS_OUTPUT 0
+#define BUILD_NODE_LABEL "SRC"
+#define BUILD_HAS_CAPTURE 1
+#define BUILD_HAS_ENCODER 1
+#define BUILD_HAS_LOCAL_MONITOR 1
+#define BUILD_HAS_PORTAL 1
+#define BUILD_IS_MESH_ROOT 1
+#elif defined(CONFIG_OUT_BUILD)
+#define BUILD_IS_SOURCE 0
+#define BUILD_IS_OUTPUT 1
+#define BUILD_NODE_LABEL "OUT"
+#define BUILD_HAS_CAPTURE 0
+#define BUILD_HAS_ENCODER 0
+#define BUILD_HAS_LOCAL_MONITOR 0
+#define BUILD_HAS_PORTAL 0
+#define BUILD_IS_MESH_ROOT 0
+#else
+#error "Unknown build flavor. Define CONFIG_SRC_BUILD or CONFIG_OUT_BUILD."
+#endif

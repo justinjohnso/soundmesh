@@ -30,6 +30,8 @@ __pycache__/
 sdkconfig.tx
 sdkconfig.rx
 sdkconfig.combo
+sdkconfig.src
+sdkconfig.out
 
 # AMP AI
 .aider*

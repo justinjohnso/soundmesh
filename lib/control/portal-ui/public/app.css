@@ -2,8 +2,8 @@
   --bg: #121212;
   --text: #e9ecef;
   --line: rgba(233, 236, 239, 0.25);
-  --rx: #76ff03;
-  --tx: #2196f3;
+  --out: #76ff03;
+  --src: #2196f3;
   --warn: #ffd166;
   --bad: #ff5d73;
 }
@@ -80,7 +80,7 @@ body {
 .label { opacity: 0.72; margin-bottom: 6px; }
 
 .bpm-value {
-  color: var(--rx);
+  color: var(--out);
   font-size: 22px;
   font-weight: 700;
   line-height: 1;
@@ -122,7 +122,7 @@ body {
   padding-bottom: 4px;
 }
 
-.summary-item .value { color: var(--rx); }
+.summary-item .value { color: var(--out); }
 .muted { opacity: 0.62; }
 
 .details .row {
@@ -159,6 +159,12 @@ body {
   gap: 6px;
 }
 
+.mixer-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .uplink-input {
   width: 100%;
   border: 1px solid rgba(233, 236, 239, 0.2);
@@ -168,7 +174,21 @@ body {
   padding: 6px 8px;
 }
 
+.mixer-input {
+  width: 100%;
+  border: 1px solid rgba(233, 236, 239, 0.2);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  font: inherit;
+  padding: 6px 8px;
+}
+
 .uplink-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mixer-actions {
   display: flex;
   gap: 6px;
 }
@@ -195,12 +215,12 @@ body {
   margin-right: 4px;
 }
 
-.status-connected { background: var(--rx); }
+.status-connected { background: var(--out); }
 .status-reconnecting { background: var(--warn); }
 .status-disconnected { background: var(--bad); }
 
-.node-root { color: var(--tx); }
-.node-rx { color: var(--rx); }
+.node-src { color: var(--src); }
+.node-out { color: var(--out); }
 
 @media (max-width: 980px) {
   .portal-grid {

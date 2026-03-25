@@ -2,95 +2,84 @@
 
 Wireless multi-node audio streaming on XIAO ESP32-S3 using ESP-WIFI-MESH and Opus.
 
-`SRC` (TX/COMBO) captures audio, encodes Opus, and multicasts frames into the mesh.  
+`SRC` nodes capture audio, encode Opus, and broadcast into the mesh.  
 `OUT` nodes receive, decode, and play through I2S DAC/headphone output.
 
 ## What it does
 
 - Streams mono audio at `48 kHz`, `16-bit`, `20 ms` Opus frames.
 - Supports one source and multiple output nodes.
-- Uses designated-root mesh startup (`TX/COMBO` is root, `RX` nodes join).
-- Exposes node and stream state to OLED UI and serial dashboard.
+- Uses designated-root mesh startup (`SRC` is root, `OUT` joins fixed root).
+- Exposes node and stream state to OLED UI, serial dashboard, and portal API.
 
 ## Repository layout
 
-- `src/tx/main.c` — TX firmware entrypoint.
-- `src/rx/main.c` — RX firmware entrypoint.
-- `src/combo/main.c` — COMBO firmware entrypoint (TX + local monitor).
+- `src/src/main.c` — SRC firmware entrypoint.
+- `src/out/main.c` — OUT firmware entrypoint.
 - `lib/audio/` — capture, encode/decode, playback pipeline.
 - `lib/network/` — mesh init, transport, heartbeat, node metrics.
 - `lib/control/` — display, buttons, portal/state rendering.
-- `lib/control/portal-ui/` — Astro portal UI source and build scripts.
+- `lib/control/portal-ui/` — portal UI source and build scripts.
 - `lib/config/` — shared constants and pin mapping.
-- `docs/` — planning, troubleshooting, and progress notes.
+- `docs/` — roadmap, operations, architecture, and history.
 
 ## Build and flash
 
 Use PlatformIO environments:
 
 ```bash
-pio run -e tx
-pio run -e rx
-pio run -e combo
+pio run -e src
+pio run -e out
 ```
 
 Flash examples:
 
 ```bash
-pio run -e combo -t upload --upload-port /dev/cu.usbmodem21401
-pio run -e rx -t upload --upload-port /dev/cu.usbmodem211101
-pio run -e rx -t upload --upload-port /dev/cu.usbmodem211201
-pio run -e rx -t upload --upload-port /dev/cu.usbmodem211301
+pio run -e src -t upload --upload-port /dev/cu.usbmodem101
+pio run -e out -t upload --upload-port /dev/cu.usbmodem2101
 ```
 
-Upload portal web assets (SPIFFS) after firmware changes:
+Upload portal web assets (SPIFFS) after portal UI changes:
 
 ```bash
-pio run -e tx -t uploadfs
-pio run -e rx -t uploadfs
-pio run -e combo -t uploadfs
+pio run -e src -t uploadfs
+pio run -e out -t uploadfs
 ```
 
 ## Runtime model
 
 - Audio tasks run on Core 1 (`APP_CPU`) for timing stability.
 - Mesh/network tasks run on Core 0 (`PRO_CPU`) with Wi-Fi stack.
-- RX playback uses jitter prefill and bounded concealment to smooth burst loss.
-- USB portal is currently enabled for SRC/COMBO only (OUT remains disabled during phased recovery rollout).
-- Portal now includes a monitor-output pane so operational logs remain visible without USB serial.
-- Portal exposes Wi-Fi uplink control (`/api/uplink`) so one node can set root router credentials and propagate network-wide sync.
+- OUT playback uses jitter prefill and bounded concealment to smooth burst loss.
+- Pilot control-plane policy is root-managed: SRC handles uplink/OTA orchestration.
+- Portal demo mode is explicit only (`?demo=1`), with no silent fallback.
 
 ## Core configuration
 
 Primary tuning lives in `lib/config/include/config/build.h`:
 
-- Audio format and frame duration.
-- Opus bitrate/complexity/FEC.
-- Mesh transport (`MESH_FRAMES_PER_PACKET`, queue sizing, channel).
+- Audio format, frame duration, and Opus settings.
+- Mesh transport and queue sizing.
 - Jitter/prefill depths and task stack sizes.
-- Close-range RF cap (`WIFI_TX_POWER_QDBM`) for stable multi-node association.
+- Portal auth/feature flags and heap guard rails.
 
 ## Validation workflow
 
-After code changes, always build all firmware targets:
-
-```bash
-pio run -e tx && pio run -e rx && pio run -e combo
-```
-
-Run deterministic host-side Unity tests (transport/frame parsing, sequence tracking, JSON extraction, and portal API contract checks for `/api/status`, `/api/uplink`, and `/api/ota`):
+Run tests and both firmware builds after code changes:
 
 ```bash
 pio test -e native
+pio run -e src
+pio run -e out
 ```
 
-Recommended full validation pass:
+Recommended full check:
 
 ```bash
-pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
+pio test -e native && pio run -e src && pio run -e out
 ```
 
-Required pre-upload crash-risk gate:
+Required pre-upload gate:
 
 ```bash
 bash tools/preupload_gate.sh
@@ -99,32 +88,45 @@ bash tools/preupload_gate.sh
 Do not flash hardware unless this gate passes.
 
 Gate highlights:
-- validates tx/rx/combo build artifacts and emits `.pio/build/preupload_gate_metrics.tsv`
-- enforces conservative role-specific RAM ceilings (TX/COMBO 70%, RX 65%)
+- validates `src/out` build artifacts and emits `.pio/build/preupload_gate_metrics.tsv`
+- enforces role-specific RAM ceilings (SRC 70%, OUT 65%)
 - enforces stack/heap budget floors from `build.h`
-- enforces runtime safety config markers from generated sdkconfig headers
-- preserves historical crash-signature checks
-- fail-closed on portal flags: if enabled, requires approved runtime evidence markers in
+- validates runtime safety markers from generated sdkconfig headers
+- preserves crash-signature checks
+- fail-closed on portal flags: if enabled, requires approved runtime evidence in
   `docs/operations/runtime-evidence/portal-enable-evidence.env`
 
-For current architecture and operating conventions, see `AGENTS.md`.
+## Control-plane auth
+
+Protected control endpoints require token auth:
+
+- `POST /api/ota`
+- `POST /api/uplink`
+- `POST /api/mixer`
+- control-capable `/ws` sessions
+
+Provide either:
+- `Authorization: Bearer <token>`
+- `X-SoundMesh-Token: <token>`
+
+Default token is configured in `build.h` as `PORTAL_CONTROL_AUTH_TOKEN`.
 
 ## OTA workflow
 
-Portal exposes OTA control at `POST /api/ota` with payload:
+Portal OTA endpoint:
 
 ```json
 {"url":"https://your-host/path/firmware.bin"}
 ```
 
 Notes:
-- OTA requires HTTPS URL and trusted certificate chain (cert bundle enabled).
+- OTA requires HTTPS URL and trusted certificate chain.
 - In portal UI, use `Ctrl/⌘ + Shift + U` to open OTA prompt.
-- Keep at least one known-good node/firmware pair before rolling OTA to all nodes.
+- Keep at least one known-good node/firmware pair before broad rollout.
 
-## Uplink (piggyback Wi-Fi) workflow
+## Uplink workflow
 
-Portal exposes root-managed uplink control at `POST /api/uplink` with payload:
+Portal uplink endpoint:
 
 ```json
 {"enabled":true,"ssid":"YourNetwork","password":"YourPassword"}
@@ -137,6 +139,21 @@ Disable/clear uplink:
 ```
 
 Notes:
-- Root applies router config with `esp_mesh_set_router()` and broadcasts sync to descendants.
-- OUT nodes request sync after parent connection and surface status in portal (`enabled`, `rootApplied`, `pendingApply`, `lastError`).
-- Credentials are transported within the mesh control plane; keep testing on trusted local networks.
+- SRC applies router config and syncs descendants.
+- OUT nodes request sync after parent connect and surface status in portal.
+- Responses redact sensitive fields by design.
+
+## Mixer workflow
+
+Portal mixer endpoint:
+
+```json
+{"outGainPct":200}
+```
+
+Notes:
+- Valid range is `0..400` percent.
+- `GET /api/mixer` returns current applied/pending/error status.
+- Mixer state is also exposed via `/api/status` and `/ws` as `mixer`.
+
+For operator procedures, see `docs/operations/`.

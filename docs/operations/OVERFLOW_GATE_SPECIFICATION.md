@@ -1,3 +1,13 @@
+# SUPERSEDED — Production-Grade Overflow/Crash Gate Specification
+
+This document is superseded by the active operator docs:
+
+- `docs/operations/deployment-checklists.md`
+- `docs/operations/runbook.md`
+- `docs/operations/troubleshooting.md`
+
+Use those files for current SRC/OUT procedures and gate behavior.
+
 # Production-Grade Overflow/Crash Gate Specification
 
 **MeshNet Audio ESP32-S3 Firmware**  
@@ -81,7 +91,7 @@ fi
 **Standard:** Define per-task stack sizes in config; compile-time validation ensures safety.
 
 **Why this matters:**
-- FreeRTOS xTaskCreate takes stack size in WORDS (4 bytes on ESP32)
+- ESP-IDF FreeRTOS xTaskCreate takes stack size in BYTES
 - Tasks with insufficient stack corrupt heap (adjacent memory)
 - Overflow manifests as:
   - Local variables on stack overwrite adjacent memory

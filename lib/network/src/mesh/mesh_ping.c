@@ -8,6 +8,14 @@
 
 static const char *TAG = "network_mesh";
 
+static const mesh_addr_t *resolve_root_addr_or_log(void) {
+    const mesh_addr_t *root_addr = mesh_state_get_root_addr();
+    if (!root_addr) {
+        ESP_LOGW(TAG, "Cannot send pong: no root addr");
+    }
+    return root_addr;
+}
+
 static void send_pong(const mesh_addr_t *dest, uint32_t ping_id) {
     mesh_ping_t pong;
     pong.type = NET_PKT_TYPE_PONG;
@@ -26,11 +34,12 @@ static void send_pong(const mesh_addr_t *dest, uint32_t ping_id) {
     esp_err_t err;
     if (is_mesh_root) {
         err = esp_mesh_send(dest, &mesh_data, MESH_DATA_P2P, NULL, 0);
-    } else if (have_root_addr) {
-        err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_P2P, NULL, 0);
     } else {
-        ESP_LOGW(TAG, "Cannot send pong: no root addr");
-        return;
+        const mesh_addr_t *root_addr = resolve_root_addr_or_log();
+        if (!root_addr) {
+            return;
+        }
+        err = esp_mesh_send(root_addr, &mesh_data, MESH_DATA_P2P, NULL, 0);
     }
     ESP_LOGI(TAG, "PONG sent (root=%d, id=%lu): %s", is_mesh_root, ping_id, esp_err_to_name(err));
 }
@@ -64,7 +73,7 @@ esp_err_t network_send_ping(void) {
     if (is_mesh_root || !is_mesh_connected) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!have_root_addr) {
+    if (!mesh_state_has_root_addr()) {
         return ESP_ERR_INVALID_STATE;
     }
 

@@ -3,7 +3,6 @@
 #include "audio/adf_pipeline.h"
 #include "audio/ring_buffer.h"
 #include "config/build.h"
-#include "network/mesh_net.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -52,5 +51,3 @@ extern int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];
 extern int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
 extern int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 extern int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];
-
-extern uint8_t s_batch_buffer[NET_FRAME_HEADER_SIZE + MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES)];

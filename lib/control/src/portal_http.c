@@ -1,4 +1,5 @@
 #include "control/usb_portal.h"
+#include "control/portal_control_plane.h"
 #include "control/portal_state.h"
 #include "control/portal_ota.h"
 #include "control/json_extract.h"
@@ -9,6 +10,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -17,6 +19,8 @@ static const char *TAG = "portal_http";
 static httpd_handle_t server = NULL;
 static int ws_fd = -1;
 static TaskHandle_t ws_push_task_handle = NULL;
+static bool s_spiffs_ready = false;
+static bool s_spiffs_owned = false;
 
 static char ws_json_buf[4096];
 
@@ -97,7 +101,7 @@ static esp_err_t handle_root(httpd_req_t *req) {
     if (ret != ESP_OK) {
         const char *fallback = "<!DOCTYPE html><html><body>"
             "<h1>SoundMesh Portal</h1>"
-            "<p>Web UI not loaded. Upload SPIFFS image with: <code>pio run -e tx -t uploadfs</code></p>"
+            "<p>Web UI not loaded. Upload SPIFFS image with: <code>pio run -e src -t uploadfs</code></p>"
             "</body></html>";
         httpd_resp_set_type(req, "text/html");
         httpd_resp_send(req, fallback, strlen(fallback));
@@ -118,8 +122,33 @@ static esp_err_t handle_static(httpd_req_t *req) {
 
 static esp_err_t handle_api_status(httpd_req_t *req) {
     int len = portal_state_serialize_json(ws_json_buf, sizeof(ws_json_buf));
+    if (len <= 0 || len >= (int)sizeof(ws_json_buf)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"error\":\"status_serialize_failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, ws_json_buf, len);
+    return ESP_OK;
+}
+
+static esp_err_t handle_api_control_metrics(httpd_req_t *req) {
+    if (req->method != HTTP_GET) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+    char buf[256];
+    int len = portal_control_plane_serialize_metrics_json(buf, sizeof(buf));
+    if (len <= 0 || len >= (int)sizeof(buf)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, "{\"error\":\"metrics_serialize_failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, len);
     return ESP_OK;
 }
 
@@ -127,6 +156,11 @@ static esp_err_t handle_api_ota(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
         char buf[512];
         int len = portal_ota_serialize_json(buf, sizeof(buf));
+        if (len <= 0 || len >= (int)sizeof(buf)) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "{\"error\":\"ota_status_serialize_failed\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, buf, len);
         return ESP_OK;
@@ -138,9 +172,20 @@ static esp_err_t handle_api_ota(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    portal_control_plane_record_request(PORTAL_CONTROL_ENDPOINT_OTA);
+
+    if (!portal_control_plane_request_has_valid_token(req)) {
+        ESP_LOGW(TAG, "Rejecting unauthorized OTA control request");
+        return portal_control_plane_send_unauthorized(req);
+    }
+    if (!portal_control_plane_allow_rate_limited_request(PORTAL_CONTROL_ENDPOINT_OTA, "/api/ota")) {
+        return portal_control_plane_send_rate_limited(req);
+    }
+
     char body[256] = {0};
     int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
     if (rcvd <= 0) {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -148,11 +193,13 @@ static esp_err_t handle_api_ota(httpd_req_t *req) {
 
     char url[192];
     if (!json_extract_string_field(body, "url", url, sizeof(url))) {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"missing url\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
     if (url[0] == '\0') {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"invalid url\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -160,6 +207,7 @@ static esp_err_t handle_api_ota(httpd_req_t *req) {
 
     esp_err_t ret = portal_ota_start(url);
     if (ret != ESP_OK) {
+        portal_control_plane_record_apply_failure(PORTAL_CONTROL_ENDPOINT_OTA);
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_send(req, "{\"error\":\"ota start failed\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -184,7 +232,7 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
             st.configured ? "true" : "false",
             st.root_applied ? "true" : "false",
             st.pending_apply ? "true" : "false",
-            st.ssid,
+            st.configured ? "<configured>" : "",
             st.last_error,
             (unsigned long)st.updated_ms);
         httpd_resp_set_type(req, "application/json");
@@ -198,9 +246,20 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    portal_control_plane_record_request(PORTAL_CONTROL_ENDPOINT_UPLINK);
+
+    if (!portal_control_plane_request_has_valid_token(req)) {
+        ESP_LOGW(TAG, "Rejecting unauthorized uplink control request");
+        return portal_control_plane_send_unauthorized(req);
+    }
+    if (!portal_control_plane_allow_rate_limited_request(PORTAL_CONTROL_ENDPOINT_UPLINK, "/api/uplink")) {
+        return portal_control_plane_send_rate_limited(req);
+    }
+
     char body[320] = {0};
     int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
     if (rcvd <= 0) {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -208,6 +267,7 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
 
     bool enabled = false;
     if (!json_extract_bool_field(body, "enabled", &enabled)) {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"missing enabled\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -217,6 +277,7 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
     char password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
     if (enabled) {
         if (!json_extract_string_field(body, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0') {
+            portal_control_plane_record_bad_request();
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_send(req, "{\"error\":\"missing ssid\"}", HTTPD_RESP_USE_STRLEN);
             return ESP_OK;
@@ -228,8 +289,84 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
 
     esp_err_t ret = network_set_uplink_config(ssid, password, enabled);
     if (ret != ESP_OK) {
+        portal_control_plane_record_apply_failure(PORTAL_CONTROL_ENDPOINT_UPLINK);
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_send(req, "{\"error\":\"uplink apply failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t handle_api_mixer(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        network_mixer_status_t st = {0};
+        if (network_get_mixer_status(&st) != ESP_OK) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "{\"error\":\"mixer_status_failed\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+        char buf[256];
+        int len = snprintf(
+            buf,
+            sizeof(buf),
+            "{\"outGainPct\":%u,\"applied\":%s,\"pendingApply\":%s,\"lastError\":\"%s\",\"updatedMs\":%lu}",
+            (unsigned)st.out_gain_pct,
+            st.applied ? "true" : "false",
+            st.pending_apply ? "true" : "false",
+            st.last_error,
+            (unsigned long)st.updated_ms);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, buf, len);
+        return ESP_OK;
+    }
+
+    if (req->method != HTTP_POST) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+
+    portal_control_plane_record_request(PORTAL_CONTROL_ENDPOINT_MIXER);
+
+    if (!portal_control_plane_request_has_valid_token(req)) {
+        ESP_LOGW(TAG, "Rejecting unauthorized mixer control request");
+        return portal_control_plane_send_unauthorized(req);
+    }
+    if (!portal_control_plane_allow_rate_limited_request(PORTAL_CONTROL_ENDPOINT_MIXER, "/api/mixer")) {
+        return portal_control_plane_send_rate_limited(req);
+    }
+
+    char body[128] = {0};
+    int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rcvd <= 0) {
+        portal_control_plane_record_bad_request();
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    uint16_t out_gain_pct = 0;
+    if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
+        portal_control_plane_record_bad_request();
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"missing outGainPct\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    if (out_gain_pct < MIXER_OUT_GAIN_MIN_PCT || out_gain_pct > MIXER_OUT_GAIN_MAX_PCT) {
+        portal_control_plane_record_bad_request();
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"invalid outGainPct\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    esp_err_t ret = network_set_mixer_config(out_gain_pct);
+    if (ret != ESP_OK) {
+        portal_control_plane_record_apply_failure(PORTAL_CONTROL_ENDPOINT_MIXER);
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, "{\"error\":\"mixer apply failed\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
 
@@ -252,6 +389,10 @@ static esp_err_t handle_captive_redirect(httpd_req_t *req) {
 
 static esp_err_t handle_ws(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
+        if (!portal_control_plane_request_has_valid_token(req)) {
+            ESP_LOGW(TAG, "Rejecting unauthorized WS control connection");
+            return portal_control_plane_send_unauthorized(req);
+        }
         ws_fd = httpd_req_to_sockfd(req);
         ESP_LOGI(TAG, "WebSocket connected, fd=%d", ws_fd);
         return ESP_OK;
@@ -299,6 +440,7 @@ static void ws_push_task(void *arg) {
 
 esp_err_t portal_http_start(void) {
     init_spiffs();
+    portal_control_plane_reset();
     
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
@@ -329,6 +471,13 @@ esp_err_t portal_http_start(void) {
     };
     httpd_register_uri_handler(server, &uri_api);
 
+    httpd_uri_t uri_control_metrics = {
+        .uri = "/api/control/metrics",
+        .method = HTTP_GET,
+        .handler = handle_api_control_metrics
+    };
+    httpd_register_uri_handler(server, &uri_control_metrics);
+
     httpd_uri_t uri_ota_get = {
         .uri = "/api/ota",
         .method = HTTP_GET,
@@ -349,10 +498,22 @@ esp_err_t portal_http_start(void) {
         .method = HTTP_POST,
         .handler = handle_api_uplink
     };
+    httpd_uri_t uri_mixer_get = {
+        .uri = "/api/mixer",
+        .method = HTTP_GET,
+        .handler = handle_api_mixer
+    };
+    httpd_uri_t uri_mixer_post = {
+        .uri = "/api/mixer",
+        .method = HTTP_POST,
+        .handler = handle_api_mixer
+    };
     httpd_register_uri_handler(server, &uri_ota_get);
     httpd_register_uri_handler(server, &uri_ota_post);
     httpd_register_uri_handler(server, &uri_uplink_get);
     httpd_register_uri_handler(server, &uri_uplink_post);
+    httpd_register_uri_handler(server, &uri_mixer_get);
+    httpd_register_uri_handler(server, &uri_mixer_post);
     
     httpd_uri_t uri_ws = {
         .uri = "/ws",
@@ -401,7 +562,15 @@ esp_err_t portal_http_start(void) {
     };
     httpd_register_uri_handler(server, &uri_catch_all);
     
-    xTaskCreatePinnedToCore(ws_push_task, "ws_push", 4096, server, 3, &ws_push_task_handle, 0);
+    BaseType_t ws_task_created = xTaskCreatePinnedToCore(
+        ws_push_task, "ws_push", PORTAL_WS_PUSH_STACK_BYTES, server, 3, &ws_push_task_handle, 0);
+    if (ws_task_created != pdPASS || ws_push_task_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create ws_push task");
+        httpd_stop(server);
+        server = NULL;
+        ws_fd = -1;
+        return ESP_ERR_NO_MEM;
+    }
     
     ESP_LOGI(TAG, "HTTP server started on port 80");
     return ESP_OK;

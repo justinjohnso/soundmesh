@@ -11,8 +11,8 @@ extern "C" {
 esp_err_t portal_ota_start(const char *url);
 bool portal_ota_in_progress(void);
 int portal_ota_serialize_json(char *buf, size_t buf_size);
+void portal_ota_confirm_running_image(void);
 
 #ifdef __cplusplus
 }
 #endif
-

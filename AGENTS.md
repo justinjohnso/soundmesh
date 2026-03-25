@@ -1,29 +1,27 @@
 # AGENTS.md — SoundMesh (MeshNet Audio)
 
 Wireless audio streaming system for XIAO ESP32-S3 using ESP-WIFI-MESH + Opus codec.
-TX node captures audio → Opus encodes → broadcasts via mesh → RX nodes decode → I2S DAC output.
+SRC node captures audio → Opus encodes → broadcasts via mesh → OUT nodes decode → I2S DAC output.
 
 ## Quick Reference
 
 ### Build & Flash
 ```bash
-pio run -e tx                # Build TX firmware
-pio run -e rx                # Build RX firmware
-pio run -e combo             # Build COMBO firmware (TX + headphone monitor)
+pio run -e src               # Build SRC firmware
+pio run -e out               # Build OUT firmware
 
-pio run -e tx -t upload --upload-port /dev/cu.usbmodem101     # Flash TX
-pio run -e rx -t upload --upload-port /dev/cu.usbmodem2101    # Flash RX
-pio run -e combo -t upload --upload-port /dev/cu.usbmodem101  # Flash COMBO
+pio run -e src -t upload --upload-port /dev/cu.usbmodem101    # Flash SRC
+pio run -e out -t upload --upload-port /dev/cu.usbmodem2101   # Flash OUT
 
-pio run -e tx -t clean       # Clean build artifacts
+pio run -e src -t clean      # Clean build artifacts
+pio run -e out -t clean
 pio device monitor -b 115200 # Serial monitor
 ```
 
 ### Portal Assets (SPIFFS)
 ```bash
-pio run -e tx -t uploadfs
-pio run -e rx -t uploadfs
-pio run -e combo -t uploadfs
+pio run -e src -t uploadfs
+pio run -e out -t uploadfs
 ```
 
 ### Portal UI (local)
@@ -34,9 +32,9 @@ pnpm run dev --demo
 ```
 
 ### Verify Builds
-After any code change, confirm all three environments compile:
+After any code change, confirm both active environments compile:
 ```bash
-pio run -e tx && pio run -e rx && pio run -e combo
+pio run -e src && pio run -e out
 ```
 
 ### Run Tests
@@ -48,11 +46,11 @@ pio test -e native
 
 Recommended full validation:
 ```bash
-pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
+pio test -e native && pio run -e src && pio run -e out
 ```
 
 ### Portal + OTA Notes
-- USB portal rollout is phased: SRC/COMBO enabled first, OUT disabled until dedicated HIL validation passes.
+- USB portal rollout is phased: SRC enabled first, OUT disabled until dedicated HIL validation passes.
 - Portal monitor stream is available in UI under "Monitor Output".
 - OTA endpoint: `POST /api/ota` with `{"url":"https://.../firmware.bin"}`.
 - OTA status endpoint: `GET /api/ota`.
@@ -62,8 +60,8 @@ pio test -e native && pio run -e tx && pio run -e rx && pio run -e combo
 
 ## Project Goal
 
-Transmit audio wirelessly from a TX node to one or more RX nodes over ESP-WIFI-MESH.
-The two-node prototype (1 TX/COMBO + 1 RX) is the immediate priority.
+Transmit audio wirelessly from a SRC node to one or more OUT nodes over ESP-WIFI-MESH.
+The two-node prototype (1 SRC + 1 OUT) is the immediate priority.
 
 ## Architecture: Three Code Layers
 
@@ -77,9 +75,9 @@ Handles all audio capture, codec, and playback. Never calls network APIs directl
 
 | Module | Purpose |
 |--------|---------|
-| `adf_pipeline.c` | Main pipeline orchestrator. TX: capture→encode→mesh. RX: mesh→decode→playback |
-| `es8388_audio.c` | ES8388 codec driver (I2C control + I2S audio). Primary input for TX/COMBO |
-| `i2s_audio.c` | UDA1334 I2S DAC output driver (RX without ES8388) |
+| `adf_pipeline.c` | Main pipeline orchestrator. SRC: capture→encode→mesh. OUT: mesh→decode→playback |
+| `es8388_audio.c` | ES8388 codec driver (I2C control + I2S audio). Primary input for SRC |
+| `i2s_audio.c` | UDA1334 I2S DAC output driver (OUT without ES8388) |
 | `ring_buffer.c` | FreeRTOS ringbuffer wrapper with event-driven consumer notifications |
 | `tone_gen.c` | 440Hz sine wave test tone generator |
 | `usb_audio.c` | USB audio input (stub — future feature) |
@@ -104,9 +102,9 @@ Handles mesh formation, root election, packet routing, and audio transport.
 - `mesh_hb` (prio 2): Sends heartbeats every 2s + stream announcements
 
 **Key Design:**
-- **User Designated Root** (ESP-IDF official pattern): TX/COMBO call `esp_mesh_set_type(MESH_ROOT)` +
+- **User Designated Root** (ESP-IDF official pattern): SRC calls `esp_mesh_set_type(MESH_ROOT)` +
   `esp_mesh_fix_root(true)` before start → immediately become root, no election/scanning delay.
-  RX calls `esp_mesh_fix_root(true)` only → waits indefinitely to join the designated root.
+  OUT calls `esp_mesh_fix_root(true)` only → waits indefinitely to join the designated root.
 - **No fallback timer** — the old 10s timer that caused race conditions has been removed.
 - **Root broadcasts explicitly**: root iterates routing table and sends to each descendant
   using `MESH_DATA_P2P` flag (standalone mesh has no DS; FROMDS caused stalls).
@@ -124,7 +122,7 @@ Handles UI, buttons, status display. Polls at 10Hz for display, 200Hz for button
 
 | Module | Purpose |
 |--------|---------|
-| `display_ssd1306.c` | SSD1306 OLED (128×32) rendering for TX/RX/COMBO status views |
+| `display_ssd1306.c` | SSD1306 OLED (128×32) rendering for SRC/OUT status views |
 | `buttons.c` | GPIO button polling with short/long press detection |
 
 ### Config (`lib/config/`)
@@ -147,8 +145,8 @@ Handles UI, buttons, status display. Polls at 10Hz for display, 200Hz for button
 ## Hardware
 
 - **Board**: Seeed XIAO ESP32-S3
-- **Audio Input (TX/COMBO)**: PCBArtists ES8388 module (I2C addr 0x10, LIN2/RIN2 line in)
-- **Audio Output (RX)**: UDA1334 I2S DAC **or** ES8388 headphone out
+- **Audio Input (SRC)**: PCBArtists ES8388 module (I2C addr 0x10, LIN2/RIN2 line in)
+- **Audio Output (OUT)**: UDA1334 I2S DAC **or** ES8388 headphone out
 - **Display**: SSD1306 OLED 128×32 (I2C addr 0x3C)
 - **Button**: GPIO43 with internal pull-up
 
@@ -162,9 +160,9 @@ Button: GPIO43
 ## Build System
 
 - **Framework**: ESP-IDF via PlatformIO (espressif32@~6.6.0)
-- **Build environments**: `tx`, `rx`, `combo` (selected via `platformio.ini`)
-- **Conditional compilation**: `CONFIG_TX_BUILD`, `CONFIG_RX_BUILD`, `CONFIG_COMBO_BUILD`
-- **ES8388 toggle**: `CONFIG_USE_ES8388` (enabled for TX and COMBO; RX uses UDA1334 I2S DAC)
+- **Build environments**: `src`, `out` (selected via `platformio.ini`)
+- **Conditional compilation**: `CONFIG_SRC_BUILD`, `CONFIG_OUT_BUILD`
+- **ES8388 toggle**: `CONFIG_USE_ES8388` (enabled on SRC by default)
 - **Extra script**: `extra_script.py` generates `src/CMakeLists.txt` per environment
 - **Opus**: `78/esp-opus` component (via `idf_component.yml`)
 - **Partitions**: Custom `partitions.csv` with ~2MB app partition
@@ -172,9 +170,8 @@ Button: GPIO43
 ### SDKconfig Hierarchy
 ```
 sdkconfig.shared.defaults  → Common settings (WiFi, mesh, FreeRTOS, I2C)
-sdkconfig.tx.defaults      → TX-specific (TinyUSB, USB OTG)
-sdkconfig.rx.defaults      → RX-specific (I2S TX channel)
-sdkconfig.combo.defaults   → COMBO (TX + RX settings combined)
+sdkconfig.src.defaults     → SRC-specific (TinyUSB, USB OTG)
+sdkconfig.out.defaults     → OUT-specific (I2S TX channel)
 ```
 
 ## Code Conventions
@@ -195,18 +192,18 @@ sdkconfig.combo.defaults   → COMBO (TX + RX settings combined)
 ### Fixed (Feb 2025)
 
 1. ~~**Mesh Discovery Deadlock**~~: **FIXED** — Implemented User Designated Root pattern.
-   TX/COMBO are forced to `MESH_ROOT` before start; RX waits indefinitely. Removed 10s
+   SRC is forced to `MESH_ROOT` before start; OUT waits indefinitely. Removed 10s
    fallback timer that caused race conditions. Boot order no longer matters.
 
-4. ~~**Watchdog Triggers During Mesh Scan**~~: **FIXED** — All nodes (TX, RX, COMBO) now use
+4. ~~**Watchdog Triggers During Mesh Scan**~~: **FIXED** — All nodes (SRC, OUT) now use
    chunked `ulTaskNotifyTake()` with 1s timeout + `esp_task_wdt_reset()` during network wait.
 
-5. ~~**Flash Size Warning**~~: **FIXED** — Deleted stale `sdkconfig.tx/rx/combo` cache files.
+5. ~~**Flash Size Warning**~~: **FIXED** — Deleted stale sdkconfig cache files.
    `CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y` in `sdkconfig.defaults` now takes effect correctly.
 
 ### Remaining — Critical
 
-2. **RX Audio Output — UDA1334 Power**: UDA1334 DAC needs 5V power for audible output.
+2. **OUT Audio Output — UDA1334 Power**: UDA1334 DAC needs 5V power for audible output.
    At 3.3V, output is ~900mV RMS (barely audible). Confirmed in multiple threads.
    - *Fix*: Wire UDA1334 VIN to 5V supply, not 3.3V.
 
@@ -217,11 +214,11 @@ sdkconfig.combo.defaults   → COMBO (TX + RX settings combined)
 
 ### Non-Critical
 
-6. **Opus Decode Errors**: Occasional `Opus decode failed` warnings when RX receives
+6. **Opus Decode Errors**: Occasional `Opus decode failed` warnings when OUT receives
    corrupted or partial packets. The pipeline handles this gracefully (skips frame).
 
-7. **Buffer Underruns**: RX playback task tracks underruns. These occur during mesh
-   reconnection or when TX rate-limits frames due to queue pressure. Jitter buffer
+7. **Buffer Underruns**: OUT playback task tracks underruns. These occur during mesh
+   reconnection or when SRC rate-limits frames due to queue pressure. Jitter buffer
    with 40ms prefill (2×20ms frames) mitigates this.
 
 8. **USB Audio**: Stubbed out — `usb_audio_init()` is a no-op. TinyUSB UAC integration
@@ -242,7 +239,7 @@ pio device monitor -b 115200 | grep -E "^E |^W "
 ```
 
 ### Test Modes
-- `RX_TEST_TONE_MODE` in `adf_pipeline.c` line 719: Set to 1 to bypass entire RX
+- `RX_TEST_TONE_MODE` in `adf_pipeline.c` line 719: Set to 1 to bypass entire OUT
   pipeline and output 440Hz tone directly to I2S. Tests hardware independently.
 - `TX_TEST_TONE_MODE` in `adf_pipeline.c` line 395: Set to 1 to bypass ES8388
   capture and send pure tone through encoder. Tests Opus + network path.
@@ -268,13 +265,13 @@ The main task (control/UI) runs on Core 0 alongside networking.
 
 ## Data Flow
 
-### TX Path
+### SRC Path
 ```
 ES8388 ADC → I2S RX → [capture task] → PCM ring buffer → [encode task] → Opus encode
 → net_frame_header + opus_payload → network_send_audio() → esp_mesh_send()
 ```
 
-### RX Path
+### OUT Path
 ```
 esp_mesh_recv() → [mesh_rx task] → parse header → audio_rx_callback()
 → adf_pipeline_feed_opus() → Opus ring buffer → [decode task] → Opus decode
@@ -286,9 +283,8 @@ esp_mesh_recv() → [mesh_rx task] → parse header → audio_rx_callback()
 ```
 soundmesh/
 ├── src/
-│   ├── tx/main.c              # TX entry point (ES8388 input → mesh broadcast)
-│   ├── rx/main.c              # RX entry point (mesh receive → I2S output)
-│   └── combo/main.c           # COMBO entry point (TX + headphone monitor)
+│   ├── src/main.c             # SRC entry point (ES8388 input → mesh broadcast)
+│   └── out/main.c             # OUT entry point (mesh receive → I2S output)
 ├── lib/
 │   ├── audio/
 │   │   ├── include/audio/     # Headers: adf_pipeline.h, es8388_audio.h, etc.
@@ -311,12 +307,11 @@ soundmesh/
 │   ├── operations/            # Runbooks/checklists
 │   ├── quality/               # Testing/SLO/security quality docs
 │   └── history/               # Archived posts/progress/superseded plans
-├── platformio.ini             # Build environments (tx, rx, combo)
+├── platformio.ini             # Build environments (src, out)
 ├── partitions.csv             # Flash partition table
 ├── sdkconfig.shared.defaults  # Common ESP-IDF config
-├── sdkconfig.tx.defaults      # TX-specific config
-├── sdkconfig.rx.defaults      # RX-specific config
-├── sdkconfig.combo.defaults   # COMBO-specific config
+├── sdkconfig.src.defaults     # SRC-specific config
+├── sdkconfig.out.defaults     # OUT-specific config
 ├── extra_script.py            # PlatformIO pre-build script
 └── idf_component.yml          # ESP component dependencies (tinyusb, esp-opus)
 ```
@@ -330,7 +325,7 @@ soundmesh/
 4. **Static buffers for audio** — declared at file scope, not on task stacks.
 5. **Three-layer separation** — audio never calls network; network pushes data via callbacks.
 6. **Test with tone first** — use `RX_TEST_TONE_MODE` / `TX_TEST_TONE_MODE` to isolate issues.
-7. **Always verify all three environments build** after any change.
+7. **Always verify both active environments build** after any change.
 8. **Never add `Co-authored-by` trailers** to git commit messages.
 9. **No hardware upload before gate pass:** run `bash tools/preupload_gate.sh` and block uploads on any failure.
 
@@ -355,5 +350,5 @@ soundmesh/
 3. **Fleet/parallel rule:** if running multiple workflows in parallel ("fleet"), each workflow must run in a separate worktree/branch.
 4. **Commit as you go:** create small, logical commits at each stable milestone (working build/tests for that slice), not one large end-of-session commit.
 5. **Keep working trees clean:** before context-switching, either commit, or explicitly stash with a clear label.
-6. **Merge readiness gate:** merge to `main` only after relevant checks pass (`pio test -e native` and `pio run -e tx && pio run -e rx && pio run -e combo` unless docs-only change).
+6. **Merge readiness gate:** merge to `main` only after relevant checks pass (`pio test -e native` and `pio run -e src && pio run -e out` unless docs-only change).
 7. **PR-first integration:** prefer merge via PR (even solo) to preserve review history and rollback clarity.

@@ -10,7 +10,7 @@ Feature expansion happens only after pilot hardening gates pass.
 ## Current baseline (implemented)
 
 - Audio: 48 kHz, 16-bit mono internal PCM, 20 ms Opus frames.
-- Mesh: designated root behavior (TX/COMBO root, RX joins fixed root).
+- Mesh: designated root behavior (SRC root, OUT joins fixed root).
 - Portal firmware APIs: `/api/status`, `/api/uplink`, `/api/ota`, `/ws`.
 - Portal UI source path: `lib/control/portal-ui/` (SPIFFS assets synced to `data/`).
 - Architecture refactors completed:
@@ -35,7 +35,7 @@ Feature expansion happens only after pilot hardening gates pass.
 
 ### 0.2 Runtime safety fixes for known failure paths
 - Validate `xTaskCreate` results for mesh tasks and fail safely with explicit logs.
-- Guard zero-length RX packets before packet-type dispatch.
+- Guard zero-length OUT packets before packet-type dispatch.
 - Add rejoin circuit-breaker/degraded-state behavior to avoid endless churn loops.
 
 ### 0.3 Contract and operator consistency
@@ -54,10 +54,10 @@ Feature expansion happens only after pilot hardening gates pass.
 ### 0.5 Minimum pilot validation gate
 - Keep:
   - `pio test -e native`
-  - `pio run -e tx && pio run -e rx && pio run -e combo`
+  - `pio run -e src && pio run -e out`
 - Add repeatable two-node HIL smoke:
-  - TX-first boot
-  - RX-first boot
+  - SRC-first boot
+  - OUT-first boot
   - simultaneous boot
   - reconnect and stream-resume checks
 
@@ -67,6 +67,7 @@ Feature expansion happens only after pilot hardening gates pass.
 - Mesh task startup failures are surfaced; zero-length frame path is safely handled.
 - Demo mode cannot be mistaken for live control mode.
 - All automated gates pass and HIL smoke passes for 2-node pilot topology.
+- Stage 0 status: complete in current branch (code, tests, and gate behavior updated).
 
 ---
 
@@ -77,7 +78,7 @@ Feature expansion happens only after pilot hardening gates pass.
 - Add explicit bad-image recovery verification step.
 
 ### 1.2 CI and quality gate enforcement
-- Enforce native + tx/rx/combo build matrix in CI/branch protection.
+- Enforce native + src/out build matrix in CI/branch protection.
 - Add negative/fuzz-style portal payload tests for malformed inputs and boundary cases.
 
 ### 1.3 Benchmarks and SLO discipline
@@ -100,6 +101,12 @@ Feature expansion happens only after pilot hardening gates pass.
 - Benchmark report exists for release candidates with agreed thresholds.
 - Reduced direct cross-module coupling in critical paths.
 
+Stage 1 progress snapshot:
+- 1.1 OTA resilience: complete (dual-slot partition table + rollback confirm integrated; rollback check documented in runbook/checklists).
+- 1.2 CI gate enforcement: complete (`ci-core` + `ci-gate` workflows enforce native and src/out validation gates).
+- 1.3 Benchmarks/SLO artifacts: complete (metric extraction + report renderer + benchmark policy/docs).
+- 1.4 Maintainability hardening: complete (audio transport adapter boundary; mesh mutable state access encapsulated; reduced include leakage).
+
 ---
 
 ## Stage 2 — Scale-readiness and endurance
@@ -107,15 +114,18 @@ Feature expansion happens only after pilot hardening gates pass.
 ### 2.1 Reliability at longer durations and larger topologies
 - Add periodic soak automation (nightly 6h, pre-release 24h).
 - Add controlled fault-injection scenarios (disconnect/reconnect/loss bursts/root restart).
+- Status: complete for pilot scope (fault schedules + `tools/hil_fault_matrix.py` + soak JSON artifact outputs integrated for nightly/pre-release profiles, with baseline + scheduled-fault validation).
 
 ### 2.2 Security and operations maturity
 - Strengthen auth model and audit events for control-plane operations.
 - Add rate limiting and incident-friendly telemetry for rejected/failed control actions.
+- Status: complete for pilot scope (control endpoint rate limiting + `/api/control/metrics` counters for auth/rate-limit rejects, request volume, bad requests, and apply failures).
 
 ### 2.3 Performance and architecture refinements
 - Optimize dedupe/data-plane hot paths if benchmarks show bottlenecks.
 - Continue splitting oversized control modules where needed.
 - Tighten observability contract versioning and compatibility policy.
+- Status: complete for pilot scope (dedupe lookup traversal tuned and reset on mesh init; status payload includes `schemaVersion`; control metrics payload now versioned with `schemaVersion`; control-plane auth/rate-limit logic extracted from `portal_http.c`; observability compatibility policy documented in `docs/quality/contracts/portal-observability-contract.md`).
 
 ### Stage 2 acceptance criteria
 - 24h soak passes with no crashes and acceptable continuity metrics.

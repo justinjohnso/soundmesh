@@ -108,8 +108,6 @@
 // In very close-range setups, reducing TX power can prevent receiver saturation/auth churn.
 #define WIFI_TX_POWER_QDBM     52
 #define UDP_PORT               3333
-#define MAX_PACKET_SIZE        (NET_FRAME_HEADER_SIZE + OPUS_MAX_FRAME_BYTES)
-
 // Mesh packet batching: combine N Opus frames per mesh packet to reduce mesh pps.
 // With GROUP multicast: 50fps / N = total mesh packets/sec (no per-child multiply)
 // CRITICAL TRADEOFF:
@@ -118,11 +116,21 @@
 //   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
 // For 3+ OUT nodes, batch=2 reduces mesh packet rate while keeping losses concealable.
 #define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps
+#define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
+#define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
 
 #define STREAM_SILENCE_TIMEOUT_MS  3000
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.
 // This avoids rapid stream state flapping under bursty packet delivery.
 #define STREAM_SILENCE_CONFIRM_MS  1500
+
+// OUT self-heal rejoin policy (stream-starvation recovery)
+// Circuit breaker prevents endless reconnect churn on persistent upstream faults.
+#define OUT_REJOIN_STARVATION_MS     60000   // 60s no-data timeout triggers rejoin
+#define OUT_REJOIN_MIN_INTERVAL_MS   2000    // Minimum 2s between rejoin attempts
+#define OUT_REJOIN_MAX_ATTEMPTS      3       // Max retries before cooldown
+#define OUT_REJOIN_WINDOW_MS         (15 * 60 * 1000)  // 15-minute eligibility window
+#define OUT_REJOIN_COOLDOWN_MS       (15 * 60 * 1000)  // 15-minute cooldown after max attempts
 
 // TX continuity policy: when 1, TX keeps encoding/sending even during low input
 // activity (continuous silent Opus frames) to avoid RX stream flap.
@@ -134,7 +142,7 @@
 // - OUT flag gates RX portal startup (kept OFF during current recovery phase).
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
-#define ENABLE_SRC_USB_PORTAL_NETWORK   0
+#define ENABLE_SRC_USB_PORTAL_NETWORK   1
 #define ENABLE_OUT_USB_PORTAL_NETWORK   0
 
 // ============================================================================
@@ -171,11 +179,8 @@
 // ============================================================================
 // Task Stack Configuration (CENTRALIZED)
 // 
-// FreeRTOS xTaskCreate stack size is in WORDS (4 bytes on ESP32)
-// Define in BYTES for clarity, then convert with macro
+// ESP-IDF FreeRTOS stack size arguments are in BYTES.
 // ============================================================================
-
-#define STACK_BYTES_TO_WORDS(bytes)  ((bytes) / sizeof(StackType_t))
 
 // TX pipeline tasks
 #define CAPTURE_TASK_STACK_BYTES     (8 * 1024)   // Includes FFT processing headroom
@@ -190,13 +195,13 @@
 #define MESH_RX_TASK_STACK_BYTES     (4 * 1024)
 #define HEARTBEAT_TASK_STACK_BYTES   (3 * 1024)
 
-// Convert to FreeRTOS words
-#define CAPTURE_TASK_STACK   STACK_BYTES_TO_WORDS(CAPTURE_TASK_STACK_BYTES)
-#define ENCODE_TASK_STACK    STACK_BYTES_TO_WORDS(ENCODE_TASK_STACK_BYTES)
-#define DECODE_TASK_STACK    STACK_BYTES_TO_WORDS(DECODE_TASK_STACK_BYTES)
-#define PLAYBACK_TASK_STACK  STACK_BYTES_TO_WORDS(PLAYBACK_TASK_STACK_BYTES)
-#define MESH_RX_TASK_STACK   STACK_BYTES_TO_WORDS(MESH_RX_TASK_STACK_BYTES)
-#define HEARTBEAT_TASK_STACK STACK_BYTES_TO_WORDS(HEARTBEAT_TASK_STACK_BYTES)
+// Task stack sizes passed directly to xTaskCreate* (in bytes)
+#define CAPTURE_TASK_STACK   CAPTURE_TASK_STACK_BYTES
+#define ENCODE_TASK_STACK    ENCODE_TASK_STACK_BYTES
+#define DECODE_TASK_STACK    DECODE_TASK_STACK_BYTES
+#define PLAYBACK_TASK_STACK  PLAYBACK_TASK_STACK_BYTES
+#define MESH_RX_TASK_STACK   MESH_RX_TASK_STACK_BYTES
+#define HEARTBEAT_TASK_STACK HEARTBEAT_TASK_STACK_BYTES
 
 // Task priorities (higher = more important)
 #define CAPTURE_TASK_PRIO    4
@@ -229,9 +234,16 @@
 #define PORTAL_HTTP_STACK_BYTES      (6 * 1024)
 #define PORTAL_WS_PUSH_STACK_BYTES   (4 * 1024)
 #define PORTAL_DNS_STACK_BYTES       (3 * 1024)
+#define PORTAL_OTA_STACK_BYTES       (8 * 1024)
 #define PORTAL_MIN_FREE_HEAP         (36 * 1024)  // Skip portal if free heap is too low
 #define PORTAL_MIN_LARGEST_BLOCK     (16 * 1024)  // Guard against fragmented heap at startup
 #define PORTAL_INIT_SETTLE_MS        400          // Let audio tasks settle before portal startup
+
+// Portal API schema versions and rate limits
+#define PORTAL_STATUS_SCHEMA_VERSION 1            // /api/status schema version
+#define PORTAL_CONTROL_METRICS_SCHEMA_VERSION 1   // /api/control/metrics schema version
+#define PORTAL_CONTROL_RATE_LIMIT_WINDOW_MS 5000  // 5s rate limit window
+#define PORTAL_CONTROL_RATE_LIMIT_MAX_REQUESTS 10 // Max 10 requests per window
 
 // ============================================================================
 // Audio Output Configuration
@@ -243,12 +255,20 @@
 // Start at 2.0x to compensate for quiet Opus decoder output
 #define RX_OUTPUT_VOLUME           2.0f   // 200% = +6dB amplification
 
+// Output gain control (mixer feature) - range 0-400% (0.0x to 4.0x multiplier)
+#define OUT_OUTPUT_GAIN_MIN_PCT    0     // 0% = mute
+#define OUT_OUTPUT_GAIN_DEFAULT_PCT 200  // 200% = 2.0x (matches RX_OUTPUT_VOLUME)
+#define OUT_OUTPUT_GAIN_MAX_PCT    400   // 400% = 4.0x max amplification
+
 // ============================================================================
 // Memory Monitoring Thresholds
 // ============================================================================
 
 #define MIN_FREE_HEAP_BYTES          (12 * 1024)  // Warn if heap < 12KB
-#define MIN_STACK_HEADROOM_WORDS     256          // ~1KB safety margin
+#define MIN_STACK_HEADROOM_BYTES     1024         // 1KB minimum free stack safety margin
+#define MEMORY_MONITOR_TASK_STACK_BYTES (16 * 1024)
+#define MEMORY_MONITOR_TASK_STACK    MEMORY_MONITOR_TASK_STACK_BYTES
+#define MEMORY_MONITOR_TASK_PRIO     1
 
 // ============================================================================
 // Battery Monitoring
@@ -284,6 +304,16 @@ _Static_assert(JITTER_PREFILL_FRAMES <= JITTER_BUFFER_FRAMES,
 // Jitter target must fit in the actual PCM ring buffer capacity
 _Static_assert(JITTER_BUFFER_FRAMES <= PCM_BUFFER_FRAMES,
                "JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES");
+
+#ifdef NET_FRAME_HEADER_SIZE
+// Network packet buffer sizing must include the largest supported batched Opus payload.
+_Static_assert(MAX_PACKET_SIZE >= (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES),
+               "MAX_PACKET_SIZE must hold header + max batched Opus payload");
+
+// RX task packet buffer must be large enough for the largest encoded TX packet.
+_Static_assert(MAX_PACKET_SIZE <= MESH_RX_BUFFER_SIZE,
+               "MESH_RX_BUFFER_SIZE must be >= MAX_PACKET_SIZE");
+#endif
 
 // DMA buffer size per descriptor must fit in hardware limit (4092 bytes)
 // For stereo 16-bit: 4 bytes per frame, so max ~1023 frames

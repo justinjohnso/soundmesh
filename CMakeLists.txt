@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16.0)
 if(DEFINED ENV{PIOENV})
     set(_env $ENV{PIOENV})
 else()
-    set(_env "tx")
+    set(_env "src")
 endif()
 
 set(SDKCONFIG_DEFAULTS

@@ -1,11 +1,11 @@
 /**
- * MeshNet Audio RX Node
+ * MeshNet Audio OUT Node
  * 
- * Receives Opus-compressed audio from mesh network and plays via I2S DAC
- * Uses ESP-ADF pipeline with Opus decoding
+ * Receives Opus-compressed audio from mesh network and plays via I2S DAC.
+ * Uses ESP-ADF pipeline with Opus decoding.
  */
 
-#if defined(CONFIG_RX_BUILD)
+#if defined(CONFIG_OUT_BUILD)
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -17,6 +17,7 @@
 #include "control/status.h"
 #include "network/mesh_net.h"
 #include "audio/adf_pipeline.h"
+#include "control/portal_ota.h"
 
 #ifdef CONFIG_USE_ES8388
 #include "audio/es8388_audio.h"
@@ -30,8 +31,9 @@
 #include <esp_adc/adc_cali.h>
 #include <esp_adc/adc_cali_scheme.h>
 #include "control/serial_dashboard.h"
+#include "control/memory_monitor.h"
 
-static const char *TAG = "rx_main";
+static const char *TAG = "out_main";
 
 static adc_oneshot_unit_handle_t adc_handle = NULL;
 static adc_cali_handle_t adc_cali_handle = NULL;
@@ -65,7 +67,7 @@ static uint8_t battery_read_percent(void) {
                      / (BATTERY_VOLTAGE_FULL_MV - BATTERY_VOLTAGE_EMPTY_MV));
 }
 
-static rx_status_t status = {
+static out_status_t status = {
     .rssi = -100,
     .latency_ms = 0,
     .buffer_pct = 0,
@@ -115,6 +117,10 @@ static int64_t min_raw_delta = INT64_MAX;   // Minimum (local_ms - remote_ms) se
 static uint32_t ewma_oneway_ms = 0;         // Smoothed latency estimate
 static uint32_t latency_window_start = 0;   // Tick count when current window started
 #define LATENCY_WINDOW_MS 10000             // Reset min every 10s to track drift
+
+static esp_err_t out_apply_mixer_gain(uint16_t out_gain_pct) {
+    return adf_pipeline_set_out_gain_percent(out_gain_pct);
+}
 
 // Audio callback for mesh network - called when audio frames are received
 static const char *rx_state_to_string(rx_connection_state_t state) {
@@ -221,7 +227,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
             }
             
             if ((packets_received & 0x7F) == 0) {
-                ESP_LOGI(TAG, "RX packet %lu (seq=%u, len=%zu, lat=%lums)", 
+                ESP_LOGI(TAG, "OUT packet %lu (seq=%u, len=%zu, lat=%lums)", 
                          packets_received, seq, len, ewma_oneway_ms);
             }
         } else {
@@ -233,8 +239,8 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
 void app_main(void) {
     esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "======================================");
-    ESP_LOGI(TAG, "*** APP_MAIN STARTED - RX beginning initialization ***");
-    ESP_LOGI(TAG, "MeshNet Audio RX starting (Opus)...");
+    ESP_LOGI(TAG, "*** APP_MAIN STARTED - OUT beginning initialization ***");
+    ESP_LOGI(TAG, "MeshNet Audio OUT starting (Opus)...");
     ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
     ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames",
              AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS);
@@ -242,6 +248,11 @@ void app_main(void) {
     state_change_time_ms = esp_timer_get_time() / 1000;
     last_waiting_log_ms = state_change_time_ms;
     rx_set_connection_state(RX_STATE_INIT, "boot");
+
+    // Initialize memory monitor early for pre-flight checks
+    ESP_ERROR_CHECK(memory_monitor_init());
+
+    portal_ota_confirm_running_image();
 
     if (display_init() != ESP_OK) {
         ESP_LOGW(TAG, "Display init failed, continuing without display");
@@ -289,6 +300,14 @@ void app_main(void) {
     ESP_LOGI(TAG, "Creating audio pipeline (heap: %lu bytes)...",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
     
+    // Pre-flight heap check before pipeline creation
+    if (!memory_monitor_is_heap_healthy()) {
+        ESP_LOGE(TAG, "Insufficient heap for audio pipeline! Free: %lu, Largest: %lu",
+                 (unsigned long)memory_monitor_get_free_heap(),
+                 (unsigned long)memory_monitor_get_largest_free_block());
+        // Continue with warning - let pipeline creation fail gracefully if needed
+    }
+    
     adf_pipeline_config_t pipeline_cfg = ADF_PIPELINE_CONFIG_DEFAULT();
     pipeline_cfg.type = ADF_PIPELINE_RX;
     pipeline_cfg.enable_local_output = false;
@@ -310,17 +329,33 @@ void app_main(void) {
 
     // Register audio callback for mesh audio reception
     ESP_ERROR_CHECK(network_register_audio_callback(audio_rx_callback));
+    ESP_ERROR_CHECK(network_register_mixer_apply_callback(out_apply_mixer_gain));
+    ESP_ERROR_CHECK(adf_pipeline_set_out_gain_percent(OUT_OUTPUT_GAIN_DEFAULT_PCT));
 
-    ESP_LOGI(TAG, "RX initialized, waiting for network...");
+    ESP_LOGI(TAG, "OUT initialized, waiting for network...");
     dashboard_init();
 
     // Start the RX pipeline BEFORE waiting for network (for tone test / immediate audio)
     ESP_LOGI(TAG, "Starting audio pipeline...");
     ESP_ERROR_CHECK(adf_pipeline_start(rx_pipeline));
 
+    // Register audio pipeline tasks for stack monitoring
+    // RX pipeline has decode and playback tasks
+    adf_pipeline_handle_t p = rx_pipeline;
+    if (p) {
+        extern TaskHandle_t adf_pipeline_get_decode_task(adf_pipeline_handle_t);
+        extern TaskHandle_t adf_pipeline_get_playback_task(adf_pipeline_handle_t);
+        TaskHandle_t dec = adf_pipeline_get_decode_task(p);
+        TaskHandle_t play = adf_pipeline_get_playback_task(p);
+        if (dec) memory_monitor_register_task(dec, "adf_dec");
+        if (play) memory_monitor_register_task(play, "adf_play");
+    }
+
     // Register for network ready notification (non-blocking — we poll in the main loop)
     ESP_ERROR_CHECK(network_register_startup_notification(xTaskGetCurrentTaskHandle()));
     bool network_ready = false;
+    const int64_t rejoin_starvation_ms = OUT_REJOIN_STARVATION_MS;
+    const int64_t rejoin_min_interval_ms = OUT_REJOIN_MIN_INTERVAL_MS;
 
     ESP_LOGI(TAG, "Entering main loop, waiting for network...");
 
@@ -345,6 +380,9 @@ void app_main(void) {
                 dashboard_log("Network ready");
                 ESP_LOGI(TAG, "Main task stack high water mark: %u bytes", uxTaskGetStackHighWaterMark(NULL));
                 ESP_LOGI(TAG, "Free heap: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+                
+                // Start periodic memory monitoring (logs every 10 seconds)
+                memory_monitor_start_periodic(10000);
             }
         }
         
@@ -412,7 +450,7 @@ void app_main(void) {
                              packets_received, dropped_packets, loss_pct, stats.buffer_fill_percent);
             }
             
-            dashboard_render_rx(&status);
+            dashboard_render_out(&status);
             last_stats_update = now;
         }
         
@@ -429,11 +467,12 @@ void app_main(void) {
         // force a mesh reconnect to refresh parent path selection.
         if (network_ready &&
             network_is_connected() &&
+            network_rejoin_allowed() &&
             !status.receiving_audio &&
             current_state == RX_STATE_WAITING_FOR_STREAM &&
-            status.state_elapsed_s >= 60 &&
-            (now_ms - last_stream_rx_ms) >= 60000 &&
-            (now_ms - last_rejoin_attempt_ms) >= 180000) {
+            status.state_elapsed_s >= (uint32_t)(rejoin_starvation_ms / 1000) &&
+            (now_ms - last_stream_rx_ms) >= rejoin_starvation_ms &&
+            (now_ms - last_rejoin_attempt_ms) >= rejoin_min_interval_ms) {
             ESP_LOGW(TAG, "No stream for %lus while connected, triggering mesh rejoin",
                      (unsigned long)status.state_elapsed_s);
             if (network_trigger_rejoin() == ESP_OK) {
@@ -445,7 +484,7 @@ void app_main(void) {
 
         static uint32_t last_display_update = 0;
         if ((now - last_display_update) >= pdMS_TO_TICKS(100)) {
-            display_render_rx(current_view, &status);
+            display_render_out(current_view, &status);
             last_display_update = now;
         }
         
@@ -454,4 +493,4 @@ void app_main(void) {
     }
 }
 
-#endif  // CONFIG_RX_BUILD
+#endif  // CONFIG_OUT_BUILD

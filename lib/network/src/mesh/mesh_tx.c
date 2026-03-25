@@ -98,8 +98,9 @@ esp_err_t network_send_control(const uint8_t *data, size_t len) {
             ESP_LOGD(TAG, "Control P2P send failed: %s", esp_err_to_name(err));
         }
     } else {
-        if (have_root_addr) {
-            err = esp_mesh_send(&cached_root_addr, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
+        const mesh_addr_t *root_addr = mesh_state_get_root_addr();
+        if (root_addr) {
+            err = esp_mesh_send(root_addr, &mesh_data, MESH_DATA_TODS | MESH_DATA_NONBLOCK, NULL, 0);
         } else {
             err = ESP_ERR_INVALID_STATE;
         }

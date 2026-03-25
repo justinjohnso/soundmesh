@@ -3,6 +3,9 @@
 #include "mesh/mesh_dedupe.h"
 #include "mesh/mesh_ping.h"
 #include "mesh/mesh_uplink.h"
+#include "mesh/mesh_mixer.h"
+#include "network/uplink_control.h"
+#include "network/mixer_control.h"
 #include "network/frame_codec.h"
 #include "network/mesh_net.h"
 #include <esp_log.h>
@@ -57,6 +60,11 @@ void mesh_rx_task(void *arg) {
             continue;
         }
 
+        if (!data.data || data.size == 0) {
+            ESP_LOGW(TAG, "Ignoring empty mesh packet");
+            continue;
+        }
+
         uint8_t first_byte = data.data[0];
 
         if (first_byte == NET_PKT_TYPE_HEARTBEAT) {
@@ -91,9 +99,22 @@ void mesh_rx_task(void *arg) {
         } else if (first_byte == NET_PKT_TYPE_STREAM_ANNOUNCE) {
             ESP_LOGD(TAG, "Stream announcement received");
         } else if (first_byte == NET_PKT_TYPE_CONTROL) {
-            uplink_ctrl_message_t uplink_msg;
-            if (uplink_ctrl_decode((const uplink_ctrl_packet_t *)data.data, data.size, &uplink_msg)) {
-                mesh_uplink_handle_control(&uplink_msg);
+            if (data.size == sizeof(uplink_ctrl_packet_t)) {
+                uplink_ctrl_message_t uplink_msg;
+                if (uplink_ctrl_decode((const uplink_ctrl_packet_t *)data.data, data.size, &uplink_msg)) {
+                    mesh_uplink_handle_control(&uplink_msg);
+                } else {
+                    ESP_LOGW(TAG, "Ignoring invalid uplink control packet");
+                }
+            } else if (data.size == sizeof(mixer_ctrl_packet_t)) {
+                mixer_ctrl_message_t mixer_msg;
+                if (mixer_ctrl_decode((const mixer_ctrl_packet_t *)data.data, data.size, &mixer_msg)) {
+                    mesh_mixer_handle_control(&mixer_msg);
+                } else {
+                    ESP_LOGW(TAG, "Ignoring invalid mixer control packet");
+                }
+            } else {
+                ESP_LOGW(TAG, "Ignoring unknown control packet size=%d", data.size);
             }
         } else if (first_byte == NET_FRAME_MAGIC) {
             if (data.size < NET_FRAME_HEADER_SIZE_V1) {

@@ -11,7 +11,7 @@
 
 typedef struct {
     uint8_t mac[6];
-    uint8_t role;           // 0=RX, 1=TX
+    uint8_t role;           // 0=OUT, 1=SRC
     uint8_t has_heartbeat;  // 1 once full metadata is received from heartbeat
     uint8_t is_root;
     uint8_t layer;

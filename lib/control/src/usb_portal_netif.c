@@ -1,6 +1,7 @@
 #include "control/usb_portal.h"
 #include "control/portal_state.h"
 #include "config/build.h"
+#include "config/build_role.h"
 #include <esp_log.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
@@ -11,9 +12,13 @@
 #include <freertos/task.h>
 #include <string.h>
 
-#if defined(CONFIG_TX_BUILD) || defined(CONFIG_COMBO_BUILD) || defined(CONFIG_RX_BUILD)
+#if BUILD_HAS_PORTAL
 
 #include "network/mesh_net.h"
+
+#ifdef CONFIG_ESP_CONSOLE_USB_CDC
+#error "CONFIG_ESP_CONSOLE_USB_CDC is incompatible with TinyUSB portal mode. Use USB Serial/JTAG console."
+#endif
 
 /*
  * Include esp_tinyusb managed component headers.
@@ -203,11 +208,13 @@ esp_err_t portal_init(void) {
     }
 
     // Initialize TCP/IP stack and event loop (safe to call multiple times)
+    ESP_LOGI(TAG, "Initializing esp_netif...");
     ret = esp_netif_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(TAG, "Creating default event loop...");
     esp_err_t evt_err = esp_event_loop_create_default();
     if (evt_err != ESP_OK && evt_err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "Event loop create failed: %s", esp_err_to_name(evt_err));
@@ -215,6 +222,7 @@ esp_err_t portal_init(void) {
     }
 
     // Install TinyUSB driver
+    ESP_LOGI(TAG, "Installing TinyUSB driver...");
     tinyusb_config_t tusb_cfg = { 0 };
     tusb_cfg.external_phy = false;
     ret = tinyusb_driver_install(&tusb_cfg);
@@ -225,6 +233,7 @@ esp_err_t portal_init(void) {
     ESP_LOGI(TAG, "TinyUSB driver installed");
 
     // Initialize USB NCM network class
+    ESP_LOGI(TAG, "Initializing USB NCM network class...");
     tinyusb_net_config_t net_config = {
         .on_recv_callback = usb_recv_callback,
     };
@@ -246,6 +255,7 @@ esp_err_t portal_init(void) {
     ESP_LOGI(TAG, "USB NCM network class initialized");
 
     // Create esp_netif with static IP and DHCP server
+    ESP_LOGI(TAG, "Setting up Portal netif...");
     ret = portal_netif_setup();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Portal netif setup failed: %s", esp_err_to_name(ret));
@@ -253,6 +263,7 @@ esp_err_t portal_init(void) {
     }
 
     // Start HTTP server
+    ESP_LOGI(TAG, "Starting HTTP server...");
     ret = portal_http_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(ret));
@@ -261,6 +272,7 @@ esp_err_t portal_init(void) {
     ESP_LOGI(TAG, "HTTP server started");
 
     // Start DNS catch-all server
+    ESP_LOGI(TAG, "Starting DNS server...");
     ret = portal_dns_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "DNS server start failed: %s", esp_err_to_name(ret));
@@ -297,4 +309,4 @@ const esp_netif_ip_info_t *portal_get_ip_info(void) {
     return NULL;
 }
 
-#endif /* CONFIG_TX_BUILD || CONFIG_COMBO_BUILD */
+#endif /* BUILD_HAS_PORTAL */

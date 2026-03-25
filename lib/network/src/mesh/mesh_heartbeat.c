@@ -50,7 +50,7 @@ static void send_heartbeat(void) {
 }
 
 static void send_stream_announcement(void) {
-    if (my_node_role != NODE_ROLE_TX) {
+    if (my_node_role != NODE_ROLE_SRC) {
         return;
     }
 
@@ -79,24 +79,24 @@ static void send_stream_announcement(void) {
 void mesh_heartbeat_task(void *arg) {
     (void)arg;
     const uint32_t HEARTBEAT_INTERVAL_MS = 5000;
-    const uint32_t RX_RECOVERY_INTERVAL_MS = 120000;
+    const uint32_t OUT_RECOVERY_INTERVAL_MS = 120000;
 
     ESP_LOGI(TAG, "Heartbeat task started (will send once network is ready)");
 
     uint32_t waited_ms = 0;
     while (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)) == 0) {
         waited_ms += 1000;
-        if (my_node_role == NODE_ROLE_RX && (waited_ms % 5000) == 0) {
+        if (my_node_role == NODE_ROLE_OUT && (waited_ms % 5000) == 0) {
             ESP_LOGI(TAG, "Still waiting for mesh ready (%lus): connected=%d root_ready=%d no_parent=%lu scans=%lu",
                      (unsigned long)(waited_ms / 1000), is_mesh_connected, is_mesh_root_ready,
                      (unsigned long)no_parent_count, (unsigned long)scan_done_count);
         }
-        if (my_node_role == NODE_ROLE_RX &&
-            waited_ms >= RX_RECOVERY_INTERVAL_MS &&
-            (waited_ms % RX_RECOVERY_INTERVAL_MS) == 0 &&
+        if (my_node_role == NODE_ROLE_OUT &&
+            waited_ms >= OUT_RECOVERY_INTERVAL_MS &&
+            (waited_ms % OUT_RECOVERY_INTERVAL_MS) == 0 &&
             recovery_restarts < 1) {
             recovery_restarts++;
-            ESP_LOGW(TAG, "RX join recovery #%lu: forcing reconnect after %lus wait",
+            ESP_LOGW(TAG, "OUT join recovery #%lu: forcing reconnect after %lus wait",
                      (unsigned long)recovery_restarts, (unsigned long)(waited_ms / 1000));
         }
     }

@@ -3,9 +3,8 @@
 #include "audio/es8388_audio.h"
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
-#include "network/mesh_net.h"
+#include "network/audio_transport.h"
 
-#include <arpa/inet.h>
 #include <esp_log.h>
 #include <esp_mesh.h>
 #include <esp_timer.h>
@@ -13,6 +12,7 @@
 #include <string.h>
 
 static const char *TAG = "adf_pipeline";
+static uint8_t s_batch_buffer[MESH_OPUS_BATCH_MAX_BYTES];
 
 static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count)
 {
@@ -152,9 +152,10 @@ void tx_capture_task(void *arg)
                 static uint32_t capture_count = 0;
                 capture_count++;
                 if (capture_count <= 5 || (capture_count % 1000) == 0) {
-                    ESP_LOGI(TAG, "Capture #%lu: stereo[0]=%d stereo[1]=%d mono[0]=%d mono[100]=%d",
+                    ESP_LOGI(TAG, "Capture #%lu: stereo[0]=%d stereo[1]=%d mono[0]=%d mono[100]=%d stack_hwm=%u",
                              capture_count, (int)stereo_frame[0], (int)stereo_frame[1],
-                             (int)mono_frame[0], (int)mono_frame[100]);
+                             (int)mono_frame[0], (int)mono_frame[100],
+                             (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
 
                 if (pipeline->enable_local_output) {
@@ -215,7 +216,7 @@ void tx_encode_task(void *arg)
             }
 
             bool signal_present = pipeline->stats.input_signal_present;
-#if !TX_CONTINUOUS_STREAMING
+#if !SRC_CONTINUOUS_STREAMING
             if (pipeline->input_mode != ADF_INPUT_MODE_TONE && !signal_present) {
                 batch_count = 0;
                 batch_payload_len = 0;
@@ -244,7 +245,7 @@ void tx_encode_task(void *arg)
                 continue;
             }
 
-            uint8_t *dst = s_batch_buffer + NET_FRAME_HEADER_SIZE + batch_payload_len;
+            uint8_t *dst = s_batch_buffer + batch_payload_len;
             dst[0] = (opus_len >> 8) & 0xFF;
             dst[1] = opus_len & 0xFF;
             memcpy(dst + 2, opus_frame, opus_len);
@@ -252,19 +253,12 @@ void tx_encode_task(void *arg)
             batch_count++;
 
             if (batch_count >= MESH_FRAMES_PER_PACKET) {
-                net_frame_header_t *hdr = (net_frame_header_t *)s_batch_buffer;
-                hdr->magic = NET_FRAME_MAGIC;
-                hdr->version = NET_FRAME_VERSION;
-                hdr->type = NET_PKT_TYPE_AUDIO_OPUS;
-                hdr->stream_id = 1;
-                hdr->seq = htons(pipeline->tx_seq);
-                hdr->timestamp = htonl((uint32_t)(esp_timer_get_time() / 1000));
-                hdr->payload_len = htons((uint16_t)batch_payload_len);
-                hdr->ttl = 6;
-                hdr->frame_count = batch_count;
-                memcpy(hdr->src_id, network_get_src_id(), NETWORK_SRC_ID_LEN);
-
-                ret = network_send_audio(s_batch_buffer, NET_FRAME_HEADER_SIZE + batch_payload_len);
+                ret = network_send_audio_batch(s_batch_buffer,
+                                               batch_payload_len,
+                                               pipeline->tx_seq,
+                                               (uint32_t)(esp_timer_get_time() / 1000),
+                                               batch_count,
+                                               1);
                 if (ret == ESP_OK) {
                     pipeline->stats.frames_processed += batch_count;
                 } else if (ret != ESP_ERR_MESH_DISCONNECTED && ret != ESP_ERR_INVALID_STATE) {
@@ -274,9 +268,10 @@ void tx_encode_task(void *arg)
                 pipeline->tx_seq += batch_count;
 
                 if ((pipeline->tx_seq & 0xFF) == 0) {
-                    ESP_LOGI(TAG, "TX: seq=%u, batch=%u, payload=%u, enc=%luus",
+                    ESP_LOGI(TAG, "TX: seq=%u, batch=%u, payload=%u, enc=%luus, stack_hwm=%u",
                              pipeline->tx_seq, batch_count, (unsigned)batch_payload_len,
-                             (unsigned long)pipeline->stats.avg_encode_time_us);
+                             (unsigned long)pipeline->stats.avg_encode_time_us,
+                             (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
 
                 batch_count = 0;

@@ -11,13 +11,11 @@ EVIDENCE_MAX_AGE_DAYS="${PORTAL_RUNTIME_EVIDENCE_MAX_AGE_DAYS:-14}"
 HIL_CHECK_SCRIPT="tools/hil_soak_check.py"
 
 RAM_TOTAL_BYTES=327680
-TX_RAM_PCT_MAX=70.0
-RX_RAM_PCT_MAX=65.0
-COMBO_RAM_PCT_MAX=70.0
+SRC_RAM_PCT_MAX=70.0
+OUT_RAM_PCT_MAX=65.0
 
-TX_RAM_USED_MAX=180000
-RX_RAM_USED_MAX=150000
-COMBO_RAM_USED_MAX=180000
+SRC_RAM_USED_MAX=180000
+OUT_RAM_USED_MAX=150000
 
 PORTAL_RUNTIME_GUARD_BYTES=8192
 PORTAL_RUNTIME_HEAP_MIN_BYTES=40000
@@ -116,17 +114,25 @@ echo ""
 echo "[gate] Running native unit tests..."
 pio test -e native || exit 1
 
-echo "[gate] Building tx/rx/combo environments..."
+echo "[gate] Resetting generated sdkconfig caches..."
+for cfg in sdkconfig.src sdkconfig.out; do
+  if [[ -f "$cfg" ]]; then
+    rm -f "$cfg"
+    echo "[gate] Removed stale $cfg"
+  fi
+done
+
+echo "[gate] Building src/out environments..."
 build_log="$(mktemp)"
 trap 'rm -f "$build_log"' EXIT
 
-pio run -e tx -e rx -e combo 2>&1 | tee "$build_log" > /dev/null || exit 1
+pio run -e src -e out 2>&1 | tee "$build_log" > /dev/null || exit 1
 
 echo "[gate] Validating build artifacts..."
 mkdir -p "$(dirname "$METRICS_FILE")"
 echo -e "env\tram_pct\tram_used_bytes\tram_total_bytes\tram_free_bytes\telf_size_bytes\tmap_size_bytes" > "$METRICS_FILE"
 
-for env in tx rx combo; do
+for env in src out; do
   elf_path=".pio/build/${env}/firmware.elf"
   map_path=".pio/build/${env}/meshnet-audio.map"
   cfg_path=".pio/build/${env}/config/sdkconfig.h"
@@ -142,10 +148,10 @@ ram_report_lines=()
 while IFS= read -r line; do
   ram_report_lines+=("$line")
 done < <(grep 'RAM:' "$build_log")
-[[ ${#ram_report_lines[@]} -ge 3 ]] || fail "Could not parse RAM usage for tx/rx/combo"
+[[ ${#ram_report_lines[@]} -ge 2 ]] || fail "Could not parse RAM usage for src/out"
 
-ENVS=(tx rx combo)
-for i in 0 1 2; do
+ENVS=(src out)
+for i in 0 1; do
   line="${ram_report_lines[$i]}"
   env="${ENVS[$i]}"
 
@@ -165,21 +171,17 @@ for i in 0 1 2; do
   echo -e "${env}\t${ram_pct}\t${ram_used}\t${ram_total}\t${ram_free}\t${elf_size}\t${map_size}" >> "$METRICS_FILE"
 
   case "$env" in
-    tx)
-      float_gt "$ram_pct" "$TX_RAM_PCT_MAX" && fail "TX RAM ${ram_pct}% exceeds ${TX_RAM_PCT_MAX}%"
-      (( ram_used > TX_RAM_USED_MAX )) && fail "TX RAM used ${ram_used} exceeds ${TX_RAM_USED_MAX}"
+    src)
+      float_gt "$ram_pct" "$SRC_RAM_PCT_MAX" && fail "SRC RAM ${ram_pct}% exceeds ${SRC_RAM_PCT_MAX}%"
+      (( ram_used > SRC_RAM_USED_MAX )) && fail "SRC RAM used ${ram_used} exceeds ${SRC_RAM_USED_MAX}"
       ;;
-    rx)
-      float_gt "$ram_pct" "$RX_RAM_PCT_MAX" && fail "RX RAM ${ram_pct}% exceeds ${RX_RAM_PCT_MAX}%"
-      (( ram_used > RX_RAM_USED_MAX )) && fail "RX RAM used ${ram_used} exceeds ${RX_RAM_USED_MAX}"
-      ;;
-    combo)
-      float_gt "$ram_pct" "$COMBO_RAM_PCT_MAX" && fail "COMBO RAM ${ram_pct}% exceeds ${COMBO_RAM_PCT_MAX}%"
-      (( ram_used > COMBO_RAM_USED_MAX )) && fail "COMBO RAM used ${ram_used} exceeds ${COMBO_RAM_USED_MAX}"
+    out)
+      float_gt "$ram_pct" "$OUT_RAM_PCT_MAX" && fail "OUT RAM ${ram_pct}% exceeds ${OUT_RAM_PCT_MAX}%"
+      (( ram_used > OUT_RAM_USED_MAX )) && fail "OUT RAM used ${ram_used} exceeds ${OUT_RAM_USED_MAX}"
       ;;
   esac
 done
-pass "Role-specific RAM limits satisfied (tx/rx/combo)"
+pass "Role-specific RAM limits satisfied (src/out)"
 pass "Generated artifact metrics: ${METRICS_FILE}"
 
 echo "[gate] Validating stack and heap budget constants..."
@@ -221,35 +223,55 @@ if [[ "$out_portal" == "1" && "$src_portal" != "1" ]]; then
   fail "ENABLE_OUT_USB_PORTAL_NETWORK=1 requires ENABLE_SRC_USB_PORTAL_NETWORK=1"
 fi
 
-if grep -q 'portal_init(' src/rx/main.c && [[ "$out_portal" == "0" ]]; then
-  fail "RX calls portal_init() while ENABLE_OUT_USB_PORTAL_NETWORK=0"
+if grep -q 'portal_init(' src/out/main.c && [[ "$out_portal" == "0" ]]; then
+  fail "OUT calls portal_init() while ENABLE_OUT_USB_PORTAL_NETWORK=0"
 fi
 
-if ! grep -q '#if ENABLE_SRC_USB_PORTAL_NETWORK' src/tx/main.c; then
-  fail "TX portal init path must remain guarded by ENABLE_SRC_USB_PORTAL_NETWORK"
-fi
-if ! grep -q '#if ENABLE_SRC_USB_PORTAL_NETWORK' src/combo/main.c; then
-  fail "COMBO portal init path must remain guarded by ENABLE_SRC_USB_PORTAL_NETWORK"
+if ! grep -q '#if ENABLE_SRC_USB_PORTAL_NETWORK' src/src/main.c; then
+  fail "SRC portal init path must remain guarded by ENABLE_SRC_USB_PORTAL_NETWORK"
 fi
 pass "Role-specific portal constraints validated"
 
 echo "[gate] Validating runtime safety configs from build artifacts..."
-for env in tx rx combo; do
+for env in src out; do
   cfg_path=".pio/build/${env}/config/sdkconfig.h"
   grep -q '^#define CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY 1' "$cfg_path" || fail "${env}: stack overflow canary must be enabled"
+  grep -q '^#define CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK 1' "$cfg_path" || fail "${env}: stack watchpoint must be enabled"
+  grep -q '^#define CONFIG_HEAP_POISONING_LIGHT 1' "$cfg_path" || fail "${env}: heap poisoning (light) must be enabled"
+  grep -q '^#define CONFIG_ESP_SYSTEM_MEMPROT_FEATURE 1' "$cfg_path" || fail "${env}: memory protection must be enabled"
+  grep -q '^#define CONFIG_ESP_TASK_WDT_PANIC 1' "$cfg_path" || fail "${env}: task watchdog panic must be enabled"
   grep -q '^#define CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT 1' "$cfg_path" || fail "${env}: panic print+reboot must be enabled"
 done
-pass "Runtime safety configs validated (stack canary + panic print/reboot)"
+pass "Runtime safety configs validated (stack canary/watchpoint + heap poisoning + memprot + WDT panic)"
+
+echo "[gate] Validating OTA partition/rollback safety..."
+if ! grep -Eq '^[[:space:]]*otadata,[[:space:]]*data,[[:space:]]*ota,' partitions.csv; then
+  fail "partitions.csv missing otadata partition"
+fi
+if ! grep -Eq '^[[:space:]]*ota_0,[[:space:]]*app,[[:space:]]*ota_0,' partitions.csv; then
+  fail "partitions.csv missing ota_0 partition"
+fi
+if ! grep -Eq '^[[:space:]]*ota_1,[[:space:]]*app,[[:space:]]*ota_1,' partitions.csv; then
+  fail "partitions.csv missing ota_1 partition"
+fi
+for env in src out; do
+  cfg_path=".pio/build/${env}/config/sdkconfig.h"
+  grep -q '^#define CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE 1' "$cfg_path" || fail "${env}: bootloader rollback must be enabled"
+  grep -Eq '^#define CONFIG_APP_ROLLBACK_ENABLE[[:space:]]+(1|CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)$' "$cfg_path" || fail "${env}: app rollback must be enabled"
+done
+if ! grep -q 'esp_ota_mark_app_valid_cancel_rollback' lib/control/src/portal_ota.c; then
+  fail "OTA rollback confirmation path missing in portal_ota.c"
+fi
+pass "OTA partition/rollback safety validated"
 
 echo "[gate] Validating role entrypoints..."
-for env in tx rx combo; do
+for env in src out; do
   map_path=".pio/build/${env}/meshnet-audio.map"
   require_file "$map_path"
 
   case "$env" in
-    tx) expected_obj=".pio/build/tx/src/tx/main.o" ;;
-    rx) expected_obj=".pio/build/rx/src/rx/main.o" ;;
-    combo) expected_obj=".pio/build/combo/src/combo/main.o" ;;
+    src) expected_obj=".pio/build/src/src/src/main.o" ;;
+    out) expected_obj=".pio/build/out/src/out/main.o" ;;
     *) fail "Unknown env ${env}" ;;
   esac
 
@@ -257,7 +279,7 @@ for env in tx rx combo; do
     fail "${env}: app_main not linked from expected object (${expected_obj})"
   fi
 done
-pass "Role entrypoints validated (tx/rx/combo)"
+pass "Role entrypoints validated (src/out)"
 
 echo "[gate] Validating portal enablement policy (fail-closed)..."
 if [[ "$src_portal" == "1" || "$out_portal" == "1" ]]; then
@@ -288,10 +310,8 @@ PY
 
   [[ -n "$(metric_value EVIDENCE_COMMIT)" ]] || fail "EVIDENCE_COMMIT cannot be empty"
 
-  tx_heap_min="$(metric_int TX_FREE_HEAP_MIN_BYTES)"
-  combo_heap_min="$(metric_int COMBO_FREE_HEAP_MIN_BYTES)"
-  tx_stack_hwm_min="$(metric_int TX_MAIN_STACK_HWM_MIN_BYTES)"
-  combo_stack_hwm_min="$(metric_int COMBO_MAIN_STACK_HWM_MIN_BYTES)"
+  src_heap_min="$(metric_int SRC_FREE_HEAP_MIN_BYTES)"
+  src_stack_hwm_min="$(metric_int SRC_MAIN_STACK_HWM_MIN_BYTES)"
   http_ok_runs="$(metric_int PORTAL_STATUS_200_OK_RUNS)"
   hil_duration_s="$(metric_int PORTAL_HIL_DURATION_SECONDS)"
   hil_ignore_reset_window_s="$(metric_value PORTAL_HIL_IGNORE_RESET_WINDOW_SECONDS)"
@@ -302,10 +322,8 @@ PY
   hil_src_ok_hits="$(metric_int PORTAL_HIL_SRC_OK_HITS)"
   hil_out_ok_hits="$(metric_int PORTAL_HIL_OUT_OK_HITS)"
 
-  (( tx_heap_min >= PORTAL_RUNTIME_HEAP_MIN_BYTES )) || fail "TX_FREE_HEAP_MIN_BYTES too low (${tx_heap_min})"
-  (( combo_heap_min >= PORTAL_RUNTIME_HEAP_MIN_BYTES )) || fail "COMBO_FREE_HEAP_MIN_BYTES too low (${combo_heap_min})"
-  (( tx_stack_hwm_min >= PORTAL_MAIN_STACK_HWM_MIN_BYTES )) || fail "TX_MAIN_STACK_HWM_MIN_BYTES too low (${tx_stack_hwm_min})"
-  (( combo_stack_hwm_min >= PORTAL_MAIN_STACK_HWM_MIN_BYTES )) || fail "COMBO_MAIN_STACK_HWM_MIN_BYTES too low (${combo_stack_hwm_min})"
+  (( src_heap_min >= PORTAL_RUNTIME_HEAP_MIN_BYTES )) || fail "SRC_FREE_HEAP_MIN_BYTES too low (${src_heap_min})"
+  (( src_stack_hwm_min >= PORTAL_MAIN_STACK_HWM_MIN_BYTES )) || fail "SRC_MAIN_STACK_HWM_MIN_BYTES too low (${src_stack_hwm_min})"
   (( http_ok_runs >= PORTAL_HTTP_OK_RUNS_MIN )) || fail "PORTAL_STATUS_200_OK_RUNS too low (${http_ok_runs})"
   (( hil_duration_s >= PORTAL_HIL_DURATION_MIN_SECONDS )) || fail "PORTAL_HIL_DURATION_SECONDS too low (${hil_duration_s})"
   metric_float_ge PORTAL_HIL_IGNORE_RESET_WINDOW_SECONDS "${PORTAL_HIL_IGNORE_RESET_WINDOW_MIN_SECONDS}" >/dev/null || fail "PORTAL_HIL_IGNORE_RESET_WINDOW_SECONDS too low"
@@ -317,10 +335,10 @@ PY
   (( hil_out_ok_hits > 0 )) || fail "PORTAL_HIL_OUT_OK_HITS must be >0 (got ${hil_out_ok_hits})"
 
   if [[ "$out_portal" == "1" ]]; then
-    rx_heap_min="$(metric_int RX_FREE_HEAP_MIN_BYTES)"
-    rx_stack_hwm_min="$(metric_int RX_MAIN_STACK_HWM_MIN_BYTES)"
-    (( rx_heap_min >= PORTAL_RUNTIME_HEAP_MIN_BYTES )) || fail "RX_FREE_HEAP_MIN_BYTES too low (${rx_heap_min})"
-    (( rx_stack_hwm_min >= PORTAL_MAIN_STACK_HWM_MIN_BYTES )) || fail "RX_MAIN_STACK_HWM_MIN_BYTES too low (${rx_stack_hwm_min})"
+    out_heap_min="$(metric_int OUT_FREE_HEAP_MIN_BYTES)"
+    out_stack_hwm_min="$(metric_int OUT_MAIN_STACK_HWM_MIN_BYTES)"
+    (( out_heap_min >= PORTAL_RUNTIME_HEAP_MIN_BYTES )) || fail "OUT_FREE_HEAP_MIN_BYTES too low (${out_heap_min})"
+    (( out_stack_hwm_min >= PORTAL_MAIN_STACK_HWM_MIN_BYTES )) || fail "OUT_MAIN_STACK_HWM_MIN_BYTES too low (${out_stack_hwm_min})"
   fi
 
   pass "Portal enablement evidence accepted (${PORTAL_EVIDENCE_FILE})"
@@ -349,11 +367,8 @@ pass "No crash-signature regressions"
 
 # Check watchdog-safe startup
 echo "[gate] Validating watchdog-safe startup..."
-if ! grep -q 'ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000))' src/tx/main.c; then
-  fail "TX startup missing watchdog-safe notify loop"
-fi
-if ! grep -q 'ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000))' src/combo/main.c; then
-  fail "COMBO startup missing watchdog-safe notify loop"
+if ! grep -q 'ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000))' src/src/main.c; then
+  fail "SRC startup missing watchdog-safe notify loop"
 fi
 pass "Watchdog-safe startup patterns OK"
 
@@ -361,7 +376,7 @@ echo ""
 echo "================================================================================"
 echo "[gate] ✓ ALL PRE-UPLOAD CRASH GATES PASSED"
 echo "================================================================================"
-echo "Role RAM limits: TX<=${TX_RAM_PCT_MAX}% RX<=${RX_RAM_PCT_MAX}% COMBO<=${COMBO_RAM_PCT_MAX}%"
+echo "Role RAM limits: SRC<=${SRC_RAM_PCT_MAX}% OUT<=${OUT_RAM_PCT_MAX}%"
 echo "Portal runtime budget floor: ${portal_static_runtime_budget} bytes"
 echo "Metrics artifact: ${METRICS_FILE}"
 echo ""

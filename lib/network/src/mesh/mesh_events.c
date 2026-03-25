@@ -1,6 +1,7 @@
 #include "mesh/mesh_events.h"
 #include "mesh/mesh_state.h"
 #include "mesh/mesh_uplink.h"
+#include "mesh/mesh_mixer.h"
 #include "config/build.h"
 #include <esp_log.h>
 #include <esp_mesh.h>
@@ -37,11 +38,11 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
-            if (my_node_role == NODE_ROLE_RX) {
-                ESP_LOGI(TAG, "RX discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
+            if (my_node_role == NODE_ROLE_OUT) {
+                ESP_LOGI(TAG, "OUT discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
                          MESH_CHANNEL, MESH_ID, g_src_id);
             }
-            if (my_node_role == NODE_ROLE_TX && esp_mesh_is_root()) {
+            if (my_node_role == NODE_ROLE_SRC && esp_mesh_is_root()) {
                 is_mesh_root = true;
                 is_mesh_root_ready = true;
                 mesh_layer = 0;
@@ -74,8 +75,9 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 esp_wifi_scan_stop();
                 ESP_LOGI(TAG, "Root connected: scan stopped");
             } else {
-                ESP_LOGI(TAG, "RX connected: preserving startup self-organized config");
+                ESP_LOGI(TAG, "OUT connected: preserving startup self-organized config");
                 mesh_uplink_request_sync_from_root();
+                mesh_mixer_request_sync_from_root();
             }
             break;
         }
@@ -90,7 +92,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                          wifi_disconnect_reason_to_str(disconnected->reason),
                          was_connected, esp_mesh_get_layer());
                 is_mesh_connected = false;
-                have_root_addr = false;
+                mesh_state_clear_root_addr();
                 if (!was_connected) {
                     join_fail_count++;
                     if (disconnected->reason == WIFI_REASON_AUTH_EXPIRE) {
@@ -98,7 +100,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                     }
                     ESP_LOGI(TAG, "Join attempt failed before parent connect; continuing auto-join without forced reset");
                     if ((join_fail_count % 10) == 0) {
-                        ESP_LOGW(TAG, "RX join still failing (count=%lu)", (unsigned long)join_fail_count);
+                        ESP_LOGW(TAG, "OUT join still failing (count=%lu)", (unsigned long)join_fail_count);
                     }
                     if (auth_expire_count >= 12) {
                         ESP_LOGW(TAG, "AUTH_EXPIRE persists (count=%lu), keeping native mesh retry path",
@@ -141,7 +143,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
 
         case MESH_EVENT_ROOT_FIXED:
             if (esp_mesh_is_root()) {
-                ESP_LOGI(TAG, "Became mesh root (role=%s)", my_node_role == NODE_ROLE_TX ? "TX/COMBO" : "RX");
+                ESP_LOGI(TAG, "Became mesh root (role=%s)", my_node_role == NODE_ROLE_SRC ? "SRC" : "OUT");
                 is_mesh_root = true;
                 mesh_layer = 0;
                 is_mesh_root_ready = true;
@@ -155,9 +157,10 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
 
         case MESH_EVENT_ROOT_ADDRESS: {
             mesh_event_root_address_t *root_addr = (mesh_event_root_address_t *)event_data;
-            memcpy(cached_root_addr.addr, root_addr->addr, 6);
-            have_root_addr = true;
-            ESP_LOGI(TAG, "Root addr cached: " MACSTR, MAC2STR(cached_root_addr.addr));
+            mesh_addr_t tmp = {0};
+            memcpy(tmp.addr, root_addr->addr, sizeof(tmp.addr));
+            mesh_state_set_root_addr(&tmp);
+            ESP_LOGI(TAG, "Root addr cached: " MACSTR, MAC2STR(root_addr->addr));
             break;
         }
 
@@ -204,7 +207,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         case MESH_EVENT_SCAN_DONE: {
             mesh_event_scan_done_t *scan = (mesh_event_scan_done_t *)event_data;
             scan_done_count++;
-            if (my_node_role == NODE_ROLE_RX) {
+            if (my_node_role == NODE_ROLE_OUT) {
                 ESP_LOGI(TAG, "Scan done #%lu: found %d APs (connected=%d, layer=%d)",
                          (unsigned long)scan_done_count, (int)scan->number, is_mesh_connected, esp_mesh_get_layer());
             } else {

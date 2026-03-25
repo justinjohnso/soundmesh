@@ -17,6 +17,9 @@ esp_err_t adf_pipeline_feed_opus_impl(adf_pipeline_handle_t pipeline,
                                       uint16_t seq,
                                       uint32_t timestamp);
 
+esp_err_t adf_pipeline_set_out_gain_percent(uint16_t out_gain_pct);
+uint16_t adf_pipeline_get_out_gain_percent(void);
+
 esp_err_t adf_pipeline_get_fft_bins_impl(adf_pipeline_handle_t pipeline,
                                          float *bins_out,
                                          size_t bin_count,

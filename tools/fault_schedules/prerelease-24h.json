@@ -1,0 +1,74 @@
+[
+  {
+    "at_seconds": 1800,
+    "action": "log_marker",
+    "target": "BOTH",
+    "label": "30m-baseline-checkpoint"
+  },
+  {
+    "at_seconds": 7200,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "2h-out-reset"
+  },
+  {
+    "at_seconds": 14400,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "4h-src-reset"
+  },
+  {
+    "at_seconds": 21600,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "6h-out-reset"
+  },
+  {
+    "at_seconds": 28800,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "8h-src-reset"
+  },
+  {
+    "at_seconds": 36000,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "10h-out-reset"
+  },
+  {
+    "at_seconds": 43200,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "12h-src-reset"
+  },
+  {
+    "at_seconds": 50400,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "14h-out-reset"
+  },
+  {
+    "at_seconds": 57600,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "16h-src-reset"
+  },
+  {
+    "at_seconds": 64800,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "18h-out-reset"
+  },
+  {
+    "at_seconds": 72000,
+    "action": "serial_reset",
+    "target": "SRC",
+    "label": "20h-src-reset"
+  },
+  {
+    "at_seconds": 79200,
+    "action": "serial_reset",
+    "target": "OUT",
+    "label": "22h-out-reset"
+  }
+]

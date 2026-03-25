@@ -3,6 +3,7 @@
 firmware/tx/.pio/
 firmware/rx/.pio/
 build/
+data/
 src/CMakeLists.txt
 
 # ESP-IDF managed components

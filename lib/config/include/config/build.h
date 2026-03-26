@@ -261,6 +261,15 @@
 #define OUT_OUTPUT_GAIN_DEFAULT_PCT 200  // 200% = 2.0x (matches RX_OUTPUT_VOLUME)
 #define OUT_OUTPUT_GAIN_MAX_PCT    400   // 400% = 4.0x max amplification
 
+// Mixer gain range constants (dB). Used by portal API and adf_pipeline gain setters.
+// Values <= MIXER_MIN_GAIN_DB are treated as -inf (silence).
+#define MIXER_MIN_GAIN_DB          (-60.0f)
+#define MIXER_MAX_OUTPUT_GAIN_DB   (12.0f)
+#define MIXER_MIN_INPUT_GAIN_DB    (-18.0f)
+#define MIXER_MAX_INPUT_GAIN_DB    (18.0f)
+// Epsilon for float unity-gain check: skip gain loop when linear ≈ 1.0
+#define MIXER_GAIN_UNITY_EPSILON   (0.0001f)
+
 // ============================================================================
 // Memory Monitoring Thresholds
 // ============================================================================

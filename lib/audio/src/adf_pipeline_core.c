@@ -397,7 +397,7 @@ void adf_pipeline_set_input_gain_db(float db)
 {
     adf_pipeline_handle_t p = s_latest_pipeline;
     if (!p) return;
-    p->input_gain_linear = db_to_linear(db, MIXER_MIN_GAIN_DB, MIXER_MAX_INPUT_GAIN_DB);
+    p->input_gain_linear = db_to_linear(db, MIXER_MIN_INPUT_GAIN_DB, MIXER_MAX_INPUT_GAIN_DB);
 }
 
 float adf_pipeline_get_input_gain_db(void)

@@ -1,4 +1,4 @@
-# SoundMesh (MeshNet Audio)
+# SoundMesh
 
 Wireless multi-node audio streaming on XIAO ESP32-S3 using ESP-WIFI-MESH and Opus.
 

@@ -7,6 +7,7 @@
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <math.h>
 #include <string.h>
 
 static const char *TAG = "adf_pipeline";
@@ -97,6 +98,10 @@ esp_err_t adf_pipeline_create_impl(const adf_pipeline_config_t *config, adf_pipe
     pipeline->input_mode = ADF_INPUT_MODE_AUX;
     pipeline->fft_valid = false;
     pipeline->fft_frame_counter = 0;
+    pipeline->output_gain_linear = RX_OUTPUT_VOLUME;
+    pipeline->output_mute = false;
+    pipeline->input_gain_linear = 1.0f;
+    pipeline->input_mute = false;
 
     pipeline->mutex = xSemaphoreCreateMutex();
     if (!pipeline->mutex) {
@@ -375,4 +380,92 @@ TaskHandle_t adf_pipeline_get_decode_task(adf_pipeline_handle_t pipeline)
 TaskHandle_t adf_pipeline_get_playback_task(adf_pipeline_handle_t pipeline)
 {
     return pipeline ? pipeline->playback_task : NULL;
+}
+
+// ---- Gain / Mute helpers ----
+
+static float db_to_linear(float db, float min_db, float max_db)
+{
+    if (db <= min_db) return 0.0f;
+    if (db > max_db) db = max_db;
+    return powf(10.0f, db / 20.0f);
+}
+
+static float linear_to_db(float lin)
+{
+    if (lin <= 0.0f) return MIXER_MIN_GAIN_DB;
+    float db = 20.0f * log10f(lin);
+    if (db < MIXER_MIN_GAIN_DB) return MIXER_MIN_GAIN_DB;
+    return db;
+}
+
+void adf_pipeline_set_output_gain_db(float db)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    p->output_gain_linear = db_to_linear(db, MIXER_MIN_GAIN_DB, MIXER_MAX_OUTPUT_GAIN_DB);
+}
+
+float adf_pipeline_get_output_gain_db(void)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return linear_to_db(RX_OUTPUT_VOLUME);
+    return linear_to_db(p->output_gain_linear);
+}
+
+void adf_pipeline_set_output_mute(bool mute)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    p->output_mute = mute;
+}
+
+bool adf_pipeline_get_output_mute(void)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return false;
+    return p->output_mute;
+}
+
+void adf_pipeline_set_input_gain_db(float db)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    p->input_gain_linear = db_to_linear(db, MIXER_MIN_INPUT_GAIN_DB, MIXER_MAX_INPUT_GAIN_DB);
+}
+
+float adf_pipeline_get_input_gain_db(void)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return 0.0f;
+    return linear_to_db(p->input_gain_linear);
+}
+
+void adf_pipeline_set_input_mute(bool mute)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    p->input_mute = mute;
+}
+
+bool adf_pipeline_get_input_mute(void)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return false;
+    return p->input_mute;
+}
+
+adf_input_mode_t adf_pipeline_get_input_mode(void)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return ADF_INPUT_MODE_AUX;
+    return p->input_mode;
+}
+
+void adf_pipeline_set_input_mode_latest(adf_input_mode_t mode)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    if (p->type != ADF_PIPELINE_TX) return;
+    p->input_mode = mode;
 }

@@ -325,11 +325,15 @@ void rx_playback_task(void *arg)
                 playback_count++;
                 float out_gain = current_out_gain_multiplier();
 
-                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                    int32_t scaled = (int32_t)(mono_frame[i] * out_gain);
-                    if (scaled > 32767) scaled = 32767;
-                    else if (scaled < -32768) scaled = -32768;
-                    mono_frame[i] = (int16_t)scaled;
+                if (pipeline->output_mute) {
+                    memset(mono_frame, 0, AUDIO_FRAME_BYTES);
+                } else if (fabsf(out_gain - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        int32_t scaled = (int32_t)(mono_frame[i] * out_gain);
+                        if (scaled > 32767) scaled = 32767;
+                        else if (scaled < -32768) scaled = -32768;
+                        mono_frame[i] = (int16_t)scaled;
+                    }
                 }
 
                 if (playback_count <= 5 || (playback_count % 1000) == 0) {

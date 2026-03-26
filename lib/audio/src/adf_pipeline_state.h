@@ -40,6 +40,11 @@ struct adf_pipeline {
     float fft_bins[FFT_PORTAL_BIN_COUNT];
     bool fft_valid;
     uint32_t fft_frame_counter;
+
+    volatile float output_gain_linear;  // RX: applied per-sample in playback_task
+    volatile bool  output_mute;         // RX: zero PCM frame before I2S write
+    volatile float input_gain_linear;   // TX: applied per-sample after capture downmix
+    volatile bool  input_mute;          // TX: silence captured PCM before encode
 };
 
 extern int16_t s_capture_stereo_frame[AUDIO_FRAME_SAMPLES * 2];

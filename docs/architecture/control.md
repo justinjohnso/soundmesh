@@ -71,7 +71,7 @@
 │  ├──────────────────────┤        ├──────────────────────────┤ │
 │  │ • Telemetry bcast    │        │ • HTTP REST API          │ │
 │  │ • Heartbeats         │        │ • WebSocket server       │ │
-│  │ • Mixer commands     │        │ • USB networking (CDC-ECM) │ │
+│  │ • Mixer commands     │        │ • USB networking (CDC-NCM) │ │
 │  │ • Time sync          │        │ • Web UI (Astro-based)   │ │
 │  └──────────────────────┘        └──────────────────────────┘ │
 │                                                                 │
@@ -783,71 +783,46 @@ static void handle_telemetry_broadcast(mesh_control_header_t *header, uint8_t *p
 
 ## Layer 5: External Portal (Observer Gateway)
 
-### USB Networking (CDC-ECM)
+### USB Networking (CDC-NCM)
 
 **Purpose:** Plug USB cable into node → node becomes network interface → access web UI
 
-**TinyUSB CDC-ECM Configuration:**
+**TinyUSB CDC-NCM Configuration:**
 ```c
 // Enable in sdkconfig
 CONFIG_TINYUSB_ENABLED=y
-CONFIG_TINYUSB_NET_MODE_ECM=y
+CONFIG_TINYUSB_NET_MODE_NCM=y
 
-// Network configuration
-#define RNDIS_IP_ADDR "10.48.0.1"
-#define RNDIS_NETMASK "255.255.255.0"
-#define RNDIS_GATEWAY "10.48.0.1"
-
-// Host sees node at 10.48.0.1
-// Web UI accessible at http://10.48.0.1/
+// Portal IP is runtime-computed in usb_portal_netif.c:
+//   IP:      10.48.<mesh_hash>.<node_base+1>
+//   Netmask: 255.255.255.252 (/30)
+//   Gateway: same as portal IP
 ```
 
 **Implementation:**
 ```c
-// lib/control/src/usb_networking.c
-
-esp_err_t usb_networking_init(void) {
-    // Configure TinyUSB CDC-ECM descriptor
-    tusb_desc_device_t desc = {
-        .bLength = sizeof(tusb_desc_device_t),
-        .bDescriptorType = TUSB_DESC_DEVICE,
-        .bcdUSB = 0x0200,
-        .bDeviceClass = TUSB_CLASS_MISC,
-        .bDeviceSubClass = MISC_SUBCLASS_COMMON,
-        .bDeviceProtocol = MISC_PROTOCOL_IAD,
-        .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
-        .idVendor = 0xCAFE,  // Your vendor ID
-        .idProduct = 0x4001,
-        .bcdDevice = 0x0100,
-        .iManufacturer = 0x01,
-        .iProduct = 0x02,
-        .iSerialNumber = 0x03,
-        .bNumConfigurations = 0x01
-    };
-    
-    // Initialize TinyUSB with CDC-ECM
-    tinyusb_config_t usb_cfg = {
-        .device_descriptor = &desc,
-        .string_descriptor = ecm_string_desc,
-        .external_phy = false,
-    };
-    
-    ESP_ERROR_CHECK(tinyusb_driver_install(&usb_cfg));
-    
-    // Configure IP address
-    esp_netif_t *netif = esp_netif_new(&ecm_netif_config);
-    esp_netif_set_ip_info(netif, &ecm_ip_info);
-    
-    ESP_LOGI(TAG, "USB networking ready at %s", RNDIS_IP_ADDR);
-    return ESP_OK;
+// lib/control/src/usb_portal_netif.c (abridged)
+uint32_t hash = 5381;
+for (const char *p = MESH_ID; *p; p++) {
+    hash = ((hash << 5) + hash) + (uint8_t)*p;
 }
+uint8_t mesh_octet = (uint8_t)(hash & 0xFF);
+uint8_t node_base = lwip_mac[5] & 0xFC;  // /30-aligned host block
+
+IP4_ADDR(&s_portal_ip.ip, 10, 48, mesh_octet, node_base + 1);
+IP4_ADDR(&s_portal_ip.netmask, 255, 255, 255, 252);
+IP4_ADDR(&s_portal_ip.gw, 10, 48, mesh_octet, node_base + 1);
+
+ESP_LOGI(TAG, "USB netif up: IP=" IPSTR " Mask=" IPSTR " GW=" IPSTR,
+         IP2STR(&info.ip), IP2STR(&info.netmask), IP2STR(&info.gw));
 ```
 
 **User Experience:**
 1. Plug USB-C cable from node to computer/phone
 2. OS detects network adapter (drivers built-in for Win/Mac/Linux)
-3. Computer auto-assigns IP via DHCP (node is gateway at 10.48.0.1)
-4. Open browser: `http://10.48.0.1/` → Web UI loads
+3. Computer gets DHCP lease from node (/30 subnet)
+4. Find current portal IP from serial: `USB netif up: IP=10.48.X.Y ...`
+5. Open browser: `http://10.48.X.Y/` → Web UI loads
 
 ### HTTP REST API
 
@@ -967,7 +942,7 @@ static esp_err_t handle_api_status(httpd_req_t *req) {
 **Purpose:** Stream dynamic metrics to connected observers (<1 second latency)
 
 **Protocol:**
-- Client connects to `ws://10.48.0.1/ws`
+- Client connects to `ws://10.48.X.Y/ws`
 - Server pushes telemetry updates as they arrive (from mesh broadcasts)
 - Client subscribes to specific node IDs or all nodes
 
@@ -1113,13 +1088,15 @@ lib/control/web/
 
 **API Client Example (`api.ts`):**
 ```typescript
+const baseUrl = window.location.origin;
+
 export async function getMeshNodes() {
-  const response = await fetch('http://10.48.0.1/api/mesh/nodes');
+  const response = await fetch(`${baseUrl}/api/mesh/nodes`);
   return await response.json();
 }
 
 export async function getTopology() {
-  const response = await fetch('http://10.48.0.1/api/mesh/topology');
+  const response = await fetch(`${baseUrl}/api/mesh/topology`);
   return await response.json();
 }
 ```
@@ -1130,7 +1107,8 @@ export class TelemetryClient {
   private ws: WebSocket;
   
   connect() {
-    this.ws = new WebSocket('ws://10.48.0.1/ws');
+    const wsOrigin = window.location.origin.replace(/^http/, 'ws');
+    this.ws = new WebSocket(`${wsOrigin}/ws`);
     
     this.ws.onmessage = (event) => {
       const update = JSON.parse(event.data);
@@ -1258,7 +1236,7 @@ lib/control/
 ### v0.3: External Portal
 
 **Scope:**
-- 🔮 USB networking (CDC-ECM) - plug in and access web UI
+- 🔮 USB networking (CDC-NCM) - plug in and access web UI
 - 🔮 HTTP REST API (read mesh state)
 - 🔮 WebSocket server (real-time telemetry push)
 - 🔮 Web UI (Astro + Svelte)
@@ -1296,7 +1274,7 @@ lib/control/
 
 **Testing:**
 - Plug USB into node, verify network interface appears
-- Access http://10.48.0.1/, verify dashboard loads
+- Access `http://10.48.X.Y/`, verify dashboard loads
 - Connect WebSocket, verify real-time level meters
 - Adjust mixer fader, verify gain applied to stream
 - Test on Windows, Mac, Linux, Android (USB OTG)
@@ -1377,9 +1355,9 @@ CONFIG_NVS_ENCRYPTION=n  # Optional: encrypt settings
 #define CONTROL_STATE_CACHE_TTL_MS   120000 // 2 minutes
 #define CONTROL_STATE_CACHE_MAX_NODES 32
 
-// USB networking
-#define USB_ECM_IP_ADDR     "10.48.0.1"
-#define USB_ECM_NETMASK     "255.255.255.0"
+// USB portal networking
+// Runtime IP in portal_netif_setup():
+//   10.48.<mesh_hash>.<node_base+1>/30
 
 // HTTP server
 #define HTTP_SERVER_PORT    80
@@ -1431,7 +1409,7 @@ CONFIG_NVS_ENCRYPTION=n  # Optional: encrypt settings
 ### ESP-IDF Documentation
 - [HTTP Server](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/protocols/esp_http_server.html)
 - [WebSocket Support](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/http-server.html#websocket)
-- [TinyUSB CDC-ECM](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_device.html)
+- [TinyUSB device networking (CDC-NCM)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_device.html)
 - [NVS (Non-Volatile Storage)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/storage/nvs_flash.html)
 
 ### Web Technologies

@@ -10,6 +10,21 @@ Active troubleshooting guide for pilot operation.
 4. Confirm stream state transitions (`Waiting` → `Streaming`).
 5. Validate portal auth behavior on protected endpoints.
 
+## Find current SRC portal IP (USB NCM)
+
+Checks:
+
+- Portal IP is runtime-computed (`10.48.<mesh_hash>.<node>/30`), not fixed.
+- Read SRC serial log after USB link-up:
+  - `USB netif up: IP=10.48.X.Y Mask=255.255.255.252 GW=10.48.X.Y`
+- Optional quick API check once IP is known:
+  - `curl -s http://10.48.X.Y/api/status | jq -r '.netIf'`
+
+Actions:
+
+- Use the discovered `10.48.X.Y` for all portal endpoints (`/api/status`, `/api/control/metrics`, `/ws`).
+- If captive portal does not auto-open, browse to `http://10.48.X.Y/` directly.
+
 ## Common symptoms and actions
 
 ## OUT never starts streaming
@@ -60,7 +75,7 @@ Actions:
 Checks:
 
 - Poll control telemetry:
-  - `curl -s http://10.48.0.1/api/control/metrics`
+  - `curl -s http://10.48.X.Y/api/control/metrics`
 - Confirm `rateLimit.windowMs` and `rateLimit.maxRequests`.
 - Check whether `otaRejects` or `uplinkRejects` counters are rising quickly.
 - Check request/error counters:

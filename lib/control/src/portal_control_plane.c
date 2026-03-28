@@ -4,6 +4,7 @@
 
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 

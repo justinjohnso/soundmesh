@@ -114,8 +114,9 @@
 //   - Batch 1 → 50 pps, losing 1 packet = 20ms dropout (barely audible)
 //   - Batch 2 → 25 pps, losing 1 packet = 40ms dropout (PLC can mask short gaps)
 //   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
-// For 3+ OUT nodes, batch=2 reduces mesh packet rate while keeping losses concealable.
-#define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps
+// Demo quality profile: use single-frame packets so isolated losses are only 20ms.
+// This increases packet rate (50 pps) but significantly reduces robot/stutter artifacts.
+#define MESH_FRAMES_PER_PACKET     1   // 1 frame per packet = 50 pps (higher quality under loss)
 #define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
 #define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
 
@@ -166,10 +167,10 @@
 // Priority is smooth, uninterrupted playback under multi-node contention.
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
 #define JITTER_BUFFER_FRAMES       16   // 16 × 20ms = 320ms max depth (matches PCM buffer)
-#define JITTER_PREFILL_FRAMES      14   // 14 × 20ms = 280ms startup prefill for no-drop priority
+#define JITTER_PREFILL_FRAMES      16   // 16 × 20ms = 320ms full-depth prefill for smoother playback
 // Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
 // This prevents long loss bursts from flooding buffers while still smoothing short gaps.
-#define RX_PLC_MAX_FRAMES_PER_GAP  3
+#define RX_PLC_MAX_FRAMES_PER_GAP  4
 
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)
 #define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_MONO * JITTER_PREFILL_FRAMES)
@@ -242,6 +243,7 @@
 // Portal API schema versions and rate limits
 #define PORTAL_STATUS_SCHEMA_VERSION 1            // /api/status schema version
 #define PORTAL_CONTROL_METRICS_SCHEMA_VERSION 1   // /api/control/metrics schema version
+#define PORTAL_CONTROL_METRICS_JSON_BUF_SIZE 512  // /api/control/metrics response buffer (worst-case payload < 400B)
 #define PORTAL_CONTROL_RATE_LIMIT_WINDOW_MS 5000  // 5s rate limit window
 #define PORTAL_CONTROL_RATE_LIMIT_MAX_REQUESTS 10 // Max 10 requests per window
 #define PORTAL_CDC_LOG_MIRROR_ENABLED 1           // Mirror ESP logs to TinyUSB CDC ACM channel 0

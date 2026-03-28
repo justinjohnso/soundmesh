@@ -1,10 +1,12 @@
 Import("env")
 
 from pathlib import Path
+import shutil
 
 # Get the PIOENV (e.g., "src" or "out")
 pio_env = env["PIOENV"]
 project_dir = Path(env["PROJECT_DIR"])
+build_dir = project_dir / ".pio" / "build" / pio_env
 
 # Define the source file based on the environment
 if pio_env == "src":
@@ -31,12 +33,26 @@ if (not sdkconfig_cache.exists()) or (sdkconfig_cache.read_text() != defaults_te
     sdkconfig_cache.write_text(defaults_text)
     print(f"[sdkconfig] synchronized {sdkconfig_cache.name} from {sdkconfig_defaults.name}")
 
-# Generate src/CMakeLists.txt
-cmake_content = f"""
-idf_component_register(SRCS "{app_sources}")
-"""
+# Generate src/CMakeLists.txt with environment-specific sources
+cmake_content = f'idf_component_register(SRCS "{app_sources}")\n'
+cmake_path = project_dir / "src" / "CMakeLists.txt"
 
-with open("src/CMakeLists.txt", "w") as f:
-    f.write(cmake_content)
+# Check if content changed — if so, force CMake reconfigure
+needs_reconfigure = False
+if cmake_path.exists():
+    existing = cmake_path.read_text()
+    if existing != cmake_content:
+        needs_reconfigure = True
+        print(f"[cmake] Source changed: was '{existing.strip()}', now '{cmake_content.strip()}'")
+else:
+    needs_reconfigure = True
 
-# Config files are used individually for now
+cmake_path.write_text(cmake_content)
+
+# Force CMake reconfigure by removing CMakeCache if source file changed
+# This handles switching between src/out environments cleanly
+if needs_reconfigure:
+    cmake_cache = build_dir / "CMakeCache.txt"
+    if cmake_cache.exists():
+        cmake_cache.unlink()
+        print(f"[cmake] Removed {cmake_cache} to force reconfigure")

@@ -139,9 +139,14 @@ static esp_err_t handle_api_control_metrics(httpd_req_t *req) {
         httpd_resp_send(req, "{}", 2);
         return ESP_OK;
     }
-    char buf[256];
+    char buf[PORTAL_CONTROL_METRICS_JSON_BUF_SIZE];
     int len = portal_control_plane_serialize_metrics_json(buf, sizeof(buf));
     if (len <= 0 || len >= (int)sizeof(buf)) {
+        ESP_LOGE(
+            TAG,
+            "Control metrics serialization failed (len=%d, buf=%u)",
+            len,
+            (unsigned)sizeof(buf));
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, "{\"error\":\"metrics_serialize_failed\"}", HTTPD_RESP_USE_STRLEN);

@@ -1,0 +1,234 @@
+{
+  "result": "PASS",
+  "run_id": "20260328-182807",
+  "ports": {
+    "src": "/dev/cu.usbmodem1234561",
+    "out": "/dev/cu.usbmodem21301",
+    "confidence": "low",
+    "detected": [
+      "/dev/cu.usbmodem1234561",
+      "/dev/cu.usbmodem21201",
+      "/dev/cu.usbmodem21301",
+      "/dev/cu.usbmodem21401"
+    ]
+  },
+  "probe": [
+    {
+      "port": "/dev/cu.usbmodem1234561",
+      "error": null,
+      "role": "UNKNOWN",
+      "src_score": 0,
+      "out_score": 0,
+      "sample_markers": []
+    },
+    {
+      "port": "/dev/cu.usbmodem21201",
+      "error": null,
+      "role": "OUT",
+      "src_score": 1,
+      "out_score": 49,
+      "sample_markers": [
+        "I (897) out_main: ======================================",
+        "I (897) out_main: *** APP_MAIN STARTED - OUT beginning initialization ***",
+        "I (897) out_main: MeshNet Audio OUT starting (Opus)...",
+        "I (897) out_main: Build: Mar 28 2026 18:05:40",
+        "I (898) out_main: Audio: 48000Hz, 16-bit, 20ms frames",
+        "I (898) out_main: ======================================"
+      ]
+    },
+    {
+      "port": "/dev/cu.usbmodem21301",
+      "error": null,
+      "role": "OUT",
+      "src_score": 7,
+      "out_score": 86,
+      "sample_markers": [
+        "I (897) out_main: ======================================",
+        "I (897) out_main: *** APP_MAIN STARTED - OUT beginning initialization ***",
+        "I (897) out_main: MeshNet Audio OUT starting (Opus)...",
+        "I (898) out_main: Build: Mar 28 2026 18:05:40",
+        "I (898) out_main: Audio: 48000Hz, 16-bit, 20ms frames",
+        "I (898) out_main: ======================================"
+      ]
+    },
+    {
+      "port": "/dev/cu.usbmodem21401",
+      "error": null,
+      "role": "OUT",
+      "src_score": 7,
+      "out_score": 91,
+      "sample_markers": [
+        "I (897) out_main: ======================================",
+        "I (897) out_main: *** APP_MAIN STARTED - OUT beginning initialization ***",
+        "I (897) out_main: MeshNet Audio OUT starting (Opus)...",
+        "I (897) out_main: Build: Mar 28 2026 18:05:40",
+        "I (898) out_main: Audio: 48000Hz, 16-bit, 20ms frames",
+        "I (898) out_main: ======================================"
+      ]
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "scenario-A-src-first",
+      "duration_s": 45.0,
+      "actions": [
+        {
+          "at_s": 0.5,
+          "node": "SRC",
+          "label": "reset-src"
+        },
+        {
+          "at_s": 5.5,
+          "node": "OUT",
+          "label": "reset-out"
+        }
+      ],
+      "reset_events": {
+        "SRC": [
+          0.5098213339806534
+        ],
+        "OUT": [
+          5.511626249994151
+        ]
+      },
+      "markers": {
+        "SRC": {
+          "mesh_started": null,
+          "parent_connected": null,
+          "network_ready": null
+        },
+        "OUT": {
+          "mesh_started": {
+            "abs_s": 7.355,
+            "since_reset_s": 1.844,
+            "line": "I (1841) network_mesh: Mesh started"
+          },
+          "parent_connected": {
+            "abs_s": 11.237,
+            "since_reset_s": 5.725,
+            "line": "I (5722) network_mesh: Parent connected, layer: 2 (stream ready)"
+          },
+          "network_ready": {
+            "abs_s": 11.237,
+            "since_reset_s": 5.726,
+            "line": "I (5724) network_mesh: Network ready - sending heartbeats"
+          },
+          "stream_resume": {
+            "abs_s": 11.361,
+            "since_reset_s": 5.85,
+            "line": "I (5848) out_main: Receiving stream from SRC_C37284"
+          }
+        }
+      },
+      "pass": true
+    },
+    {
+      "name": "scenario-B-out-first",
+      "duration_s": 45.0,
+      "actions": [
+        {
+          "at_s": 0.5,
+          "node": "OUT",
+          "label": "reset-out"
+        },
+        {
+          "at_s": 5.5,
+          "node": "SRC",
+          "label": "reset-src"
+        }
+      ],
+      "reset_events": {
+        "SRC": [
+          5.511808832990937
+        ],
+        "OUT": [
+          0.50773220800329
+        ]
+      },
+      "markers": {
+        "SRC": {
+          "mesh_started": null,
+          "parent_connected": null,
+          "network_ready": null
+        },
+        "OUT": {
+          "mesh_started": {
+            "abs_s": 2.357,
+            "since_reset_s": 1.849,
+            "line": "I (1847) network_mesh: Mesh started"
+          },
+          "parent_connected": {
+            "abs_s": 3.878,
+            "since_reset_s": 3.371,
+            "line": "I (3369) network_mesh: Parent connected, layer: 2 (stream ready)"
+          },
+          "network_ready": {
+            "abs_s": 3.881,
+            "since_reset_s": 3.373,
+            "line": "I (3372) network_mesh: Network ready - sending heartbeats"
+          },
+          "stream_resume": {
+            "abs_s": 4.007,
+            "since_reset_s": 3.5,
+            "line": "I (3497) out_main: Receiving stream from SRC_C37284"
+          }
+        }
+      },
+      "pass": true
+    },
+    {
+      "name": "scenario-C-simultaneous",
+      "duration_s": 45.0,
+      "actions": [
+        {
+          "at_s": 0.5,
+          "node": "SRC",
+          "label": "reset-src"
+        },
+        {
+          "at_s": 1.0,
+          "node": "OUT",
+          "label": "reset-out"
+        }
+      ],
+      "reset_events": {
+        "SRC": [
+          0.5233431659871712
+        ],
+        "OUT": [
+          1.0124319579917938
+        ]
+      },
+      "markers": {
+        "SRC": {
+          "mesh_started": null,
+          "parent_connected": null,
+          "network_ready": null
+        },
+        "OUT": {
+          "mesh_started": {
+            "abs_s": 2.858,
+            "since_reset_s": 1.846,
+            "line": "I (1844) network_mesh: Mesh started"
+          },
+          "parent_connected": {
+            "abs_s": 10.947,
+            "since_reset_s": 9.934,
+            "line": "I (9931) network_mesh: Parent connected, layer: 2 (stream ready)"
+          },
+          "network_ready": {
+            "abs_s": 10.948,
+            "since_reset_s": 9.936,
+            "line": "I (9933) network_mesh: Network ready - sending heartbeats"
+          },
+          "stream_resume": {
+            "abs_s": 11.07,
+            "since_reset_s": 10.058,
+            "line": "I (10054) out_main: Receiving stream from SRC_C37284"
+          }
+        }
+      },
+      "pass": true
+    }
+  ]
+}

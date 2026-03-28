@@ -1,0 +1,6 @@
+{
+  "result": "BLOCKED",
+  "reason": "Unable to deterministically select SRC/OUT serial ports",
+  "ports_detected": [],
+  "probe": []
+}

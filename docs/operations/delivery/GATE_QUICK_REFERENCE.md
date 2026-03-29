@@ -58,8 +58,9 @@ Already set correctly:
 
 1. **Startup (2 min):** Monitor logs, no resets
 2. **HTTP (5 min):** Query /api/status 100x, all 200 OK
-3. **Watermarks (1 hour):** All stacks > 512 bytes headroom
-4. **Escalate if:** Watchdog reset, any stack < 256 bytes, heap declining
+3. **Soak (5 min / 300s):** `python tools/hil_soak_check.py --src-port <SRC_MONITOR_PORT> --out-port <OUT_PORT> --duration 300`
+4. **Monitor checks:** Use SRC monitor port and watch portal "Monitor Output" if available
+5. **Escalate if:** Watchdog reset, any stack < 256 bytes, heap declining
 
 ## Regression Example
 

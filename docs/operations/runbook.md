@@ -41,8 +41,9 @@ This runbook is the active operator reference for two-node pilot operation (`SRC
    - SRC-first boot scenario
    - OUT-first boot scenario
    - simultaneous boot scenario
-5. Run short soak:
-   - `python tools/hil_soak_check.py --src-port <SRC_PORT> --out-port <OUT_PORT> --duration 120`
+5. Run short soak (5 minutes / 300 seconds):
+   - `python tools/hil_soak_check.py --src-port <SRC_MONITOR_PORT> --out-port <OUT_PORT> --duration 300`
+   - Use SRC monitor port for `--src-port` and watch portal "Monitor Output" during the soak when available.
 6. Run Stage 2 fault matrix when validating endurance:
    - nightly profile: `python tools/hil_fault_matrix.py --src-port <SRC_PORT> --out-port <OUT_PORT> --duration 21600 --schedule tools/fault_schedules/nightly-6h.json`
    - pre-release profile: `python tools/hil_fault_matrix.py --src-port <SRC_PORT> --out-port <OUT_PORT> --duration 86400 --schedule tools/fault_schedules/prerelease-24h.json`

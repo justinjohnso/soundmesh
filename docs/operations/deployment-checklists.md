@@ -59,14 +59,16 @@ To request enabling portal flags, copy template to:
 
 Then provide measured values from latest HIL smoke run.
 
-Recommended capture command:
+Recommended capture command (5 minutes / 300 seconds):
 
 ```bash
 python tools/hil_soak_check.py \
   --src-port /dev/cu.usbmodem101 \
   --out-port /dev/cu.usbmodem1101 \
-  --duration 120
+  --duration 300
 ```
+
+Use the SRC monitor port for `--src-port` and verify serial output stays healthy through the full 5-minute soak.
 
 ## Current rollout phase
 

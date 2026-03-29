@@ -1,0 +1,77 @@
+{
+  "timestamp": 1774751696.265323,
+  "results": [
+    {
+      "port": "/dev/cu.usbmodem21201",
+      "open_error": null,
+      "lines": 62,
+      "rx_hits": 18,
+      "ready_hits": 0,
+      "samples": [
+        "[ 199s] RX: 7376 pkts, 2230 drops (23.2%), buf=12%",
+        "Audio:RX   RSSI:-28dBm   Ping:161ms   Loss:23.2%",
+        "W (199376) adf_pipeline: Underrun #620 (miss=1) - prefill target: 5 frames (9600 bytes)",
+        "[ 200s] RX: 7406 pkts, 2254 drops (23.3%), buf=0%",
+        "Audio:RX   RSSI:-28dBm   Ping:137ms   Loss:23.3%",
+        "[ 201s] RX: 7454 pkts, 2264 drops (23.3%), buf=37%",
+        "Audio:RX   RSSI:-28dBm   Ping:47ms    Loss:23.3%",
+        "[ 202s] RX: 7488 pkts, 2272 drops (23.3%), buf=100%",
+        "Audio:RX   RSSI:-28dBm   Ping:234ms   Loss:23.3%",
+        "[ 203s] RX: 7522 pkts, 2298 drops (23.4%), buf=87%",
+        "Audio:RX   RSSI:-28dBm   Ping:66ms    Loss:23.4%",
+        "[ 204s] RX: 7572 pkts, 2300 drops (23.3%), buf=62%",
+        "Audio:RX   RSSI:-28dBm   Ping:41ms    Loss:23.3%",
+        "W (204773) adf_pipeline: Underrun #640 (miss=3) - prefill target: 5 frames (9600 bytes)",
+        "[ 205s] RX: 7592 pkts, 2306 drops (23.3%), buf=0%"
+      ]
+    },
+    {
+      "port": "/dev/cu.usbmodem21301",
+      "open_error": null,
+      "lines": 54,
+      "rx_hits": 18,
+      "ready_hits": 0,
+      "samples": [
+        "W (194914) adf_pipeline: Underrun #620 (miss=1) - prefill target: 5 frames (9600 bytes)",
+        "[ 195s] RX: 7768 pkts, 1794 drops (18.8%), buf=50%",
+        "Audio:RX   RSSI:-26dBm   Ping:231ms   Loss:18.8%",
+        "[ 196s] RX: 7812 pkts, 1812 drops (18.8%), buf=62%",
+        "Audio:RX   RSSI:-26dBm   Ping:56ms    Loss:18.8%",
+        "[ 197s] RX: 7862 pkts, 1814 drops (18.7%), buf=62%",
+        "Audio:RX   RSSI:-24dBm   Ping:52ms    Loss:18.7%",
+        "[ 198s] RX: 7876 pkts, 1828 drops (18.8%), buf=0%",
+        "Audio:RX   RSSI:-24dBm   Ping:236ms   Loss:18.8%",
+        "[ 199s] RX: 7940 pkts, 1840 drops (18.8%), buf=100%",
+        "Audio:RX   RSSI:-64dBm   Ping:21ms    Loss:18.8%",
+        "[ 200s] RX: 7978 pkts, 1840 drops (18.7%), buf=0%",
+        "Audio:RX   RSSI:-64dBm   Ping:42ms    Loss:18.7%",
+        "W (200652) adf_pipeline: Underrun #640 (miss=3) - prefill target: 5 frames (9600 bytes)",
+        "[ 201s] RX: 8012 pkts, 1866 drops (18.9%), buf=100%"
+      ]
+    },
+    {
+      "port": "/dev/cu.usbmodem21401",
+      "open_error": null,
+      "lines": 55,
+      "rx_hits": 18,
+      "ready_hits": 0,
+      "samples": [
+        "[ 190s] RX: 6910 pkts, 2154 drops (23.8%), buf=50%",
+        "Audio:RX   RSSI:-40dBm   Ping:62ms    Loss:23.8%",
+        "[ 191s] RX: 6930 pkts, 2170 drops (23.8%), buf=12%",
+        "Audio:RX   RSSI:-40dBm   Ping:204ms   Loss:23.8%",
+        "[ 192s] RX: 6986 pkts, 2182 drops (23.8%), buf=100%",
+        "Audio:RX   RSSI:-40dBm   Ping:34ms    Loss:23.8%",
+        "W (193893) adf_pipeline: Underrun #600 (miss=2) - prefill target: 5 frames (9600 bytes)",
+        "[ 193s] RX: 7024 pkts, 2184 drops (23.7%), buf=0%",
+        "Audio:RX   RSSI:-40dBm   Ping:35ms    Loss:23.7%",
+        "[ 194s] RX: 7050 pkts, 2206 drops (23.8%), buf=0%",
+        "Audio:RX   RSSI:-40dBm   Ping:229ms   Loss:23.8%",
+        "[ 195s] RX: 7094 pkts, 2220 drops (23.8%), buf=62%",
+        "Audio:RX   RSSI:-40dBm   Ping:17ms    Loss:23.8%",
+        "[ 196s] RX: 7132 pkts, 2220 drops (23.7%), buf=0%",
+        "Audio:RX   RSSI:-40dBm   Ping:42ms    Loss:23.7%"
+      ]
+    }
+  ]
+}

@@ -194,10 +194,10 @@ def print_hits(label: str, hits: list[tuple[float, str]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run SRC+OUT HIL soak crash check.")
-    parser.add_argument("--src-port", required=True, help="SRC serial device path")
+    parser.add_argument("--src-port", required=True, help="SRC serial monitor device path (monitor port)")
     parser.add_argument("--out-port", required=True, help="OUT serial device path")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate")
-    parser.add_argument("--duration", type=int, default=120, help="Soak duration in seconds")
+    parser.add_argument("--duration", type=int, default=300, help="Soak duration in seconds")
     parser.add_argument(
         "--ignore-reset-window",
         type=float,

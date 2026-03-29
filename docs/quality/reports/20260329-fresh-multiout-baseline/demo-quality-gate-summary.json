@@ -1,0 +1,219 @@
+{
+  "generated_at_utc": "2026-03-29T11:05:25.038844Z",
+  "inputs": {
+    "src_port": null,
+    "out_port": null,
+    "src_log": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/src-serial.log",
+    "out_log": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-serial.log",
+    "capture_wav": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-capture.wav",
+    "reference_wav": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/calibration-fixtures/reference.wav",
+    "duration_seconds": 300,
+    "sample_rate_hz": 48000,
+    "output_dir": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-fresh-multiout-baseline",
+    "soak_summary_override": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/soak-summary.json",
+    "transport_node_metrics": null
+  },
+  "threshold_sources": {
+    "transport_slos_doc": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/benchmarks-and-slos.md",
+    "quality_thresholds_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/tools/quality/output_quality_thresholds.json",
+    "transport_slo_thresholds": {
+      "join_time_s": {
+        "operator": "<=",
+        "threshold": 20.0
+      },
+      "rejoin_time_s": {
+        "operator": "<=",
+        "threshold": 30.0
+      },
+      "stream_continuity_pct": {
+        "operator": ">=",
+        "threshold": 99.0
+      },
+      "underruns_per_min": {
+        "operator": "<=",
+        "threshold": 1.0
+      },
+      "decode_failures_per_min": {
+        "operator": "<=",
+        "threshold": 0.5
+      },
+      "loss_pct": {
+        "operator": "<=",
+        "threshold": 2.0
+      }
+    }
+  },
+  "gates": {
+    "hil_soak": {
+      "passed": true,
+      "status": "pass",
+      "command_exit_code": null,
+      "summary_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/soak-summary.json",
+      "result": "PASS",
+      "issues": [],
+      "nodes": {
+        "SRC": {
+          "open_error": null,
+          "lines_read": 329,
+          "ok_hits": 116,
+          "panic_hits": 0,
+          "late_reset_hits": 0,
+          "heap_kb_min": null,
+          "planned_faults": 0,
+          "fired_faults": 0
+        },
+        "OUT": {
+          "open_error": null,
+          "lines_read": 2635,
+          "ok_hits": 668,
+          "panic_hits": 0,
+          "late_reset_hits": 0,
+          "heap_kb_min": 8142,
+          "planned_faults": 0,
+          "fired_faults": 0
+        }
+      },
+      "integrity_issues": [],
+      "error": null
+    },
+    "transport_slo": {
+      "passed": false,
+      "status": "fail",
+      "command_exit_code": 0,
+      "metrics_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-fresh-multiout-baseline/transport-metrics.json",
+      "checked_candidates": [
+        "aggregate"
+      ],
+      "selected_candidate": "aggregate",
+      "checks": {
+        "join_time_s": {
+          "value": 36.067,
+          "operator": "<=",
+          "threshold": 20.0,
+          "passed": false
+        },
+        "rejoin_time_s": {
+          "value": 0.0,
+          "operator": "<=",
+          "threshold": 30.0,
+          "passed": true
+        },
+        "stream_continuity_pct": {
+          "value": 100.0,
+          "operator": ">=",
+          "threshold": 99.0,
+          "passed": true
+        },
+        "underruns_per_min": {
+          "value": 9.0,
+          "operator": "<=",
+          "threshold": 1.0,
+          "passed": false
+        },
+        "decode_failures_per_min": {
+          "value": 0.0,
+          "operator": "<=",
+          "threshold": 0.5,
+          "passed": true
+        },
+        "loss_pct": {
+          "value": 24.1,
+          "operator": "<=",
+          "threshold": 2.0,
+          "passed": false
+        }
+      },
+      "failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "integrity_issues": [],
+      "sanity_issues": [],
+      "candidate_results": [
+        {
+          "candidate": "aggregate",
+          "passed": false,
+          "checks": {
+            "join_time_s": {
+              "value": 36.067,
+              "operator": "<=",
+              "threshold": 20.0,
+              "passed": false
+            },
+            "rejoin_time_s": {
+              "value": 0.0,
+              "operator": "<=",
+              "threshold": 30.0,
+              "passed": true
+            },
+            "stream_continuity_pct": {
+              "value": 100.0,
+              "operator": ">=",
+              "threshold": 99.0,
+              "passed": true
+            },
+            "underruns_per_min": {
+              "value": 9.0,
+              "operator": "<=",
+              "threshold": 1.0,
+              "passed": false
+            },
+            "decode_failures_per_min": {
+              "value": 0.0,
+              "operator": "<=",
+              "threshold": 0.5,
+              "passed": true
+            },
+            "loss_pct": {
+              "value": 24.1,
+              "operator": "<=",
+              "threshold": 2.0,
+              "passed": false
+            }
+          },
+          "failed_metrics": [
+            "join_time_s",
+            "underruns_per_min",
+            "loss_pct"
+          ],
+          "integrity_issues": [],
+          "sanity_issues": []
+        }
+      ],
+      "issues": [
+        "transport SLO failures (aggregate): join_time_s, underruns_per_min, loss_pct"
+      ],
+      "error": "transport SLO failures (aggregate): join_time_s, underruns_per_min, loss_pct"
+    },
+    "output_quality": {
+      "passed": false,
+      "status": "fail",
+      "command_exit_code": 0,
+      "quality_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-fresh-multiout-baseline/output-quality.json",
+      "overall_band": "fail",
+      "failed_metrics": [
+        "dropout_ratio_pct",
+        "lag_ms_std",
+        "quality_score"
+      ],
+      "warned_metrics": [],
+      "quality_score": 20.45,
+      "integrity_issues": [],
+      "issues": [
+        "output quality failures: dropout_ratio_pct, lag_ms_std, quality_score",
+        "output quality band=fail"
+      ],
+      "error": "output quality failures: dropout_ratio_pct, lag_ms_std, quality_score; output quality band=fail"
+    }
+  },
+  "artifacts": {
+    "hil_soak_summary_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/soak-summary.json",
+    "transport_metrics_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-fresh-multiout-baseline/transport-metrics.json",
+    "output_quality_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-fresh-multiout-baseline/output-quality.json"
+  },
+  "final_verdict": {
+    "passed": false,
+    "result": "FAIL"
+  }
+}

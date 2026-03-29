@@ -1,0 +1,154 @@
+{
+  "report_id": "stutter-run-final-multiout-soak",
+  "generated_at_utc": "2026-03-29T12:35:01Z",
+  "evaluation_mode": "artifact-replay-nonflash",
+  "profile": {
+    "run_id": "20260329-tonight-05-prefill-6-gain-safe-fec10",
+    "profile_id": "prefill-6-gain-safe-fec10",
+    "run_dir": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10",
+    "macro_overrides_json": "{\"JITTER_PREFILL_FRAMES\":6,\"RX_OUTPUT_VOLUME\":\"1.5f\",\"OUT_OUTPUT_GAIN_DEFAULT_PCT\":150,\"OUT_OUTPUT_GAIN_MAX_PCT\":300,\"OPUS_EXPECTED_LOSS_PCT\":10}"
+  },
+  "sources": {
+    "run_info_env": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/run-info.env",
+    "soak_summary_json": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/soak-summary.json",
+    "transport_metrics_json": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/transport-metrics.json",
+    "src_serial_log": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/src-serial.log",
+    "out_serial_log": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/out-serial.log",
+    "output_quality_json": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/output-quality.json"
+  },
+  "criteria": {
+    "transport_slo_thresholds": {
+      "join_time_s": {
+        "operator": "<=",
+        "threshold": 20.0
+      },
+      "rejoin_time_s": {
+        "operator": "<=",
+        "threshold": 30.0
+      },
+      "stream_continuity_pct": {
+        "operator": ">=",
+        "threshold": 99.0
+      },
+      "underruns_per_min": {
+        "operator": "<=",
+        "threshold": 1.0
+      },
+      "decode_failures_per_min": {
+        "operator": "<=",
+        "threshold": 0.5
+      },
+      "loss_pct": {
+        "operator": "<=",
+        "threshold": 2.0
+      }
+    }
+  },
+  "gates": {
+    "hil_soak": {
+      "passed": true,
+      "result": "PASS",
+      "issues": [],
+      "nodes": {
+        "SRC": {
+          "open_error": null,
+          "lines_read": 332,
+          "ok_hits": 117,
+          "panic_hits": 0,
+          "late_reset_hits": 0,
+          "heap_kb_min": null,
+          "planned_faults": 0,
+          "fired_faults": 0
+        },
+        "OUT": {
+          "open_error": null,
+          "lines_read": 2585,
+          "ok_hits": 718,
+          "panic_hits": 0,
+          "late_reset_hits": 0,
+          "heap_kb_min": 8140,
+          "planned_faults": 0,
+          "fired_faults": 0
+        }
+      }
+    },
+    "transport_slo": {
+      "passed": false,
+      "failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "checks": {
+        "join_time_s": {
+          "value": null,
+          "operator": "<=",
+          "threshold": 20.0,
+          "passed": false
+        },
+        "rejoin_time_s": {
+          "value": 0.0,
+          "operator": "<=",
+          "threshold": 30.0,
+          "passed": true
+        },
+        "stream_continuity_pct": {
+          "value": 100.0,
+          "operator": ">=",
+          "threshold": 99.0,
+          "passed": true
+        },
+        "underruns_per_min": {
+          "value": 16.6,
+          "operator": "<=",
+          "threshold": 1.0,
+          "passed": false
+        },
+        "decode_failures_per_min": {
+          "value": 0.0,
+          "operator": "<=",
+          "threshold": 0.5,
+          "passed": true
+        },
+        "loss_pct": {
+          "value": 19.9,
+          "operator": "<=",
+          "threshold": 2.0,
+          "passed": false
+        }
+      },
+      "key_metrics": {
+        "join_time_s": null,
+        "underruns_per_min": 16.6,
+        "loss_pct": 19.9,
+        "reason201_per_min": 21.2,
+        "buf0_events_per_min": 33.2
+      }
+    },
+    "output_quality": {
+      "status": "not_evaluated",
+      "note": "output-quality.json absent for tuned profile run; no fresh capture artifact available without hardware interaction."
+    }
+  },
+  "multiout_evidence": {
+    "src_descendants_max": 3,
+    "src_descendants_marker_count": 57,
+    "out_children_max": 0,
+    "out_children_marker_count": 12,
+    "out_route_table_marker_count": 12
+  },
+  "final_verdict": {
+    "result": "FAIL",
+    "demo_ready": false,
+    "hard_fail_reasons": [
+      "transport_slo"
+    ]
+  },
+  "confidence": {
+    "overall": "medium",
+    "limitations": [
+      "No fresh OUT capture WAV for tuned profile run, so output-quality gate could not be re-evaluated.",
+      "Transport join_time_s is null (no join markers in captured window), which is treated as criteria failure."
+    ]
+  }
+}

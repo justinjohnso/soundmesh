@@ -47,17 +47,31 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
             mesh_runtime_started = true;
-            if (my_node_role == NODE_ROLE_OUT) {
-                ESP_LOGI(TAG, "OUT discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
-                         MESH_CHANNEL, MESH_ID, g_src_id);
-            }
+
             if (my_node_role == NODE_ROLE_SRC && esp_mesh_is_root()) {
+                // CRITICAL: Disable self-organized networking on the root for standalone
+                // (no-router) mesh.  In self-organized mode the mesh stack runs its own
+                // STA scan/connect/reconnect loop targeting the dummy router SSID, which
+                // causes periodic WiFi disconnect churn (reason:201 every ~3s) that
+                // destroys audio packet delivery.  Disabling self-organized stops that
+                // scan loop while keeping the root's AP side active for child connections.
+                esp_err_t so_err = esp_mesh_set_self_organized(false, false);
+                if (so_err == ESP_OK) {
+                    mesh_self_organized_mode = false;
+                    ESP_LOGI(TAG, "SRC root: self-organized DISABLED (standalone no-router mode)");
+                } else {
+                    ESP_LOGW(TAG, "SRC root: failed to disable self-organized: %s", esp_err_to_name(so_err));
+                }
+
                 is_mesh_root = true;
                 is_mesh_root_ready = true;
                 mesh_layer = 0;
                 ESP_LOGI(TAG, "Designated root ready: mesh AP broadcasting on channel %d", MESH_CHANNEL);
                 mesh_state_notify_waiting_tasks();
                 esp_log_level_set("wifi", ESP_LOG_ERROR);
+            } else if (my_node_role == NODE_ROLE_OUT) {
+                ESP_LOGI(TAG, "OUT discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
+                         MESH_CHANNEL, MESH_ID, g_src_id);
             }
             break;
 
@@ -83,10 +97,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             mesh_state_notify_waiting_tasks();
 
             if (esp_mesh_is_root()) {
-                if (!should_skip_wifi_runtime_ops("esp_wifi_scan_stop")) {
-                    esp_wifi_scan_stop();
-                    ESP_LOGI(TAG, "Root connected: scan stopped");
-                }
+                ESP_LOGI(TAG, "Root: parent connected event (self-org disabled, no scan to stop)");
             } else {
                 ESP_LOGI(TAG, "OUT connected: preserving startup self-organized config");
                 mesh_uplink_request_sync_from_root();
@@ -133,14 +144,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
             mesh_children_count = new_count;
             if (is_mesh_root) {
-                if (!should_skip_wifi_runtime_ops("esp_wifi_scan_stop + esp_wifi_disconnect")) {
-                    esp_wifi_scan_stop();
-                    esp_err_t disc_err = esp_wifi_disconnect();
-                    if (disc_err != ESP_OK && disc_err != ESP_ERR_WIFI_NOT_CONNECT) {
-                        ESP_LOGW(TAG, "Root STA disconnect failed: %s", esp_err_to_name(disc_err));
-                    }
-                    ESP_LOGI(TAG, "Root: child connected, scan stopped and STA client disconnected");
-                }
+                ESP_LOGI(TAG, "Root: child connected (self-org disabled, no scan/disconnect needed)");
             }
             break;
         }
@@ -167,7 +171,9 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 is_mesh_root = true;
                 mesh_layer = 0;
                 is_mesh_root_ready = true;
-                (void)mesh_uplink_apply_router_config();
+                // Skip esp_mesh_set_router() here — applying the disabled-router placeholder
+                // triggers WiFi STA scanning that causes disconnect churn (reason:201).
+                // Router config is only needed when real uplink credentials are provided.
                 ESP_LOGI(TAG, "Root ready: mesh AP broadcasting on channel %d", MESH_CHANNEL);
                 mesh_state_notify_waiting_tasks();
             } else {

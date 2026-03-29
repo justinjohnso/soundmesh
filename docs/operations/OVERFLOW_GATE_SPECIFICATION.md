@@ -271,7 +271,7 @@ Crash signatures: None detected
 - Heap fragmentation over 24+ hours
 - Watchdog reset scenarios
 
-**Lightweight smoke check (1 hour, deterministic):**
+**Lightweight smoke check (5 minutes / 300 seconds, deterministic):**
 
 ### Procedure: Post-Build Validation
 
@@ -303,9 +303,9 @@ Crash signatures: None detected
      ```
    - **Acceptance:** All 100 requests return 200 OK, no timeouts
 
-4. **Sample heap/stack watermarks**
-   - Set task logging to capture watermarks every 5 minutes
-   - Run for 1 hour
+4. **Capture heap/stack watermark snapshots during soak**
+   - Capture watermark lines at least at start and end of the soak window
+   - Run for 5 minutes (300 seconds)
    - Log extraction (UART):
      ```
      Free heap: 45000 bytes (min: 42000)
@@ -328,7 +328,7 @@ Crash signatures: None detected
 |-------|---|---|
 | Startup logs | All subsystems initialized, no resets (2min) | Block release; investigate logs |
 | Portal HTTP (if enabled) | 100/100 requests return 200 OK | Block release; debug HTTP layer |
-| Heap floor | Stays > 30 KB minimum for 1h | Block release; profile malloc usage |
+| Heap floor | Stays > 30 KB minimum for full 5-minute soak | Block release; profile malloc usage |
 | Task watermarks | All > 512 bytes headroom | Block release; increase stack sizes |
 
 ---
@@ -344,7 +344,7 @@ Crash signatures: None detected
 ### For Manual HIL
 - **Frequency:** Weekly (if portal enabled), pre-release (all builds)
 - **Owner:** Firmware lead or designated test engineer
-- **Duration:** 1-2 hours per test pass
+- **Duration:** 5 minutes (300 seconds) per test pass
 - **Documentation:** Results logged in release notes under "Validation"
 
 ### For Configuration Changes

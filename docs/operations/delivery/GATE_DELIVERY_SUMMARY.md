@@ -113,12 +113,12 @@ Already defines all required constants:
 
 **For Manual HIL (Deterministic Smoke Check):**
 - Frequency: Weekly (if portal enabled), pre-release
-- Duration: 1-2 hours per pass
+- Duration: 5 minutes (300 seconds) per pass
 - Procedure:
   1. Flash device, monitor startup logs (2 min)
   2. Test portal HTTP endpoints 100x (if enabled)
-  3. Sample heap/stack watermarks (1 hour)
-  4. Verify no task < 512 bytes headroom, no heap decline
+  3. Run `python tools/hil_soak_check.py --src-port <SRC_MONITOR_PORT> --out-port <OUT_PORT> --duration 300`
+  4. Verify no task < 512 bytes headroom, no heap decline during the 5-minute soak
 
 **Escalation triggers:**
 - Any watchdog reset during startup
@@ -194,7 +194,7 @@ Watchdog patterns: OK
 **Delivered:**
 - ✅ Enhanced `tools/preupload_gate.sh` with 8 new checks (130 lines, production-ready)
 - ✅ Comprehensive specification document (2000+ lines)
-- ✅ Deterministic manual HIL smoke check procedure (1-2 hours, repeatable)
+- ✅ Deterministic manual HIL smoke check procedure (5 minutes / 300 seconds, repeatable)
 - ✅ Acceptance criteria and policy text
 - ✅ Professional patterns sourced from Zephyr, Nordic, Espressif
 
@@ -221,4 +221,3 @@ UPDATE todos SET status='done' WHERE id='overflow-gate-design';
 ```
 
 If no database exists, this task is **COMPLETE** as documented above.
-

@@ -1,0 +1,4 @@
+name,status,quality_score,dropout_ratio_pct,lag_ms_mean,lag_ms_std,spectral_deviation_db,overall_band,result_json,error
+calibration-pass-fixture,ok,80.0,0.0,0.0,0.0,35.582,pass,/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-pass-fixture-quality.json,
+calibration-warn-fixture,ok,74.95,3.0,-0.114,2.277,41.043,warn,/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-warn-fixture-quality.json,
+calibration-fail-fixture,ok,61.89,4.25,0.164,18.871,52.281,fail,/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-fail-fixture-quality.json,

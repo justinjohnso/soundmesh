@@ -1,0 +1,27 @@
+{
+  "run_type": "dry-run-synthetic-calibration-fixtures",
+  "notes": [
+    "Uses archived calibration fixtures because hardware capture is unavailable in this environment.",
+    "Intended to validate matrix orchestration, ranking output, and threshold-band gating behavior."
+  ],
+  "profiles": [
+    {
+      "name": "calibration-pass-fixture",
+      "reference_wav": "docs/quality/reports/calibration-fixtures/reference.wav",
+      "captured_wav": "docs/quality/reports/calibration-fixtures/captured-pass.wav",
+      "hooks": {"pre": [], "capture": [], "post": []}
+    },
+    {
+      "name": "calibration-warn-fixture",
+      "reference_wav": "docs/quality/reports/calibration-fixtures/reference.wav",
+      "captured_wav": "docs/quality/reports/calibration-fixtures/captured-warn.wav",
+      "hooks": {"pre": [], "capture": [], "post": []}
+    },
+    {
+      "name": "calibration-fail-fixture",
+      "reference_wav": "docs/quality/reports/calibration-fixtures/reference.wav",
+      "captured_wav": "docs/quality/reports/calibration-fixtures/captured-fail.wav",
+      "hooks": {"pre": [], "capture": [], "post": []}
+    }
+  ]
+}

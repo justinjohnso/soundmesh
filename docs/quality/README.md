@@ -5,6 +5,7 @@ This directory is for active quality and validation policy:
 - `benchmarks-and-slos.md`
 - `contracts/portal-observability-contract.md`
 - `reports/release-candidate-benchmark-template.md`
+- `output-quality-method.md`
 
 Keep this focused on current validation standards and release criteria.
 

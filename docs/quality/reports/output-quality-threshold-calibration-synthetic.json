@@ -1,0 +1,47 @@
+{
+  "thresholds_file": "tools/quality/output_quality_thresholds.json",
+  "calibration_profiles": [
+    {
+      "profile": "pass",
+      "quality_score": 80.0,
+      "dropout_ratio_pct": 0.0,
+      "lag_ms_std": 0.0,
+      "spectral_deviation_db": 35.582,
+      "overall_band": "pass",
+      "metric_bands": {
+        "dropout_ratio_pct": "pass",
+        "lag_ms_std": "pass",
+        "spectral_deviation_db": "pass",
+        "quality_score": "pass"
+      }
+    },
+    {
+      "profile": "warn",
+      "quality_score": 74.95,
+      "dropout_ratio_pct": 3.0,
+      "lag_ms_std": 2.277,
+      "spectral_deviation_db": 41.043,
+      "overall_band": "warn",
+      "metric_bands": {
+        "dropout_ratio_pct": "warn",
+        "lag_ms_std": "pass",
+        "spectral_deviation_db": "warn",
+        "quality_score": "warn"
+      }
+    },
+    {
+      "profile": "fail",
+      "quality_score": 61.89,
+      "dropout_ratio_pct": 4.25,
+      "lag_ms_std": 18.871,
+      "spectral_deviation_db": 52.281,
+      "overall_band": "fail",
+      "metric_bands": {
+        "dropout_ratio_pct": "warn",
+        "lag_ms_std": "warn",
+        "spectral_deviation_db": "fail",
+        "quality_score": "fail"
+      }
+    }
+  ]
+}

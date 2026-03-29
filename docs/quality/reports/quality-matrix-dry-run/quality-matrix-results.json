@@ -1,0 +1,40 @@
+{
+  "profiles": [
+    {
+      "name": "calibration-pass-fixture",
+      "status": "ok",
+      "error": null,
+      "quality_score": 80.0,
+      "dropout_ratio_pct": 0.0,
+      "lag_ms_mean": 0.0,
+      "lag_ms_std": 0.0,
+      "spectral_deviation_db": 35.582,
+      "overall_band": "pass",
+      "result_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-pass-fixture-quality.json"
+    },
+    {
+      "name": "calibration-warn-fixture",
+      "status": "ok",
+      "error": null,
+      "quality_score": 74.95,
+      "dropout_ratio_pct": 3.0,
+      "lag_ms_mean": -0.114,
+      "lag_ms_std": 2.277,
+      "spectral_deviation_db": 41.043,
+      "overall_band": "warn",
+      "result_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-warn-fixture-quality.json"
+    },
+    {
+      "name": "calibration-fail-fixture",
+      "status": "ok",
+      "error": null,
+      "quality_score": 61.89,
+      "dropout_ratio_pct": 4.25,
+      "lag_ms_mean": 0.164,
+      "lag_ms_std": 18.871,
+      "spectral_deviation_db": 52.281,
+      "overall_band": "fail",
+      "result_json": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/quality-matrix-dry-run/calibration-fail-fixture-quality.json"
+    }
+  ]
+}

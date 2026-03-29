@@ -1,0 +1,35 @@
+{
+  "reference_wav": "docs/quality/reports/calibration-fixtures/reference.wav",
+  "captured_wav": "docs/quality/reports/calibration-fixtures/captured-fail.wav",
+  "analysis_sample_rate_hz": 48000,
+  "alignment_offset_samples": -2400,
+  "alignment_offset_ms": -50.0,
+  "dropout_ratio_pct": 4.25,
+  "lag_ms_mean": 0.164,
+  "lag_ms_std": 18.871,
+  "spectral_deviation_db": 52.281,
+  "quality_score": 61.89,
+  "score_components": {
+    "dropout_weight": 0.45,
+    "lag_weight": 0.35,
+    "spectral_weight": 0.2
+  },
+  "thresholds_path": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/tools/quality/output_quality_thresholds.json",
+  "threshold_evaluation": {
+    "overall_band": "fail",
+    "metric_bands": {
+      "dropout_ratio_pct": "warn",
+      "lag_ms_std": "warn",
+      "spectral_deviation_db": "fail",
+      "quality_score": "fail"
+    },
+    "failed_metrics": [
+      "spectral_deviation_db",
+      "quality_score"
+    ],
+    "warned_metrics": [
+      "dropout_ratio_pct",
+      "lag_ms_std"
+    ]
+  }
+}

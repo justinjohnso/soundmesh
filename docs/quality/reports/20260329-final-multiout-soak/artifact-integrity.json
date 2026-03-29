@@ -1,0 +1,57 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "artifact": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/run-info.env",
+      "exists": true,
+      "size_bytes": 468,
+      "non_empty": true,
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/soak-summary.json",
+      "exists": true,
+      "size_bytes": 581,
+      "non_empty": true,
+      "json_parse": "ok",
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/transport-metrics.json",
+      "exists": true,
+      "size_bytes": 4891,
+      "non_empty": true,
+      "json_parse": "ok",
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/src-serial.log",
+      "exists": true,
+      "size_bytes": 32434,
+      "non_empty": true,
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10/out-serial.log",
+      "exists": true,
+      "size_bytes": 136114,
+      "non_empty": true,
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-final-multiout-soak/final-multiout-soak-verdict.json",
+      "exists": true,
+      "size_bytes": 4569,
+      "non_empty": true,
+      "json_parse": "ok",
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-final-multiout-soak/final-multiout-soak-verdict.md",
+      "exists": true,
+      "size_bytes": 1009,
+      "non_empty": true,
+      "ok": true
+    }
+  ]
+}

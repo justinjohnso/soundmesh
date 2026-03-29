@@ -1,0 +1,46 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/transport-metrics.json",
+      "exists": true,
+      "non_empty": true,
+      "ok": true,
+      "json_parse": "ok"
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/demo-quality-gate-summary.json",
+      "exists": true,
+      "non_empty": true,
+      "ok": true,
+      "json_parse": "ok"
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/demo-quality-gate-summary.md",
+      "exists": true,
+      "non_empty": true,
+      "ok": true
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/output-quality.json",
+      "exists": true,
+      "non_empty": true,
+      "ok": true,
+      "json_parse": "ok"
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/baseline-verdict.json",
+      "exists": true,
+      "non_empty": true,
+      "ok": true,
+      "json_parse": "ok"
+    },
+    {
+      "artifact": "docs/quality/reports/20260329-fresh-multiout-baseline/source-selection.json",
+      "exists": true,
+      "non_empty": true,
+      "ok": true,
+      "json_parse": "ok"
+    }
+  ]
+}

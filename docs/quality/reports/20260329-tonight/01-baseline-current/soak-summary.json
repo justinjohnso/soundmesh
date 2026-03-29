@@ -1,0 +1,28 @@
+{
+  "result": "PASS",
+  "duration_seconds": 300,
+  "ignore_reset_window_seconds": 8.0,
+  "fault_schedule_path": null,
+  "nodes": {
+    "SRC": {
+      "open_error": null,
+      "lines_read": 330,
+      "ok_hits": 117,
+      "panic_hits": 0,
+      "late_reset_hits": 0,
+      "heap_kb_min": null,
+      "planned_faults": 0,
+      "fired_faults": 0
+    },
+    "OUT": {
+      "open_error": null,
+      "lines_read": 2491,
+      "ok_hits": 707,
+      "panic_hits": 0,
+      "late_reset_hits": 0,
+      "heap_kb_min": 8143,
+      "planned_faults": 0,
+      "fired_faults": 0
+    }
+  }
+}

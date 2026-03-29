@@ -1,0 +1,26 @@
+{
+  "tool": "capture_out.py",
+  "timestamp_start_utc": "2026-03-29T04:17:49.592525Z",
+  "timestamp_end_utc": "2026-03-29T04:18:09.716632Z",
+  "backend": "sox",
+  "device": "default",
+  "duration_seconds": 20.0,
+  "sample_rate_hz": 48000,
+  "channels": 1,
+  "output_wav": "docs/quality/reports/20260328-223323/out-capture.wav",
+  "command": [
+    "sox",
+    "-q",
+    "-t",
+    "coreaudio",
+    "default",
+    "-r",
+    "48000",
+    "-c",
+    "1",
+    "docs/quality/reports/20260328-223323/out-capture.wav",
+    "trim",
+    "0",
+    "20.0"
+  ]
+}

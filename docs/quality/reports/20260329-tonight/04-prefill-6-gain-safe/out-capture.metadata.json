@@ -1,0 +1,26 @@
+{
+  "tool": "capture_out.py",
+  "timestamp_start_utc": "2026-03-29T05:10:19.709783Z",
+  "timestamp_end_utc": "2026-03-29T05:10:49.887839Z",
+  "backend": "sox",
+  "device": "default",
+  "duration_seconds": 30.0,
+  "sample_rate_hz": 48000,
+  "channels": 1,
+  "output_wav": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-capture.wav",
+  "command": [
+    "sox",
+    "-q",
+    "-t",
+    "coreaudio",
+    "default",
+    "-r",
+    "48000",
+    "-c",
+    "1",
+    "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-capture.wav",
+    "trim",
+    "0",
+    "30.0"
+  ]
+}

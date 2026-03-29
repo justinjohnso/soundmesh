@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "matrix_id": "20260329-tonight",
+  "purpose": "Tonight tuning sweep focused on transport loss/underrun recovery and safer OUT gain staging.",
+  "baseline_context": {
+    "report_dir": "docs/quality/reports/20260328-223323",
+    "transport_metrics": "docs/quality/reports/20260328-223323/transport-metrics.json",
+    "output_capture_wav": "docs/quality/reports/20260328-223323/out-capture.wav",
+    "output_quality_score": "docs/quality/reports/20260328-223323/output-quality-score.json"
+  },
+  "required_existing_inputs": [
+    "docs/quality/reports/20260328-223323/src-serial.log",
+    "docs/quality/reports/20260328-223323/out-serial.log",
+    "docs/quality/reports/20260328-223323/out-capture.wav",
+    "docs/quality/reports/calibration-fixtures/reference.wav",
+    "tools/quality/output_quality_thresholds.json"
+  ],
+  "artifact_path_conventions": {
+    "run_root": "docs/quality/reports/20260329-tonight",
+    "profile_run_dir_template": "docs/quality/reports/20260329-tonight/{order:02d}-{profile_id}",
+    "per_profile_required_artifacts": [
+      "run-info.env",
+      "src-serial.log",
+      "out-serial.log",
+      "soak-summary.json",
+      "transport-metrics.json",
+      "out-capture.wav",
+      "out-capture.metadata.json",
+      "output-quality-score.json",
+      "output-quality-score.log",
+      "demo-quality-gate-summary.json",
+      "demo-quality-gate-summary.md"
+    ]
+  },
+  "profiles": [
+    {
+      "order": 1,
+      "profile_id": "baseline-current",
+      "run_dir": "docs/quality/reports/20260329-tonight/01-baseline-current",
+      "macro_overrides": {
+        "JITTER_PREFILL_FRAMES": 4,
+        "RX_OUTPUT_VOLUME": "2.0f",
+        "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+        "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+        "OPUS_EXPECTED_LOSS_PCT": 8
+      },
+      "rationale": "Control run to confirm reproducibility of the current high-loss/high-underrun baseline."
+    },
+    {
+      "order": 2,
+      "profile_id": "prefill-5",
+      "run_dir": "docs/quality/reports/20260329-tonight/02-prefill-5",
+      "macro_overrides": {
+        "JITTER_PREFILL_FRAMES": 5,
+        "RX_OUTPUT_VOLUME": "2.0f",
+        "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+        "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+        "OPUS_EXPECTED_LOSS_PCT": 8
+      },
+      "rationale": "Increase startup cushion by +20 ms to test underrun reduction with unchanged gain/FEC."
+    },
+    {
+      "order": 3,
+      "profile_id": "prefill-6",
+      "run_dir": "docs/quality/reports/20260329-tonight/03-prefill-6",
+      "macro_overrides": {
+        "JITTER_PREFILL_FRAMES": 6,
+        "RX_OUTPUT_VOLUME": "2.0f",
+        "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+        "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+        "OPUS_EXPECTED_LOSS_PCT": 8
+      },
+      "rationale": "Increase prefill to +40 ms versus baseline to probe deeper jitter resilience before gain changes."
+    },
+    {
+      "order": 4,
+      "profile_id": "prefill-6-gain-safe",
+      "run_dir": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe",
+      "macro_overrides": {
+        "JITTER_PREFILL_FRAMES": 6,
+        "RX_OUTPUT_VOLUME": "1.5f",
+        "OUT_OUTPUT_GAIN_DEFAULT_PCT": 150,
+        "OUT_OUTPUT_GAIN_MAX_PCT": 300,
+        "OPUS_EXPECTED_LOSS_PCT": 8
+      },
+      "rationale": "Keep deeper prefill but reduce software gain to lower clipping risk while transport is stabilized."
+    },
+    {
+      "order": 5,
+      "profile_id": "prefill-6-gain-safe-fec10",
+      "run_dir": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10",
+      "macro_overrides": {
+        "JITTER_PREFILL_FRAMES": 6,
+        "RX_OUTPUT_VOLUME": "1.5f",
+        "OUT_OUTPUT_GAIN_DEFAULT_PCT": 150,
+        "OUT_OUTPUT_GAIN_MAX_PCT": 300,
+        "OPUS_EXPECTED_LOSS_PCT": 10
+      },
+      "rationale": "Add higher expected-loss hint to evaluate whether in-band FEC at 10% improves burst-loss concealment."
+    }
+  ]
+}

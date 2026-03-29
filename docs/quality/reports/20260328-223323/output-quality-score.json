@@ -1,0 +1,33 @@
+{
+  "reference_wav": "data/quality/reference.wav",
+  "captured_wav": "docs/quality/reports/20260328-223323/out-capture.wav",
+  "analysis_sample_rate_hz": 48000,
+  "alignment_offset_samples": -7438,
+  "alignment_offset_ms": -154.958,
+  "dropout_ratio_pct": 58.25,
+  "lag_ms_mean": -0.08,
+  "lag_ms_std": 32.004,
+  "spectral_deviation_db": 15.774,
+  "quality_score": 16.77,
+  "score_components": {
+    "dropout_weight": 0.45,
+    "lag_weight": 0.35,
+    "spectral_weight": 0.2
+  },
+  "thresholds_path": "tools/quality/output_quality_thresholds.json",
+  "threshold_evaluation": {
+    "overall_band": "fail",
+    "metric_bands": {
+      "dropout_ratio_pct": "fail",
+      "lag_ms_std": "fail",
+      "spectral_deviation_db": "pass",
+      "quality_score": "fail"
+    },
+    "failed_metrics": [
+      "dropout_ratio_pct",
+      "lag_ms_std",
+      "quality_score"
+    ],
+    "warned_metrics": []
+  }
+}

@@ -1,0 +1,363 @@
+{
+  "generated_at_utc": "2026-03-29T12:05:54.201919+00:00",
+  "todo_id": "stutter-run-send-mode-ab-tests",
+  "analysis_type": "artifact-based-send-mode-ab",
+  "method": {
+    "current_mode_artifacts": [
+      "docs/quality/reports/20260329-tonight/01-baseline-current",
+      "docs/quality/reports/20260329-tonight/02-prefill-5",
+      "docs/quality/reports/20260329-tonight/03-prefill-6",
+      "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe"
+    ],
+    "metrics_pipeline": [
+      "docs/quality/reports/*/transport-metrics.json",
+      "tools/benchmarks/extract_metrics.py (recompute reason201/buf0 + observability counters)",
+      "docs/quality/reports/*/demo-quality-gate-summary.json"
+    ],
+    "historical_fallback_source": {
+      "path": "docs/history/progress-notes/mesh-reliability-fix.md",
+      "line_refs": [
+        404,
+        409,
+        410,
+        411,
+        412,
+        413
+      ],
+      "description": "Contains qualitative P2P fanout window evidence only (no hardened gate artifact set)."
+    }
+  },
+  "modes": [
+    {
+      "mode_id": "group_nonblock_current",
+      "send_flags": [
+        "MESH_DATA_GROUP",
+        "MESH_DATA_NONBLOCK"
+      ],
+      "evidence_confidence": "medium",
+      "per_run": [
+        {
+          "profile_id": "baseline-current",
+          "run_dir": "docs/quality/reports/20260329-tonight/01-baseline-current",
+          "macro_overrides": {
+            "JITTER_PREFILL_FRAMES": 4,
+            "RX_OUTPUT_VOLUME": "2.0f",
+            "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+            "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+            "OPUS_EXPECTED_LOSS_PCT": 8
+          },
+          "transport_metrics": {
+            "loss_pct": 22.4,
+            "underruns_per_min": 10.0,
+            "reason201_per_min": 21.0,
+            "buf0_events_per_min": 27.6,
+            "stream_continuity_pct": 100.0
+          },
+          "new_observability": {
+            "tx_obs_send_failures": null,
+            "tx_obs_queue_full": null,
+            "tx_obs_backpressure_level_max": null,
+            "rx_obs_gap_events": null,
+            "rx_obs_gap_frames": null,
+            "rx_obs_underrun_rebuffers": null,
+            "rx_obs_prefill_wait_ms": null,
+            "rx_obs_buffer_peak_pct": null,
+            "rx_net_mesh_recv_errors": null,
+            "rx_net_mesh_recv_empty": null
+          },
+          "marker_presence": {
+            "mesh_tx_group": true,
+            "mesh_tx_p2p": false,
+            "mesh_tx_tods": false,
+            "tx_obs_marker_present": false,
+            "rx_obs_marker_present": false,
+            "rx_net_marker_present": false
+          },
+          "gate": {
+            "transport_passed": false,
+            "output_passed": false,
+            "failed_transport_metrics": [
+              "join_time_s",
+              "underruns_per_min",
+              "loss_pct"
+            ],
+            "quality_score": 43.02
+          },
+          "output_quality": {
+            "quality_score": 43.02,
+            "lag_ms_std": 32.969,
+            "dropout_ratio_pct": 15.0,
+            "overall_band": "fail"
+          }
+        },
+        {
+          "profile_id": "prefill-5",
+          "run_dir": "docs/quality/reports/20260329-tonight/02-prefill-5",
+          "macro_overrides": {
+            "JITTER_PREFILL_FRAMES": 5,
+            "RX_OUTPUT_VOLUME": "2.0f",
+            "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+            "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+            "OPUS_EXPECTED_LOSS_PCT": 8
+          },
+          "transport_metrics": {
+            "loss_pct": 22.9,
+            "underruns_per_min": 9.8,
+            "reason201_per_min": 21.0,
+            "buf0_events_per_min": 26.4,
+            "stream_continuity_pct": 100.0
+          },
+          "new_observability": {
+            "tx_obs_send_failures": null,
+            "tx_obs_queue_full": null,
+            "tx_obs_backpressure_level_max": null,
+            "rx_obs_gap_events": null,
+            "rx_obs_gap_frames": null,
+            "rx_obs_underrun_rebuffers": null,
+            "rx_obs_prefill_wait_ms": null,
+            "rx_obs_buffer_peak_pct": null,
+            "rx_net_mesh_recv_errors": null,
+            "rx_net_mesh_recv_empty": null
+          },
+          "marker_presence": {
+            "mesh_tx_group": true,
+            "mesh_tx_p2p": false,
+            "mesh_tx_tods": false,
+            "tx_obs_marker_present": false,
+            "rx_obs_marker_present": false,
+            "rx_net_marker_present": false
+          },
+          "gate": {
+            "transport_passed": false,
+            "output_passed": false,
+            "failed_transport_metrics": [
+              "join_time_s",
+              "underruns_per_min",
+              "loss_pct"
+            ],
+            "quality_score": 23.96
+          },
+          "output_quality": {
+            "quality_score": 23.96,
+            "lag_ms_std": 29.569,
+            "dropout_ratio_pct": 32.0,
+            "overall_band": "fail"
+          }
+        },
+        {
+          "profile_id": "prefill-6",
+          "run_dir": "docs/quality/reports/20260329-tonight/03-prefill-6",
+          "macro_overrides": {
+            "JITTER_PREFILL_FRAMES": 6,
+            "RX_OUTPUT_VOLUME": "2.0f",
+            "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+            "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+            "OPUS_EXPECTED_LOSS_PCT": 8
+          },
+          "transport_metrics": {
+            "loss_pct": 30.0,
+            "underruns_per_min": 9.8,
+            "reason201_per_min": 21.0,
+            "buf0_events_per_min": 32.4,
+            "stream_continuity_pct": 100.0
+          },
+          "new_observability": {
+            "tx_obs_send_failures": null,
+            "tx_obs_queue_full": null,
+            "tx_obs_backpressure_level_max": null,
+            "rx_obs_gap_events": null,
+            "rx_obs_gap_frames": null,
+            "rx_obs_underrun_rebuffers": null,
+            "rx_obs_prefill_wait_ms": null,
+            "rx_obs_buffer_peak_pct": null,
+            "rx_net_mesh_recv_errors": null,
+            "rx_net_mesh_recv_empty": null
+          },
+          "marker_presence": {
+            "mesh_tx_group": true,
+            "mesh_tx_p2p": false,
+            "mesh_tx_tods": false,
+            "tx_obs_marker_present": false,
+            "rx_obs_marker_present": false,
+            "rx_net_marker_present": false
+          },
+          "gate": {
+            "transport_passed": false,
+            "output_passed": false,
+            "failed_transport_metrics": [
+              "join_time_s",
+              "underruns_per_min",
+              "loss_pct"
+            ],
+            "quality_score": 10.0
+          },
+          "output_quality": {
+            "quality_score": 10.0,
+            "lag_ms_std": 38.891,
+            "dropout_ratio_pct": 80.25,
+            "overall_band": "fail"
+          }
+        },
+        {
+          "profile_id": "prefill-6-gain-safe",
+          "run_dir": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe",
+          "macro_overrides": {
+            "JITTER_PREFILL_FRAMES": 6,
+            "RX_OUTPUT_VOLUME": "1.5f",
+            "OUT_OUTPUT_GAIN_DEFAULT_PCT": 150,
+            "OUT_OUTPUT_GAIN_MAX_PCT": 300,
+            "OPUS_EXPECTED_LOSS_PCT": 8
+          },
+          "transport_metrics": {
+            "loss_pct": 24.1,
+            "underruns_per_min": 9.0,
+            "reason201_per_min": 21.0,
+            "buf0_events_per_min": 30.0,
+            "stream_continuity_pct": 100.0
+          },
+          "new_observability": {
+            "tx_obs_send_failures": null,
+            "tx_obs_queue_full": null,
+            "tx_obs_backpressure_level_max": null,
+            "rx_obs_gap_events": null,
+            "rx_obs_gap_frames": null,
+            "rx_obs_underrun_rebuffers": null,
+            "rx_obs_prefill_wait_ms": null,
+            "rx_obs_buffer_peak_pct": null,
+            "rx_net_mesh_recv_errors": null,
+            "rx_net_mesh_recv_empty": null
+          },
+          "marker_presence": {
+            "mesh_tx_group": true,
+            "mesh_tx_p2p": false,
+            "mesh_tx_tods": false,
+            "tx_obs_marker_present": false,
+            "rx_obs_marker_present": false,
+            "rx_net_marker_present": false
+          },
+          "gate": {
+            "transport_passed": false,
+            "output_passed": false,
+            "failed_transport_metrics": [
+              "join_time_s",
+              "underruns_per_min",
+              "loss_pct"
+            ],
+            "quality_score": 20.45
+          },
+          "output_quality": {
+            "quality_score": 20.45,
+            "lag_ms_std": 29.095,
+            "dropout_ratio_pct": 75.0,
+            "overall_band": "fail"
+          }
+        }
+      ],
+      "aggregate_transport": {
+        "loss_pct": {
+          "min": 22.4,
+          "max": 30.0,
+          "mean": 24.85
+        },
+        "underruns_per_min": {
+          "min": 9.0,
+          "max": 10.0,
+          "mean": 9.65
+        },
+        "reason201_per_min": {
+          "min": 21.0,
+          "max": 21.0,
+          "mean": 21.0
+        },
+        "buf0_events_per_min": {
+          "min": 26.4,
+          "max": 32.4,
+          "mean": 29.1
+        },
+        "stream_continuity_pct": {
+          "min": 100.0,
+          "max": 100.0,
+          "mean": 100.0
+        }
+      },
+      "observability_counter_coverage": {
+        "tx_obs_marker_seen_in_any_run": false,
+        "rx_obs_marker_seen_in_any_run": false,
+        "rx_net_marker_seen_in_any_run": false,
+        "note": "reason201/buf0 present; TX OBS/RX OBS/RX NET markers absent in these report logs, so those counters are null (not comparable) in this artifact."
+      }
+    },
+    {
+      "mode_id": "p2p_nonblock_fallback_historical",
+      "send_flags": [
+        "MESH_DATA_P2P",
+        "MESH_DATA_NONBLOCK"
+      ],
+      "evidence_confidence": "low",
+      "transport_metrics": {
+        "loss_pct": {
+          "best_node_estimate_pct": 2.0,
+          "worst_node_estimate_pct": 20.0,
+          "worst_node_estimate_is_lower_bound": true
+        },
+        "underruns_per_min": null,
+        "reason201_per_min": null,
+        "buf0_events_per_min": null,
+        "stream_continuity_pct": null
+      },
+      "observability_counters": {
+        "tx_obs_queue_full": {
+          "value": 0,
+          "source": "qualitative log excerpt \"Mesh TX P2P ... qfull=0\""
+        },
+        "rx_obs_gap_events": null,
+        "rx_net_mesh_recv_errors": null
+      },
+      "notes": [
+        "No hardened quality-gate artifact set exists in docs/quality/reports for P2P mode in this environment.",
+        "Values are from historical progress-note narrative and are not strict apples-to-apples with 20260329 matrix runs."
+      ]
+    }
+  ],
+  "partial_blocked_variant": {
+    "run_dir": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10",
+    "profile_id": "prefill-6-gain-safe-fec10",
+    "artifact_completeness": {
+      "has_transport_metrics_json": false,
+      "has_output_quality_json": false,
+      "has_demo_gate_summary": false,
+      "has_out_capture_wav": false
+    },
+    "log_derived_metrics": {
+      "loss_pct": 19.9,
+      "underruns_per_min": 16.6,
+      "reason201_per_min": 21.2,
+      "buf0_events_per_min": 33.2,
+      "stream_continuity_pct": 100.0
+    },
+    "confidence": "low",
+    "note": "Run is blocked/incomplete in matrix aggregate because required SRC flash and quality artifacts were not completed."
+  },
+  "recommendation": {
+    "recommended_mode": "group_nonblock_current",
+    "recommended_settings_profile": "baseline-current",
+    "recommended_macro_overrides": {
+      "JITTER_PREFILL_FRAMES": 4,
+      "RX_OUTPUT_VOLUME": "2.0f",
+      "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+      "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+      "OPUS_EXPECTED_LOSS_PCT": 8
+    },
+    "rationale": [
+      "Only mode with current hardened gate artifacts and reproducible per-run metrics in this environment.",
+      "Historical P2P evidence shows asymmetric node degradation (worst-node loss >20%) and lacks comparable reason201/buf0/underrun rate metrics.",
+      "Within GROUP runs, no profile passes gate; selected-profile fallback already marks baseline-current as least-bad by matrix ranking."
+    ],
+    "risk_notes": [
+      "Confidence is medium for GROUP mode characterization, low for cross-mode comparison because fallback-mode hard-gate artifacts are unavailable.",
+      "TX OBS/RX OBS/RX NET counters are not emitted in these specific report logs, limiting counter-based diagnosis for queue/backpressure dimensions.",
+      "Blocked fec10 run suggests potential loss improvement with much worse underruns; do not promote without complete rerun."
+    ],
+    "next_todo_input": "Proceed with stutter-apply-best-transport-mode by keeping GROUP|NONBLOCK and baseline-current macro set unless a fresh hardware-captured P2P-vs-GROUP matched-run set is collected."
+  }
+}

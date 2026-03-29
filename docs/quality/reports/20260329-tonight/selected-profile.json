@@ -1,0 +1,41 @@
+{
+  "generated_at_utc": "2026-03-29T05:11:00.342136Z",
+  "matrix_id": "20260329-tonight",
+  "selected_profile_id": "baseline-current",
+  "selected_run_dir": "docs/quality/reports/20260329-tonight/01-baseline-current",
+  "selection_basis": {
+    "preferred_rule": "pass-all-gates-first",
+    "fallback_rule": "least-bad-by-current-matrix-ranking",
+    "completed_run_scope": [
+      "01-baseline-current",
+      "02-prefill-5",
+      "03-prefill-6",
+      "04-prefill-6-gain-safe"
+    ]
+  },
+  "reason": "No completed profile (01-04) passed all gates; selected least-bad fallback by matrix ranking: baseline-current is ranked #1 among completed runs.",
+  "key_metrics": {
+    "transport_failed_metrics": [
+      "join_time_s",
+      "underruns_per_min",
+      "loss_pct"
+    ],
+    "quality_score": 43.02,
+    "output_quality_band": "fail"
+  },
+  "gate_status": {
+    "fully_gate_pass": false,
+    "temporary_fallback": true,
+    "final_gate_verdict": "FAIL"
+  },
+  "applied_config": {
+    "file": "lib/config/include/config/build.h",
+    "profile_macros": {
+      "JITTER_PREFILL_FRAMES": 4,
+      "RX_OUTPUT_VOLUME": "2.0f",
+      "OUT_OUTPUT_GAIN_DEFAULT_PCT": 200,
+      "OUT_OUTPUT_GAIN_MAX_PCT": 400,
+      "OPUS_EXPECTED_LOSS_PCT": 8
+    }
+  }
+}

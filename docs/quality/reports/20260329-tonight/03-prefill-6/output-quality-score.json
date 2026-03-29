@@ -1,0 +1,33 @@
+{
+  "reference_wav": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/calibration-fixtures/reference.wav",
+  "captured_wav": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/20260329-tonight/03-prefill-6/out-capture.wav",
+  "analysis_sample_rate_hz": 48000,
+  "alignment_offset_samples": -13659,
+  "alignment_offset_ms": -284.562,
+  "dropout_ratio_pct": 80.25,
+  "lag_ms_mean": -2.56,
+  "lag_ms_std": 38.891,
+  "spectral_deviation_db": 15.982,
+  "quality_score": 10.0,
+  "score_components": {
+    "dropout_weight": 0.45,
+    "lag_weight": 0.35,
+    "spectral_weight": 0.2
+  },
+  "thresholds_path": "/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/tools/quality/output_quality_thresholds.json",
+  "threshold_evaluation": {
+    "overall_band": "fail",
+    "metric_bands": {
+      "dropout_ratio_pct": "fail",
+      "lag_ms_std": "fail",
+      "spectral_deviation_db": "pass",
+      "quality_score": "fail"
+    },
+    "failed_metrics": [
+      "dropout_ratio_pct",
+      "lag_ms_std",
+      "quality_score"
+    ],
+    "warned_metrics": []
+  }
+}

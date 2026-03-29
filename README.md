@@ -63,6 +63,17 @@ Primary tuning lives in `lib/config/include/config/build.h`:
 - Jitter/prefill depths and task stack sizes.
 - Portal auth/feature flags and heap guard rails.
 
+Demo branch transport baseline is explicit and deterministic:
+
+- Profile: `baseline-current`
+- Root audio fanout mode: `GROUP|NONBLOCK`
+- To-root mode (non-root uplink): `TODS|NONBLOCK`
+- Related default knobs: `JITTER_PREFILL_FRAMES=4`, `RX_OUTPUT_VOLUME=2.0f`,
+  `OUT_OUTPUT_GAIN_DEFAULT_PCT=200`, `OUT_OUTPUT_GAIN_MAX_PCT=400`,
+  `OPUS_EXPECTED_LOSS_PCT=10`, `RX_PLC_MAX_FRAMES_PER_GAP=2`,
+  `RX_DECODE_MAX_ITEMS_PER_CYCLE=2`, `RX_PCM_HIGH_WATER_FRAMES=PCM_BUFFER_FRAMES-2`,
+  `RX_UNDERRUN_CONCEAL_FRAMES=3`, `RX_UNDERRUN_REBUFFER_MISSES=8`
+
 ## Validation workflow
 
 Run tests and both firmware builds after code changes:

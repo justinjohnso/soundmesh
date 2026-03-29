@@ -1,0 +1,25 @@
+{
+  "selected_source_run": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe",
+  "selection_reason": "latest complete run with non-empty src/out logs + soak-summary + capture wav + multi-out descendants markers",
+  "source_artifacts": {
+    "src_log": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/src-serial.log",
+    "out_log": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-serial.log",
+    "soak_summary": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/soak-summary.json",
+    "capture_wav": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe/out-capture.wav"
+  },
+  "rejected_newer_runs": [
+    {
+      "run": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10",
+      "reason": "incomplete baseline artifacts (missing out-capture.wav, output-quality.json, demo-quality-gate-summary.json)"
+    },
+    {
+      "run": "docs/quality/reports/20260329-tonight/06-baseline-rx-hardening",
+      "reason": "empty src/out serial logs"
+    }
+  ],
+  "multiout_evidence": {
+    "max_descendants": 3,
+    "routing_table_change_markers": 2,
+    "out_children_markers": 11
+  }
+}

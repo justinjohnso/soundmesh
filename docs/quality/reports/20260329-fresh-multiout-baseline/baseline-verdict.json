@@ -1,0 +1,21 @@
+{
+  "baseline_id": "stutter-capture-fresh-multiout-baseline",
+  "final_verdict": "FAIL",
+  "final_passed": false,
+  "gates": {
+    "hil_soak_passed": true,
+    "transport_passed": false,
+    "output_quality_passed": false
+  },
+  "failed_transport_metrics": [
+    "join_time_s",
+    "underruns_per_min",
+    "loss_pct"
+  ],
+  "key_metrics": {
+    "loss_pct": 24.1,
+    "underruns_per_min": 9.0,
+    "reason201_per_min": 21.0,
+    "buf0_events_per_min": 30.0
+  }
+}

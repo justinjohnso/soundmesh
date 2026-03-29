@@ -1,0 +1,161 @@
+{
+  "generated_at_utc": "2026-03-29T05:11:00.342136Z",
+  "matrix_id": "20260329-tonight",
+  "run_root": "docs/quality/reports/20260329-tonight",
+  "profiles_attempted": 5,
+  "profiles_completed": 4,
+  "blocked": "SRC flash required for prefill-6-gain-safe-fec10 (OPUS_EXPECTED_LOSS_PCT=10) but autonomous SRC flashing is disallowed by policy. Next command: pio run -e src -t upload --upload-port /dev/cu.usbmodem1234561",
+  "results": [
+    {
+      "order": 1,
+      "profile_id": "baseline-current",
+      "run_dir": "docs/quality/reports/20260329-tonight/01-baseline-current",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 43.02,
+      "lag_ms_std": 32.969,
+      "final_gate_verdict": "FAIL",
+      "ranking": 1
+    },
+    {
+      "order": 2,
+      "profile_id": "prefill-5",
+      "run_dir": "docs/quality/reports/20260329-tonight/02-prefill-5",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 23.96,
+      "lag_ms_std": 29.569,
+      "final_gate_verdict": "FAIL",
+      "ranking": 2
+    },
+    {
+      "order": 3,
+      "profile_id": "prefill-6",
+      "run_dir": "docs/quality/reports/20260329-tonight/03-prefill-6",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 10.0,
+      "lag_ms_std": 38.891,
+      "final_gate_verdict": "FAIL",
+      "ranking": 4
+    },
+    {
+      "order": 4,
+      "profile_id": "prefill-6-gain-safe",
+      "run_dir": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 20.45,
+      "lag_ms_std": 29.095,
+      "final_gate_verdict": "FAIL",
+      "ranking": 3
+    },
+    {
+      "order": 5,
+      "profile_id": "prefill-6-gain-safe-fec10",
+      "run_dir": "docs/quality/reports/20260329-tonight/05-prefill-6-gain-safe-fec10",
+      "status": "blocked",
+      "transport_passed": null,
+      "transport_failed_metrics": [],
+      "output_quality_band": null,
+      "quality_score": null,
+      "lag_ms_std": null,
+      "final_gate_verdict": "BLOCKED",
+      "blocker": "SRC flash required for prefill-6-gain-safe-fec10 (OPUS_EXPECTED_LOSS_PCT=10) but autonomous SRC flashing is disallowed by policy. Next command: pio run -e src -t upload --upload-port /dev/cu.usbmodem1234561"
+    }
+  ],
+  "ranked_completed_profiles": [
+    {
+      "order": 1,
+      "profile_id": "baseline-current",
+      "run_dir": "docs/quality/reports/20260329-tonight/01-baseline-current",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 43.02,
+      "lag_ms_std": 32.969,
+      "final_gate_verdict": "FAIL",
+      "ranking": 1
+    },
+    {
+      "order": 2,
+      "profile_id": "prefill-5",
+      "run_dir": "docs/quality/reports/20260329-tonight/02-prefill-5",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 23.96,
+      "lag_ms_std": 29.569,
+      "final_gate_verdict": "FAIL",
+      "ranking": 2
+    },
+    {
+      "order": 4,
+      "profile_id": "prefill-6-gain-safe",
+      "run_dir": "docs/quality/reports/20260329-tonight/04-prefill-6-gain-safe",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 20.45,
+      "lag_ms_std": 29.095,
+      "final_gate_verdict": "FAIL",
+      "ranking": 3
+    },
+    {
+      "order": 3,
+      "profile_id": "prefill-6",
+      "run_dir": "docs/quality/reports/20260329-tonight/03-prefill-6",
+      "status": "completed",
+      "transport_passed": false,
+      "transport_failed_metrics": [
+        "join_time_s",
+        "underruns_per_min",
+        "loss_pct"
+      ],
+      "output_quality_band": "fail",
+      "quality_score": 10.0,
+      "lag_ms_std": 38.891,
+      "final_gate_verdict": "FAIL",
+      "ranking": 4
+    }
+  ]
+}

@@ -17,6 +17,31 @@ static void uplink_set_error(const char *err) {
     snprintf(s_uplink.last_error, sizeof(s_uplink.last_error), "%s", err);
 }
 
+static bool uplink_message_matches_current_config(const uplink_ctrl_message_t *msg) {
+    if (!msg) {
+        return false;
+    }
+
+    if (msg->subtype == UPLINK_CTRL_CLEAR) {
+        return !s_uplink.enabled && !s_uplink.configured &&
+               s_uplink.ssid[0] == '\0' && s_uplink_password[0] == '\0';
+    }
+
+    if (msg->subtype != UPLINK_CTRL_SET && msg->subtype != UPLINK_CTRL_SYNC) {
+        return false;
+    }
+
+    if (s_uplink.enabled != msg->enabled) {
+        return false;
+    }
+
+    if (strcmp(s_uplink.ssid, msg->ssid) != 0) {
+        return false;
+    }
+
+    return strcmp(s_uplink_password, msg->password) == 0;
+}
+
 esp_err_t mesh_uplink_apply_router_config(void) {
     if (!is_mesh_root) {
         return ESP_ERR_INVALID_STATE;
@@ -30,10 +55,9 @@ esp_err_t mesh_uplink_apply_router_config(void) {
         memcpy(router.password, s_uplink_password, UPLINK_PASSWORD_MAX_LEN);
         router.allow_router_switch = true;
     } else {
-        const char *disabled = "MESHNET_DISABLED";
-        size_t ssid_len = strlen(disabled);
+        size_t ssid_len = strlen(MESH_DISABLED_ROUTER_SSID);
         router.ssid_len = (uint8_t)ssid_len;
-        memcpy(router.ssid, disabled, ssid_len);
+        memcpy(router.ssid, MESH_DISABLED_ROUTER_SSID, ssid_len);
         router.password[0] = '\0';
         router.allow_router_switch = false;
     }
@@ -94,6 +118,8 @@ void mesh_uplink_handle_control(const uplink_ctrl_message_t *msg) {
         return;
     }
 
+    bool config_changed = !uplink_message_matches_current_config(msg);
+
     if (msg->subtype == UPLINK_CTRL_CLEAR) {
         s_uplink.enabled = false;
         s_uplink.configured = false;
@@ -108,11 +134,16 @@ void mesh_uplink_handle_control(const uplink_ctrl_message_t *msg) {
     s_uplink.updated_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
     if (is_mesh_root) {
-        esp_err_t err = mesh_uplink_apply_router_config();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Uplink apply failed: %s", esp_err_to_name(err));
+        bool should_apply = config_changed || !s_uplink.root_applied;
+        if (should_apply) {
+            esp_err_t err = mesh_uplink_apply_router_config();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Uplink apply failed: %s", esp_err_to_name(err));
+            }
+            (void)mesh_uplink_publish_sync(UPLINK_CTRL_SYNC);
+        } else {
+            ESP_LOGI(TAG, "Uplink config unchanged; skipping router reapply");
         }
-        (void)mesh_uplink_publish_sync(UPLINK_CTRL_SYNC);
     } else {
         s_uplink.root_applied = false;
         s_uplink.pending_apply = false;

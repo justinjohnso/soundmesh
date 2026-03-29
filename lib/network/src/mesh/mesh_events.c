@@ -11,6 +11,14 @@
 
 static const char *TAG = "network_mesh";
 
+static bool should_skip_wifi_runtime_ops(const char *op_name) {
+    if (mesh_self_organized_mode && mesh_runtime_started) {
+        ESP_LOGW(TAG, "Skipping %s while self-organized mesh runtime is active", op_name);
+        return true;
+    }
+    return false;
+}
+
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
         case WIFI_REASON_UNSPECIFIED: return "UNSPECIFIED";
@@ -38,6 +46,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
         case MESH_EVENT_STARTED:
             ESP_LOGI(TAG, "Mesh started");
+            mesh_runtime_started = true;
             if (my_node_role == NODE_ROLE_OUT) {
                 ESP_LOGI(TAG, "OUT discovery active: waiting for root on channel=%d mesh_id=%s src_id=%s",
                          MESH_CHANNEL, MESH_ID, g_src_id);
@@ -55,6 +64,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         case MESH_EVENT_STOPPED:
             ESP_LOGI(TAG, "Mesh stopped");
             is_mesh_connected = false;
+            mesh_runtime_started = false;
             break;
 
         case MESH_EVENT_PARENT_CONNECTED: {
@@ -65,6 +75,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             mesh_layer = esp_mesh_get_layer();
             auth_expire_count = 0;
             parent_conn_count++;
+            g_transport_stats.parent_connect_events++;
 
             ESP_LOGI(TAG, "Parent connected, layer: %d (stream ready)", mesh_layer);
             ESP_LOGI(TAG, "Parent BSSID: " MACSTR, MAC2STR(connected->connected.bssid));
@@ -72,8 +83,10 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             mesh_state_notify_waiting_tasks();
 
             if (esp_mesh_is_root()) {
-                esp_wifi_scan_stop();
-                ESP_LOGI(TAG, "Root connected: scan stopped");
+                if (!should_skip_wifi_runtime_ops("esp_wifi_scan_stop")) {
+                    esp_wifi_scan_stop();
+                    ESP_LOGI(TAG, "Root connected: scan stopped");
+                }
             } else {
                 ESP_LOGI(TAG, "OUT connected: preserving startup self-organized config");
                 mesh_uplink_request_sync_from_root();
@@ -87,6 +100,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             if (!esp_mesh_is_root()) {
                 bool was_connected = is_mesh_connected;
                 parent_disc_count++;
+                g_transport_stats.parent_disconnect_events++;
                 ESP_LOGW(TAG, "Parent disconnected: reason=%d(%s), was_connected=%d, layer=%d",
                          disconnected->reason,
                          wifi_disconnect_reason_to_str(disconnected->reason),
@@ -119,8 +133,14 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG, "Child connected (routing table: %d)", new_count);
             mesh_children_count = new_count;
             if (is_mesh_root) {
-                esp_wifi_scan_stop();
-                ESP_LOGI(TAG, "Root: child connected, scan stopped (no forced STA disconnect)");
+                if (!should_skip_wifi_runtime_ops("esp_wifi_scan_stop + esp_wifi_disconnect")) {
+                    esp_wifi_scan_stop();
+                    esp_err_t disc_err = esp_wifi_disconnect();
+                    if (disc_err != ESP_OK && disc_err != ESP_ERR_WIFI_NOT_CONNECT) {
+                        ESP_LOGW(TAG, "Root STA disconnect failed: %s", esp_err_to_name(disc_err));
+                    }
+                    ESP_LOGI(TAG, "Root: child connected, scan stopped and STA client disconnected");
+                }
             }
             break;
         }
@@ -189,6 +209,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
 
         case MESH_EVENT_NO_PARENT_FOUND:
             no_parent_count++;
+            g_transport_stats.no_parent_events++;
             ESP_LOGW(TAG, "No parent found (attempt=%lu) — retrying scan (channel=%d, mesh_id=%s, src_id=%s)",
                      (unsigned long)no_parent_count, MESH_CHANNEL, MESH_ID, g_src_id);
             break;
@@ -207,6 +228,7 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         case MESH_EVENT_SCAN_DONE: {
             mesh_event_scan_done_t *scan = (mesh_event_scan_done_t *)event_data;
             scan_done_count++;
+            g_transport_stats.scan_done_events++;
             if (my_node_role == NODE_ROLE_OUT) {
                 ESP_LOGI(TAG, "Scan done #%lu: found %d APs (connected=%d, layer=%d)",
                          (unsigned long)scan_done_count, (int)scan->number, is_mesh_connected, esp_mesh_get_layer());

@@ -10,6 +10,23 @@
 static const char *TAG = "network_mesh";
 
 static int s_jitter_override = -1;  // -1 = auto; 1-16 = fixed override
+static bool s_logged_parent_rssi_skip = false;
+static bool s_logged_child_rssi_skip = false;
+
+static bool should_skip_wifi_query(bool *logged_flag, const char *query_name) {
+    if (mesh_self_organized_mode && mesh_runtime_started) {
+        if (logged_flag && !(*logged_flag)) {
+            ESP_LOGW(TAG, "Skipping %s while self-organized mesh runtime is active", query_name);
+            *logged_flag = true;
+        }
+        return true;
+    }
+
+    if (logged_flag) {
+        *logged_flag = false;
+    }
+    return false;
+}
 
 bool network_is_root(void) {
     return esp_mesh_is_root();
@@ -24,8 +41,12 @@ uint32_t network_get_children_count(void) {
 }
 
 int network_get_rssi(void) {
+    if (should_skip_wifi_query(&s_logged_parent_rssi_skip, "esp_wifi_sta_get_ap_info")) {
+        return mesh_parent_rssi;
+    }
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        mesh_parent_rssi = ap_info.rssi;
         return ap_info.rssi;
     }
     return -100;
@@ -101,11 +122,13 @@ bool network_rejoin_allowed(void) {
 
 esp_err_t network_trigger_rejoin(void) {
     if (is_mesh_root) {
+        g_transport_stats.rejoin_blocked_events++;
         return ESP_ERR_INVALID_STATE;
     }
 
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     if (now_ms < rejoin_cooldown_until_ms) {
+        g_transport_stats.rejoin_blocked_events++;
         ESP_LOGW(TAG, "Rejoin blocked by cooldown (%lums remaining)",
                  (unsigned long)(rejoin_cooldown_until_ms - now_ms));
         return ESP_ERR_INVALID_STATE;
@@ -115,12 +138,14 @@ esp_err_t network_trigger_rejoin(void) {
         rejoin_attempt_count = 0;
     }
     if (rejoin_attempt_count >= OUT_REJOIN_MAX_ATTEMPTS) {
+        g_transport_stats.rejoin_circuit_breaker_events++;
         rejoin_cooldown_until_ms = now_ms + OUT_REJOIN_COOLDOWN_MS;
         ESP_LOGW(TAG, "Rejoin circuit breaker tripped (attempts=%lu, cooldown=%lums)",
                  (unsigned long)rejoin_attempt_count, (unsigned long)OUT_REJOIN_COOLDOWN_MS);
         return ESP_ERR_INVALID_STATE;
     }
     rejoin_attempt_count++;
+    g_transport_stats.rejoin_trigger_events++;
 
     ESP_LOGW(TAG, "Triggering OUT rejoin: disconnect + reconnect");
     mesh_state_clear_root_addr();
@@ -151,8 +176,31 @@ uint32_t network_get_tx_bytes_and_reset(void) {
     return bytes;
 }
 
+esp_err_t network_get_transport_stats(network_transport_stats_t *out_stats)
+{
+    if (!out_stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_stats = g_transport_stats;
+    return ESP_OK;
+}
+
+esp_err_t network_get_transport_stats_and_reset(network_transport_stats_t *out_stats)
+{
+    if (!out_stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_stats = g_transport_stats;
+    g_transport_stats = (network_transport_stats_t){0};
+    return ESP_OK;
+}
+
 int network_get_nearest_child_rssi(void) {
     if (!is_mesh_root) return -100;
+
+    if (should_skip_wifi_query(&s_logged_child_rssi_skip, "esp_wifi_ap_get_sta_list")) {
+        return nearest_child_rssi;
+    }
 
     wifi_sta_list_t sta_list;
     if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK || sta_list.num == 0) {

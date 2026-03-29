@@ -29,6 +29,47 @@ esp_err_t network_register_startup_notification(TaskHandle_t task_handle);
 esp_err_t network_send_audio(const uint8_t *data, size_t len);
 esp_err_t network_send_control(const uint8_t *data, size_t len);
 
+typedef struct {
+    uint32_t tx_audio_packets;
+    uint32_t tx_audio_bytes;
+    uint32_t tx_audio_send_failures;
+    uint32_t tx_audio_queue_full;
+    uint32_t tx_audio_no_route;
+    uint32_t tx_audio_invalid_state;
+    uint32_t tx_control_packets;
+    uint32_t tx_control_send_failures;
+    uint32_t tx_control_no_route;
+    uint32_t tx_control_invalid_state;
+    uint32_t rx_audio_packets;
+    uint32_t rx_audio_batches;
+    uint32_t rx_audio_batch_frames;
+    uint32_t rx_audio_callback_missing;
+    uint32_t rx_audio_duplicates;
+    uint32_t rx_audio_ttl_expired;
+    uint32_t rx_audio_invalid_header;
+    uint32_t rx_audio_invalid_version;
+    uint32_t rx_audio_invalid_payload;
+    uint32_t rx_audio_forwarded;
+    uint32_t rx_heartbeat_packets;
+    uint32_t rx_control_packets;
+    uint32_t rx_ping_packets;
+    uint32_t rx_pong_packets;
+    uint32_t rx_stream_announce_packets;
+    uint32_t mesh_recv_errors;
+    uint32_t mesh_recv_empty_packets;
+    uint32_t parent_connect_events;
+    uint32_t parent_disconnect_events;
+    uint32_t no_parent_events;
+    uint32_t scan_done_events;
+    uint32_t rejoin_trigger_events;
+    uint32_t rejoin_blocked_events;
+    uint32_t rejoin_circuit_breaker_events;
+    uint32_t tx_audio_backpressure_level;
+} network_transport_stats_t;
+
+esp_err_t network_get_transport_stats(network_transport_stats_t *out_stats);
+esp_err_t network_get_transport_stats_and_reset(network_transport_stats_t *out_stats);
+
 // Audio reception callback (for RX nodes)
 typedef void (*network_audio_callback_t)(const uint8_t *payload, size_t len, uint16_t seq, uint32_t timestamp, const char *src_id);
 esp_err_t network_register_audio_callback(network_audio_callback_t callback);

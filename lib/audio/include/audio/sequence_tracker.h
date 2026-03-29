@@ -9,6 +9,8 @@ extern "C" {
 
 typedef struct {
     bool first_packet;
+    bool late_or_duplicate;
+    bool hard_reset;
     bool request_fec;
     uint16_t last_seq;
     uint32_t dropped_frames;
@@ -18,9 +20,9 @@ typedef struct {
 sequence_tracker_result_t sequence_tracker_update(bool first_packet,
                                                   uint16_t last_seq,
                                                   uint16_t incoming_seq,
-                                                  uint8_t max_plc_frames_per_gap);
+                                                  uint8_t max_plc_frames_per_gap,
+                                                  uint8_t max_stale_frames_to_drop);
 
 #ifdef __cplusplus
 }
 #endif
-

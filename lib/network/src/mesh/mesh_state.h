@@ -21,11 +21,14 @@ extern char g_src_id[NETWORK_SRC_ID_LEN];
 extern bool is_mesh_connected;
 extern bool is_mesh_root;
 extern bool is_mesh_root_ready;
+extern bool mesh_self_organized_mode;
+extern bool mesh_runtime_started;
 extern uint8_t mesh_layer;
 extern int mesh_children_count;
 extern mesh_addr_t mesh_parent_addr;
 
 extern uint32_t measured_latency_ms;
+extern int8_t mesh_parent_rssi;
 extern bool ping_pending;
 extern int8_t nearest_child_rssi;
 extern uint32_t nearest_child_latency_ms;
@@ -64,6 +67,7 @@ extern network_heartbeat_callback_t heartbeat_rx_callback;
 extern uint32_t total_drops;
 extern uint32_t total_sent;
 extern volatile uint32_t tx_bytes_counter;
+extern network_transport_stats_t g_transport_stats;
 
 extern uint8_t mesh_rx_buffer[MESH_RX_BUFFER_SIZE];
 extern const mesh_addr_t audio_multicast_group;

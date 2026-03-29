@@ -19,6 +19,21 @@
 
 static const char *TAG = "network_mesh";
 
+static void stop_root_sta_client(void) {
+    if (my_node_role != NODE_ROLE_SRC) {
+        return;
+    }
+    if (mesh_self_organized_mode && mesh_runtime_started) {
+        ESP_LOGW(TAG, "Skipping esp_wifi scan/disconnect while self-organized mesh runtime is active");
+        return;
+    }
+    (void)esp_wifi_scan_stop();
+    esp_err_t disc_err = esp_wifi_disconnect();
+    if (disc_err != ESP_OK && disc_err != ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_LOGW(TAG, "Root STA disconnect failed: %s", esp_err_to_name(disc_err));
+    }
+}
+
 static void unregister_waiting_task(TaskHandle_t task_handle) {
     if (task_handle == NULL) {
         return;
@@ -39,6 +54,8 @@ esp_err_t network_init_mesh(void) {
     ESP_LOGI(TAG, "Initializing ESP-WIFI-MESH");
 
     mesh_dedupe_reset();
+    mesh_runtime_started = false;
+    mesh_self_organized_mode = false;
 
 #if BUILD_IS_SOURCE
     my_node_role = NODE_ROLE_SRC;
@@ -111,8 +128,8 @@ esp_err_t network_init_mesh(void) {
     mesh_config.channel = MESH_CHANNEL;
 
     memset(&mesh_config.router, 0, sizeof(mesh_config.router));
-    strcpy((char *)mesh_config.router.ssid, "MESHNET_DISABLED");
-    mesh_config.router.ssid_len = strlen("MESHNET_DISABLED");
+    strcpy((char *)mesh_config.router.ssid, MESH_DISABLED_ROUTER_SSID);
+    mesh_config.router.ssid_len = strlen(MESH_DISABLED_ROUTER_SSID);
     mesh_config.router.password[0] = '\0';
     mesh_config.router.allow_router_switch = false;
     memset(mesh_config.router.bssid, 0, 6);
@@ -124,12 +141,21 @@ esp_err_t network_init_mesh(void) {
     ESP_ERROR_CHECK(esp_mesh_set_config(&mesh_config));
 
     ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_OUT));
+    mesh_self_organized_mode = true;
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(MESH_MAX_LAYER));
     ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(MESH_XON_QSIZE));
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(MESH_AP_ASSOC_EXPIRE_S));
 
     ESP_LOGI(TAG, "Mesh tuning: max_layer=%u xon_qsize=%u ap_assoc_expire=%us",
              (unsigned)MESH_MAX_LAYER, (unsigned)MESH_XON_QSIZE, (unsigned)MESH_AP_ASSOC_EXPIRE_S);
+    ESP_LOGI(TAG,
+             "Transport defaults: profile=%s root_fanout=%s uplink=%s batch=%u jitter_prefill=%u loss_hint=%u",
+             TRANSPORT_SETTINGS_PROFILE_ID,
+             TRANSPORT_ROOT_FANOUT_MODE,
+             TRANSPORT_TO_ROOT_MODE,
+             (unsigned)MESH_FRAMES_PER_PACKET,
+             (unsigned)JITTER_PREFILL_FRAMES,
+             (unsigned)OPUS_EXPECTED_LOSS_PCT);
 
     if (my_node_role == NODE_ROLE_SRC) {
         ESP_ERROR_CHECK(esp_mesh_set_type(MESH_ROOT));
@@ -166,6 +192,11 @@ esp_err_t network_init_mesh(void) {
         return ret;
     }
 
+    if (my_node_role == NODE_ROLE_SRC) {
+        stop_root_sta_client();
+        ESP_LOGI(TAG, "SRC: pre-start scan stop/disconnect applied before esp_mesh_start");
+    }
+
     ret = esp_mesh_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "esp_mesh_start failed: %s", esp_err_to_name(ret));
@@ -175,12 +206,6 @@ esp_err_t network_init_mesh(void) {
         heartbeat_task_handle = NULL;
         return ret;
     }
-
-    if (my_node_role == NODE_ROLE_SRC) {
-        esp_wifi_scan_stop();
-        ESP_LOGI(TAG, "SRC: stopped startup scanning");
-    }
-
     if (my_node_role == NODE_ROLE_OUT) {
         esp_err_t grp_err = esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
         if (grp_err == ESP_OK) {

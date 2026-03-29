@@ -70,8 +70,6 @@ static esp_err_t init_opus_decoder(adf_pipeline_handle_t pipeline)
     }
 
     opus_decoder_ctl(pipeline->decoder, OPUS_SET_GAIN(0));
-    pipeline->pending_fec_recovery = false;
-
     ESP_LOGI(TAG, "Opus decoder initialized: %luHz, %dch",
              (unsigned long)AUDIO_SAMPLE_RATE, AUDIO_CHANNELS_MONO);
 

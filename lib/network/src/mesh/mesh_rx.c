@@ -14,6 +14,39 @@
 
 static const char *TAG = "network_mesh";
 
+static void mesh_rx_log_observability_snapshot(void)
+{
+    ESP_LOGI(TAG,
+             "RX OBS: audio=%lu fwd=%lu dup=%lu ttl0=%lu inv={hdr:%lu ver:%lu pay:%lu} "
+             "batch={pkts:%lu frames:%lu} cb_miss=%lu recv={err:%lu empty:%lu} "
+             "ctrl={hb:%lu ctl:%lu ping:%lu pong:%lu ann:%lu} "
+             "churn={pc:%lu pd:%lu np:%lu sc:%lu rj:%lu/%lu/%lu}",
+             (unsigned long)g_transport_stats.rx_audio_packets,
+             (unsigned long)g_transport_stats.rx_audio_forwarded,
+             (unsigned long)g_transport_stats.rx_audio_duplicates,
+             (unsigned long)g_transport_stats.rx_audio_ttl_expired,
+             (unsigned long)g_transport_stats.rx_audio_invalid_header,
+             (unsigned long)g_transport_stats.rx_audio_invalid_version,
+             (unsigned long)g_transport_stats.rx_audio_invalid_payload,
+             (unsigned long)g_transport_stats.rx_audio_batches,
+             (unsigned long)g_transport_stats.rx_audio_batch_frames,
+             (unsigned long)g_transport_stats.rx_audio_callback_missing,
+             (unsigned long)g_transport_stats.mesh_recv_errors,
+             (unsigned long)g_transport_stats.mesh_recv_empty_packets,
+             (unsigned long)g_transport_stats.rx_heartbeat_packets,
+             (unsigned long)g_transport_stats.rx_control_packets,
+             (unsigned long)g_transport_stats.rx_ping_packets,
+             (unsigned long)g_transport_stats.rx_pong_packets,
+             (unsigned long)g_transport_stats.rx_stream_announce_packets,
+             (unsigned long)g_transport_stats.parent_connect_events,
+             (unsigned long)g_transport_stats.parent_disconnect_events,
+             (unsigned long)g_transport_stats.no_parent_events,
+             (unsigned long)g_transport_stats.scan_done_events,
+             (unsigned long)g_transport_stats.rejoin_trigger_events,
+             (unsigned long)g_transport_stats.rejoin_blocked_events,
+             (unsigned long)g_transport_stats.rejoin_circuit_breaker_events);
+}
+
 typedef struct {
     uint32_t timestamp;
     const char *src_id;
@@ -27,6 +60,7 @@ static void on_audio_batch_frame(const uint8_t *frame,
         return;
     }
     audio_batch_callback_ctx_t *batch = (audio_batch_callback_ctx_t *)ctx;
+    g_transport_stats.rx_audio_forwarded++;
     audio_rx_callback(frame, frame_len, frame_seq, batch->timestamp, batch->src_id);
 }
 
@@ -52,6 +86,7 @@ void mesh_rx_task(void *arg) {
         err = esp_mesh_recv(&from, &data, portMAX_DELAY, &flag, NULL, 0);
 
         if (err != ESP_OK) {
+            g_transport_stats.mesh_recv_errors++;
             if (err == ESP_ERR_MESH_NOT_START) {
                 vTaskDelay(pdMS_TO_TICKS(100));
             } else {
@@ -61,6 +96,7 @@ void mesh_rx_task(void *arg) {
         }
 
         if (!data.data || data.size == 0) {
+            g_transport_stats.mesh_recv_empty_packets++;
             ESP_LOGW(TAG, "Ignoring empty mesh packet");
             continue;
         }
@@ -68,6 +104,7 @@ void mesh_rx_task(void *arg) {
         uint8_t first_byte = data.data[0];
 
         if (first_byte == NET_PKT_TYPE_HEARTBEAT) {
+            g_transport_stats.rx_heartbeat_packets++;
             if (esp_mesh_is_root() && data.size >= sizeof(mesh_heartbeat_t)) {
                 mesh_heartbeat_t *hb = (mesh_heartbeat_t *)data.data;
                 bool same_child = (memcmp(&from, &nearest_child_addr, 6) == 0);
@@ -87,18 +124,22 @@ void mesh_rx_task(void *arg) {
                 }
             }
         } else if (first_byte == NET_PKT_TYPE_PING) {
+            g_transport_stats.rx_ping_packets++;
             if (data.size >= sizeof(mesh_ping_t)) {
                 mesh_ping_t *ping = (mesh_ping_t *)data.data;
                 mesh_ping_handle_ping(&from, ping);
             }
         } else if (first_byte == NET_PKT_TYPE_PONG) {
+            g_transport_stats.rx_pong_packets++;
             if (data.size >= sizeof(mesh_ping_t)) {
                 mesh_ping_t *pong = (mesh_ping_t *)data.data;
                 mesh_ping_handle_pong(pong);
             }
         } else if (first_byte == NET_PKT_TYPE_STREAM_ANNOUNCE) {
+            g_transport_stats.rx_stream_announce_packets++;
             ESP_LOGD(TAG, "Stream announcement received");
         } else if (first_byte == NET_PKT_TYPE_CONTROL) {
+            g_transport_stats.rx_control_packets++;
             if (data.size == sizeof(uplink_ctrl_packet_t)) {
                 uplink_ctrl_message_t uplink_msg;
                 if (uplink_ctrl_decode((const uplink_ctrl_packet_t *)data.data, data.size, &uplink_msg)) {
@@ -118,30 +159,34 @@ void mesh_rx_task(void *arg) {
             }
         } else if (first_byte == NET_FRAME_MAGIC) {
             if (data.size < NET_FRAME_HEADER_SIZE_V1) {
+                g_transport_stats.rx_audio_invalid_header++;
                 continue;
             }
 
             net_frame_header_t *hdr = (net_frame_header_t *)data.data;
             if (hdr->version != NET_FRAME_VERSION) {
+                g_transport_stats.rx_audio_invalid_version++;
                 continue;
             }
 
             uint16_t seq = ntohs(hdr->seq);
 
             if (hdr->type == NET_PKT_TYPE_AUDIO_RAW || hdr->type == NET_PKT_TYPE_AUDIO_OPUS) {
-                static uint32_t audio_frames_rx = 0;
-                audio_frames_rx++;
-                if ((audio_frames_rx % 500) == 1) {
+                g_transport_stats.rx_audio_packets++;
+                if ((g_transport_stats.rx_audio_packets % 500) == 1) {
                     ESP_LOGI(TAG, "Audio frame RX #%lu: seq=%u size=%d",
-                             audio_frames_rx, seq, data.size);
+                             (unsigned long)g_transport_stats.rx_audio_packets, seq, data.size);
+                    mesh_rx_log_observability_snapshot();
                 }
 
                 if (mesh_dedupe_is_duplicate(hdr->stream_id, seq)) {
+                    g_transport_stats.rx_audio_duplicates++;
                     continue;
                 }
                 mesh_dedupe_mark_seen(hdr->stream_id, seq);
 
                 if (hdr->ttl == 0) {
+                    g_transport_stats.rx_audio_ttl_expired++;
                     continue;
                 }
 
@@ -155,6 +200,7 @@ void mesh_rx_task(void *arg) {
                                                            NET_FRAME_HEADER_SIZE,
                                                            NET_FRAME_HEADER_SIZE_V1,
                                                            &hdr_size)) {
+                        g_transport_stats.rx_audio_invalid_payload++;
                         continue;
                     }
 
@@ -169,9 +215,12 @@ void mesh_rx_task(void *arg) {
                     const char *src_id = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->src_id : "";
 
                     if (frame_count <= 1) {
+                        g_transport_stats.rx_audio_forwarded++;
                         audio_rx_callback(payload, total_payload_len, seq, timestamp, src_id);
                     } else {
                         audio_batch_callback_ctx_t cb_ctx = {.timestamp = timestamp, .src_id = src_id};
+                        g_transport_stats.rx_audio_batches++;
+                        g_transport_stats.rx_audio_batch_frames += frame_count;
                         network_frame_unpack_batch(payload,
                                                    total_payload_len,
                                                    frame_count,
@@ -180,8 +229,8 @@ void mesh_rx_task(void *arg) {
                                                    &cb_ctx);
                     }
                 } else {
-                    static uint32_t cb_missing = 0;
-                    if ((++cb_missing % 200) == 1) {
+                    g_transport_stats.rx_audio_callback_missing++;
+                    if ((g_transport_stats.rx_audio_callback_missing % 200) == 1) {
                         ESP_LOGW(TAG, "Audio frame received but audio_rx_callback is NULL");
                     }
                 }

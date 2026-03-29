@@ -39,6 +39,13 @@ sdkconfig.*.bak
 compile_commands.json
 screenlog.0
 
+# Root-level debug logs (allow docs/ logs for evidence)
+/serial_*.log
+/hw_*.log
+
+# Runtime capture logs (generated during local HIL runs)
+docs/operations/runtime-evidence/**/*.log
+
 # AMP AI
 .aider*
 

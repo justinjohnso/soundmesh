@@ -41,15 +41,14 @@ uint32_t network_get_children_count(void) {
 }
 
 int network_get_rssi(void) {
-    if (should_skip_wifi_query(&s_logged_parent_rssi_skip, "esp_wifi_sta_get_ap_info")) {
-        return mesh_parent_rssi;
-    }
+    // esp_wifi_sta_get_ap_info is a read-only query that does not interfere
+    // with self-organized networking — safe to call regardless of mode.
     wifi_ap_record_t ap_info;
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         mesh_parent_rssi = ap_info.rssi;
         return ap_info.rssi;
     }
-    return -100;
+    return mesh_parent_rssi;
 }
 
 uint32_t network_get_latency_ms(void) {

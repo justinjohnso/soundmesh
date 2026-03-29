@@ -9,11 +9,14 @@ char g_src_id[NETWORK_SRC_ID_LEN] = "SRC_000000";
 bool is_mesh_connected = false;
 bool is_mesh_root = false;
 bool is_mesh_root_ready = false;
+bool mesh_self_organized_mode = false;
+bool mesh_runtime_started = false;
 uint8_t mesh_layer = 0;
 int mesh_children_count = 0;
 mesh_addr_t mesh_parent_addr;
 
 uint32_t measured_latency_ms = 0;
+int8_t mesh_parent_rssi = -100;
 bool ping_pending = false;
 int8_t nearest_child_rssi = -100;
 uint32_t nearest_child_latency_ms = 0;
@@ -70,6 +73,7 @@ network_heartbeat_callback_t heartbeat_rx_callback = NULL;
 uint32_t total_drops = 0;
 uint32_t total_sent = 0;
 volatile uint32_t tx_bytes_counter = 0;
+network_transport_stats_t g_transport_stats = {0};
 
 uint8_t mesh_rx_buffer[MESH_RX_BUFFER_SIZE];
 const mesh_addr_t audio_multicast_group = {

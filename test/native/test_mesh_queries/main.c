@@ -30,11 +30,14 @@ char g_src_id[NETWORK_SRC_ID_LEN] = {0};
 bool is_mesh_connected = false;
 bool is_mesh_root = false;
 bool is_mesh_root_ready = false;
+bool mesh_self_organized_mode = false;
+bool mesh_runtime_started = false;
 uint8_t mesh_layer = 0;
 int mesh_children_count = 0;
 mesh_addr_t mesh_parent_addr = {{0}};
 
 uint32_t measured_latency_ms = 0;
+int8_t mesh_parent_rssi = -100;
 bool ping_pending = false;
 int8_t nearest_child_rssi = -100;
 uint32_t nearest_child_latency_ms = 0;
@@ -74,6 +77,7 @@ network_heartbeat_callback_t heartbeat_rx_callback = NULL;
 uint32_t total_drops = 0;
 uint32_t total_sent = 0;
 volatile uint32_t tx_bytes_counter = 0;
+network_transport_stats_t g_transport_stats = {0};
 
 uint8_t mesh_rx_buffer[MESH_RX_BUFFER_SIZE] = {0};
 const mesh_addr_t audio_multicast_group = {{0}};
@@ -179,8 +183,11 @@ static void reset_state(void)
     is_mesh_connected = false;
     is_mesh_root = false;
     is_mesh_root_ready = false;
+    mesh_self_organized_mode = false;
+    mesh_runtime_started = false;
     mesh_layer = 0;
     measured_latency_ms = 0;
+    mesh_parent_rssi = -100;
     stub_have_root_addr = true;
     memset(&stub_cached_root_addr, 0, sizeof(stub_cached_root_addr));
     tx_bytes_counter = 0;
@@ -189,6 +196,7 @@ static void reset_state(void)
     rejoin_window_start_ms = 0;
     rejoin_cooldown_until_ms = 0;
     memset(nearest_child_addr.addr, 0, sizeof(nearest_child_addr.addr));
+    memset(&g_transport_stats, 0, sizeof(g_transport_stats));
 }
 
 void setUp(void)
@@ -304,6 +312,7 @@ void test_trigger_rejoin_resets_state_and_reconnects_child(void)
     TEST_ASSERT_EQUAL_INT(1, stub_connect_calls);
     TEST_ASSERT_EQUAL_UINT32(50, stub_last_delay_ticks);
     TEST_ASSERT_EQUAL_UINT32(1, rejoin_attempt_count);
+    TEST_ASSERT_EQUAL_UINT32(1, g_transport_stats.rejoin_trigger_events);
 }
 
 void test_trigger_rejoin_surfaces_connect_failure(void)
@@ -339,6 +348,7 @@ void test_trigger_rejoin_blocked_during_cooldown(void)
     TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_STATE, network_trigger_rejoin());
     TEST_ASSERT_EQUAL_INT(0, stub_disconnect_calls);
     TEST_ASSERT_EQUAL_INT(0, stub_connect_calls);
+    TEST_ASSERT_EQUAL_UINT32(1, g_transport_stats.rejoin_blocked_events);
 }
 
 void test_trigger_rejoin_trips_circuit_breaker_at_attempt_limit(void)
@@ -352,6 +362,7 @@ void test_trigger_rejoin_trips_circuit_breaker_at_attempt_limit(void)
     TEST_ASSERT_TRUE(rejoin_cooldown_until_ms > 1500);
     TEST_ASSERT_EQUAL_INT(0, stub_disconnect_calls);
     TEST_ASSERT_EQUAL_INT(0, stub_connect_calls);
+    TEST_ASSERT_EQUAL_UINT32(1, g_transport_stats.rejoin_circuit_breaker_events);
 }
 
 void test_trigger_rejoin_resets_attempt_window_after_timeout(void)
@@ -367,6 +378,42 @@ void test_trigger_rejoin_resets_attempt_window_after_timeout(void)
     TEST_ASSERT_EQUAL_UINT32(1, rejoin_attempt_count);
     TEST_ASSERT_EQUAL_INT(1, stub_disconnect_calls);
     TEST_ASSERT_EQUAL_INT(1, stub_connect_calls);
+    TEST_ASSERT_EQUAL_UINT32(1, g_transport_stats.rejoin_trigger_events);
+}
+
+void test_transport_stats_snapshot_and_reset_roundtrip(void)
+{
+    g_transport_stats.tx_audio_packets = 11;
+    g_transport_stats.tx_audio_send_failures = 3;
+    g_transport_stats.rx_audio_duplicates = 7;
+    g_transport_stats.rejoin_trigger_events = 2;
+
+    network_transport_stats_t snapshot = {0};
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_get_transport_stats(&snapshot));
+    TEST_ASSERT_EQUAL_UINT32(11, snapshot.tx_audio_packets);
+    TEST_ASSERT_EQUAL_UINT32(3, snapshot.tx_audio_send_failures);
+    TEST_ASSERT_EQUAL_UINT32(7, snapshot.rx_audio_duplicates);
+    TEST_ASSERT_EQUAL_UINT32(2, snapshot.rejoin_trigger_events);
+
+    network_transport_stats_t drained = {0};
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_get_transport_stats_and_reset(&drained));
+    TEST_ASSERT_EQUAL_UINT32(11, drained.tx_audio_packets);
+    TEST_ASSERT_EQUAL_UINT32(3, drained.tx_audio_send_failures);
+    TEST_ASSERT_EQUAL_UINT32(7, drained.rx_audio_duplicates);
+    TEST_ASSERT_EQUAL_UINT32(2, drained.rejoin_trigger_events);
+
+    network_transport_stats_t after_reset = {0};
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_get_transport_stats(&after_reset));
+    TEST_ASSERT_EQUAL_UINT32(0, after_reset.tx_audio_packets);
+    TEST_ASSERT_EQUAL_UINT32(0, after_reset.tx_audio_send_failures);
+    TEST_ASSERT_EQUAL_UINT32(0, after_reset.rx_audio_duplicates);
+    TEST_ASSERT_EQUAL_UINT32(0, after_reset.rejoin_trigger_events);
+}
+
+void test_transport_stats_reject_null_output(void)
+{
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, network_get_transport_stats(NULL));
+    TEST_ASSERT_EQUAL_INT(ESP_ERR_INVALID_ARG, network_get_transport_stats_and_reset(NULL));
 }
 
 void test_get_tx_bytes_and_reset_clears_counter(void)
@@ -382,6 +429,16 @@ void test_get_rssi_returns_default_on_wifi_error(void)
     stub_sta_get_ap_info_result = ESP_ERR_INVALID_STATE;
 
     TEST_ASSERT_EQUAL_INT(-100, network_get_rssi());
+}
+
+void test_get_rssi_uses_cached_value_when_wifi_calls_blocked_in_self_organized_runtime(void)
+{
+    mesh_parent_rssi = -67;
+    mesh_self_organized_mode = true;
+    mesh_runtime_started = true;
+    stub_sta_get_ap_info_result = ESP_ERR_INVALID_STATE;
+
+    TEST_ASSERT_EQUAL_INT(-67, network_get_rssi());
 }
 
 void test_get_nearest_child_rssi_returns_default_when_not_root(void)
@@ -406,6 +463,17 @@ void test_get_nearest_child_rssi_selects_highest_station_rssi(void)
     TEST_ASSERT_EQUAL_MEMORY(expected_mac, nearest_child_addr.addr, sizeof(expected_mac));
 }
 
+void test_get_nearest_child_rssi_uses_cached_value_when_wifi_calls_blocked(void)
+{
+    is_mesh_root = true;
+    nearest_child_rssi = -58;
+    mesh_self_organized_mode = true;
+    mesh_runtime_started = true;
+    stub_ap_get_sta_list_result = ESP_ERR_INVALID_STATE;
+
+    TEST_ASSERT_EQUAL_INT(-58, network_get_nearest_child_rssi());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -420,9 +488,13 @@ int main(void)
     RUN_TEST(test_trigger_rejoin_blocked_during_cooldown);
     RUN_TEST(test_trigger_rejoin_trips_circuit_breaker_at_attempt_limit);
     RUN_TEST(test_trigger_rejoin_resets_attempt_window_after_timeout);
+    RUN_TEST(test_transport_stats_snapshot_and_reset_roundtrip);
+    RUN_TEST(test_transport_stats_reject_null_output);
     RUN_TEST(test_get_tx_bytes_and_reset_clears_counter);
     RUN_TEST(test_get_rssi_returns_default_on_wifi_error);
+    RUN_TEST(test_get_rssi_uses_cached_value_when_wifi_calls_blocked_in_self_organized_runtime);
     RUN_TEST(test_get_nearest_child_rssi_returns_default_when_not_root);
     RUN_TEST(test_get_nearest_child_rssi_selects_highest_station_rssi);
+    RUN_TEST(test_get_nearest_child_rssi_uses_cached_value_when_wifi_calls_blocked);
     return UNITY_END();
 }

@@ -216,6 +216,7 @@ void app_main(void) {
     int64_t last_button_ms = esp_timer_get_time() / 1000;
     int64_t last_display_ms = last_button_ms;
     int64_t last_stats_ms = last_button_ms;
+    uint32_t tx_obs_log_tick = 0;
 
     while (1) {
         esp_task_wdt_reset();
@@ -259,6 +260,27 @@ void app_main(void) {
                 
                 dashboard_log("TX: %lu frames, %lu nodes, %lukbps",
                              stats.frames_processed, status.connected_nodes, status.bandwidth_kbps);
+
+                tx_obs_log_tick++;
+                if ((tx_obs_log_tick % 5U) == 0U) {
+                    network_transport_stats_t transport_stats = {0};
+                    if (network_get_transport_stats(&transport_stats) == ESP_OK) {
+                        dashboard_log(
+                            "TX OBS: sent=%lu fail=%lu qfull=%lu bp=%lu, ctrl=%lu/%lu, churn(pc=%lu pd=%lu np=%lu rj=%lu/%lu/%lu)",
+                            (unsigned long)transport_stats.tx_audio_packets,
+                            (unsigned long)transport_stats.tx_audio_send_failures,
+                            (unsigned long)transport_stats.tx_audio_queue_full,
+                            (unsigned long)transport_stats.tx_audio_backpressure_level,
+                            (unsigned long)transport_stats.tx_control_packets,
+                            (unsigned long)transport_stats.tx_control_send_failures,
+                            (unsigned long)transport_stats.parent_connect_events,
+                            (unsigned long)transport_stats.parent_disconnect_events,
+                            (unsigned long)transport_stats.no_parent_events,
+                            (unsigned long)transport_stats.rejoin_trigger_events,
+                            (unsigned long)transport_stats.rejoin_blocked_events,
+                            (unsigned long)transport_stats.rejoin_circuit_breaker_events);
+                    }
+                }
             }
             
             dashboard_render_src(&status);

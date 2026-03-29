@@ -2,6 +2,7 @@
 
 #include "audio/es8388_audio.h"
 #include "audio/i2s_audio.h"
+#include "audio/rx_underrun_concealment.h"
 #include "audio/sequence_tracker.h"
 #include "network/mesh_net.h"
 
@@ -15,16 +16,59 @@ static const char *TAG = "adf_pipeline";
 #define RX_TEST_TONE_MODE 0
 
 // Static buffers moved from stack to reduce task stack usage
-static uint8_t s_feed_opus_tmp[2 + OPUS_MAX_FRAME_BYTES];  // 514 bytes
+static uint8_t s_feed_opus_tmp[3 + OPUS_MAX_FRAME_BYTES];  // flags + len + payload
 static int16_t s_prefill_silence[AUDIO_FRAME_SAMPLES];     // 3840 bytes
 
 static volatile uint16_t s_runtime_out_gain_pct = OUT_OUTPUT_GAIN_DEFAULT_PCT;
 
+#define OPUS_ITEM_FLAG_REQUEST_FEC 0x01
+
+static inline void update_peak_u32(uint32_t *dst, uint32_t value)
+{
+    if (dst && value > *dst) {
+        *dst = value;
+    }
+}
+
+static inline int16_t scale_q15(int16_t sample, uint16_t gain_q15)
+{
+    int32_t scaled = ((int32_t)sample * (int32_t)gain_q15) / (int32_t)RX_UNDERRUN_GAIN_Q15_ONE;
+    if (scaled > 32767) {
+        scaled = 32767;
+    } else if (scaled < -32768) {
+        scaled = -32768;
+    }
+    return (int16_t)scaled;
+}
+
+static inline void playback_wait_for_slot(int64_t *next_play_us, int64_t frame_period_us)
+{
+    if (!next_play_us || frame_period_us <= 0) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    if (*next_play_us == 0 || now > (*next_play_us + frame_period_us)) {
+        *next_play_us = now;
+    }
+
+    if (now < *next_play_us) {
+        int64_t wait_us = *next_play_us - now;
+        if (wait_us >= 1000) {
+            vTaskDelay(pdMS_TO_TICKS((wait_us + 999) / 1000));
+        }
+        now = esp_timer_get_time();
+    }
+
+    if (now > *next_play_us) {
+        *next_play_us = now;
+    }
+    *next_play_us += frame_period_us;
+}
+
 static float current_out_gain_multiplier(void) {
     uint16_t gain = s_runtime_out_gain_pct;
-    if (gain < OUT_OUTPUT_GAIN_MIN_PCT) {
-        gain = OUT_OUTPUT_GAIN_MIN_PCT;
-    } else if (gain > OUT_OUTPUT_GAIN_MAX_PCT) {
+    if (gain > OUT_OUTPUT_GAIN_MAX_PCT) {
         gain = OUT_OUTPUT_GAIN_MAX_PCT;
     }
     return (float)gain / 100.0f;
@@ -32,7 +76,7 @@ static float current_out_gain_multiplier(void) {
 
 esp_err_t adf_pipeline_set_out_gain_percent(uint16_t out_gain_pct)
 {
-    if (out_gain_pct < OUT_OUTPUT_GAIN_MIN_PCT || out_gain_pct > OUT_OUTPUT_GAIN_MAX_PCT) {
+    if (out_gain_pct > OUT_OUTPUT_GAIN_MAX_PCT) {
         return ESP_ERR_INVALID_ARG;
     }
     s_runtime_out_gain_pct = out_gain_pct;
@@ -64,37 +108,59 @@ esp_err_t adf_pipeline_feed_opus_impl(adf_pipeline_handle_t pipeline,
         sequence_tracker_update(pipeline->first_rx_packet,
                                 pipeline->last_rx_seq,
                                 seq,
-                                RX_PLC_MAX_FRAMES_PER_GAP);
+                                RX_PLC_MAX_FRAMES_PER_GAP,
+                                RX_MAX_STALE_FRAMES_TO_DROP);
     pipeline->first_rx_packet = seq_result.first_packet;
     pipeline->last_rx_seq = seq_result.last_seq;
     pipeline->stats.frames_dropped += seq_result.dropped_frames;
-
+    pipeline->stats.rx_seq_gap_frames += seq_result.dropped_frames;
+    if (seq_result.dropped_frames > 0) {
+        pipeline->stats.rx_seq_gap_events++;
+    }
     if (seq_result.request_fec) {
-        pipeline->pending_fec_recovery = true;
-    } else if (seq_result.plc_frames_to_inject > 0) {
-        pipeline->pending_fec_recovery = false;
+        pipeline->stats.rx_fec_requests++;
+    }
+
+    if (seq_result.hard_reset) {
+        pipeline->stats.rx_hard_reset_events++;
+        pipeline->stats.frames_dropped++;
+        return ESP_OK;
+    }
+
+    if (seq_result.late_or_duplicate) {
+        pipeline->stats.rx_late_or_duplicate_frames++;
+        pipeline->stats.frames_dropped++;
+        return ESP_OK;
+    }
+
+    if (seq_result.plc_frames_to_inject > 0) {
+        pipeline->stats.rx_plc_events++;
         for (uint8_t i = 0; i < seq_result.plc_frames_to_inject; i++) {
-            uint8_t plc_item[2] = {0, 0};
+            uint8_t plc_item[3] = {0, 0, 0};
             if (ring_buffer_write(pipeline->opus_buffer, plc_item, sizeof(plc_item)) != ESP_OK) {
                 break;
             }
+            pipeline->stats.rx_plc_frames_injected++;
         }
     }
 
-    size_t needed = 2 + opus_len;
+    size_t needed = 3 + opus_len;
     size_t available_space = OPUS_BUFFER_SIZE - ring_buffer_available(pipeline->opus_buffer);
     if (available_space < needed) {
+        pipeline->stats.rx_opus_buffer_overflows++;
         pipeline->stats.frames_dropped++;
         return ESP_ERR_NO_MEM;
     }
 
-    // Use static buffer instead of stack allocation (was 514 bytes on stack)
-    s_feed_opus_tmp[0] = (opus_len >> 8) & 0xFF;
-    s_feed_opus_tmp[1] = opus_len & 0xFF;
-    memcpy(&s_feed_opus_tmp[2], opus_data, opus_len);
+    // Use static buffer instead of stack allocation (was 515 bytes on stack)
+    s_feed_opus_tmp[0] = seq_result.request_fec ? OPUS_ITEM_FLAG_REQUEST_FEC : 0;
+    s_feed_opus_tmp[1] = (opus_len >> 8) & 0xFF;
+    s_feed_opus_tmp[2] = opus_len & 0xFF;
+    memcpy(&s_feed_opus_tmp[3], opus_data, opus_len);
 
-    esp_err_t ret = ring_buffer_write(pipeline->opus_buffer, s_feed_opus_tmp, 2 + opus_len);
+    esp_err_t ret = ring_buffer_write(pipeline->opus_buffer, s_feed_opus_tmp, 3 + opus_len);
     if (ret != ESP_OK) {
+        pipeline->stats.rx_opus_buffer_overflows++;
         pipeline->stats.frames_dropped++;
         return ESP_ERR_NO_MEM;
     }
@@ -112,7 +178,9 @@ void rx_decode_task(void *arg)
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
     while (pipeline->running) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        if (ring_buffer_available(pipeline->opus_buffer) == 0) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        }
 
         if (!pipeline->running) {
             break;
@@ -120,16 +188,24 @@ void rx_decode_task(void *arg)
 
         size_t item_size = 0;
         uint8_t *item;
+        uint8_t items_processed = 0;
 
-        while ((item = ring_buffer_receive_item(pipeline->opus_buffer, &item_size)) != NULL) {
-            if (item_size < 2) {
+        while (items_processed < RX_DECODE_MAX_ITEMS_PER_CYCLE &&
+               (item = ring_buffer_receive_item(pipeline->opus_buffer, &item_size)) != NULL) {
+            if (ring_buffer_available(pipeline->pcm_buffer) >= RX_PCM_HIGH_WATER_BYTES) {
+                ring_buffer_return_item(pipeline->opus_buffer, item);
+                break;
+            }
+
+            if (item_size < 3) {
                 ESP_LOGW(TAG, "Opus item too small: %u", (unsigned)item_size);
                 ring_buffer_return_item(pipeline->opus_buffer, item);
                 continue;
             }
 
-            uint16_t opus_len = (item[0] << 8) | item[1];
-            if (opus_len + 2 > item_size || opus_len > OPUS_MAX_FRAME_BYTES) {
+            uint8_t item_flags = item[0];
+            uint16_t opus_len = (item[1] << 8) | item[2];
+            if (opus_len + 3 > item_size || opus_len > OPUS_MAX_FRAME_BYTES) {
                 ESP_LOGW(TAG, "Invalid opus_len=%u for item_size=%u", opus_len, (unsigned)item_size);
                 ring_buffer_return_item(pipeline->opus_buffer, item);
                 continue;
@@ -139,10 +215,10 @@ void rx_decode_task(void *arg)
 
             uint8_t first_bytes[4] = {0};
             if (opus_len >= 4) {
-                first_bytes[0] = item[2];
-                first_bytes[1] = item[3];
-                first_bytes[2] = item[4];
-                first_bytes[3] = item[5];
+                first_bytes[0] = item[3];
+                first_bytes[1] = item[4];
+                first_bytes[2] = item[5];
+                first_bytes[3] = item[6];
             }
 
             int samples_decoded = 0;
@@ -156,10 +232,10 @@ void rx_decode_task(void *arg)
                     0
                 );
             } else {
-                if (pipeline->pending_fec_recovery) {
+                if ((item_flags & OPUS_ITEM_FLAG_REQUEST_FEC) != 0) {
                     int fec_samples = opus_decode(
                         pipeline->decoder,
-                        &item[2],
+                        &item[3],
                         opus_len,
                         pcm_frame,
                         AUDIO_FRAME_SAMPLES,
@@ -177,13 +253,12 @@ void rx_decode_task(void *arg)
                 }
                 samples_decoded = opus_decode(
                     pipeline->decoder,
-                    &item[2],
+                    &item[3],
                     opus_len,
                     pcm_frame,
                     AUDIO_FRAME_SAMPLES,
                     0
                 );
-                pipeline->pending_fec_recovery = false;
             }
 
             ring_buffer_return_item(pipeline->opus_buffer, item);
@@ -193,6 +268,7 @@ void rx_decode_task(void *arg)
                 (pipeline->stats.avg_decode_time_us * 7 + (uint32_t)decode_time) / 8;
 
             if (samples_decoded < 0) {
+                pipeline->stats.rx_decode_errors++;
                 static uint32_t decode_error_count = 0;
                 decode_error_count++;
                 if ((decode_error_count % 500) == 1) {
@@ -228,6 +304,12 @@ void rx_decode_task(void *arg)
                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
             }
+
+            items_processed++;
+        }
+
+        if (ring_buffer_available(pipeline->opus_buffer) > 0) {
+            taskYIELD();
         }
     }
 
@@ -247,7 +329,11 @@ void rx_playback_task(void *arg)
 
     bool prefilled = false;
     size_t prefill_bytes = AUDIO_FRAME_BYTES * JITTER_PREFILL_FRAMES;
-    uint32_t consecutive_misses = 0;
+    uint16_t rebuffer_prefill_frames = JITTER_PREFILL_FRAMES;
+    rx_underrun_state_t underrun_state = {0};
+    const int64_t frame_period_us = (int64_t)AUDIO_FRAME_MS * 1000;
+    int64_t next_play_us = 0;
+    int64_t prefill_wait_start_ms = 0;
 
     ESP_LOGI(TAG, "RX playback task started (event-driven), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
@@ -293,12 +379,24 @@ void rx_playback_task(void *arg)
         if (!prefilled) {
             if (available >= prefill_bytes) {
                 prefilled = true;
+                next_play_us = 0;
+                pipeline->stats.rx_prefill_events++;
+                if (prefill_wait_start_ms > 0) {
+                    int64_t now_ms = esp_timer_get_time() / 1000;
+                    if (now_ms > prefill_wait_start_ms) {
+                        pipeline->stats.rx_prefill_wait_total_ms += (uint32_t)(now_ms - prefill_wait_start_ms);
+                    }
+                    prefill_wait_start_ms = 0;
+                }
                 static uint32_t prefill_count = 0;
                 prefill_count++;
                 if (prefill_count <= 3 || (prefill_count % 50) == 0) {
                     ESP_LOGI(TAG, "Playback prefilled #%lu (%zu bytes)", prefill_count, available);
                 }
             } else {
+                if (prefill_wait_start_ms == 0) {
+                    prefill_wait_start_ms = esp_timer_get_time() / 1000;
+                }
 #if defined(CONFIG_USE_ES8388)
                 es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
 #else
@@ -344,12 +442,14 @@ void rx_playback_task(void *arg)
                 memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES);
 
 #if defined(CONFIG_USE_ES8388)
+                playback_wait_for_slot(&next_play_us, frame_period_us);
                 for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                     stereo_frame[2 * i]     = mono_frame[i];
                     stereo_frame[2 * i + 1] = mono_frame[i];
                 }
                 es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
+                playback_wait_for_slot(&next_play_us, frame_period_us);
                 i2s_audio_write_mono_as_stereo(mono_frame, AUDIO_FRAME_SAMPLES);
 #endif
                 frames_played = 1;
@@ -358,38 +458,62 @@ void rx_playback_task(void *arg)
 
         if (frames_played == 0 && prefilled) {
             pipeline->stats.buffer_underruns++;
-            consecutive_misses++;
-
-            uint8_t dynamic_frames = network_get_jitter_prefill_frames();
-            prefill_bytes = AUDIO_FRAME_BYTES * dynamic_frames;
+            rx_underrun_action_t underrun_action = rx_underrun_on_miss(&underrun_state);
+            update_peak_u32(&pipeline->stats.rx_consecutive_miss_peak, underrun_action.consecutive_misses);
 
             static uint32_t underrun_count = 0;
             underrun_count++;
             if (underrun_count <= 5 || (underrun_count % 20) == 0) {
                 ESP_LOGW(TAG, "Underrun #%lu (miss=%lu) - prefill target: %d frames (%zu bytes)",
-                         underrun_count, (unsigned long)consecutive_misses, dynamic_frames, prefill_bytes);
+                         underrun_count, (unsigned long)underrun_action.consecutive_misses,
+                         rebuffer_prefill_frames, prefill_bytes);
+            }
+
+            int16_t *conceal_frame = last_good_mono;
+            if (pipeline->output_mute || underrun_action.gain_q15 == 0) {
+                conceal_frame = s_prefill_silence;
+            } else if (underrun_action.gain_q15 < RX_UNDERRUN_GAIN_Q15_ONE) {
+                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                    mono_frame[i] = scale_q15(last_good_mono[i], underrun_action.gain_q15);
+                }
+                conceal_frame = mono_frame;
             }
 
 #if defined(CONFIG_USE_ES8388)
+            playback_wait_for_slot(&next_play_us, frame_period_us);
             for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                stereo_frame[2 * i]     = last_good_mono[i];
-                stereo_frame[2 * i + 1] = last_good_mono[i];
+                stereo_frame[2 * i]     = conceal_frame[i];
+                stereo_frame[2 * i + 1] = conceal_frame[i];
             }
             es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
-            i2s_audio_write_mono_as_stereo(last_good_mono, AUDIO_FRAME_SAMPLES);
+            playback_wait_for_slot(&next_play_us, frame_period_us);
+            i2s_audio_write_mono_as_stereo(conceal_frame, AUDIO_FRAME_SAMPLES);
 #endif
 
-            if (consecutive_misses >= 3) {
+            if (underrun_action.force_rebuffer) {
                 prefilled = false;
-                consecutive_misses = 0;
+                prefill_wait_start_ms = esp_timer_get_time() / 1000;
+                next_play_us = 0;
+                pipeline->stats.rx_underrun_rebuffer_events++;
+                rebuffer_prefill_frames = network_get_jitter_prefill_frames();
+                if (rebuffer_prefill_frames < JITTER_PREFILL_FRAMES) {
+                    rebuffer_prefill_frames = JITTER_PREFILL_FRAMES;
+                } else if (rebuffer_prefill_frames > JITTER_BUFFER_FRAMES) {
+                    rebuffer_prefill_frames = JITTER_BUFFER_FRAMES;
+                }
+                prefill_bytes = AUDIO_FRAME_BYTES * rebuffer_prefill_frames;
+                rx_underrun_reset(&underrun_state);
             }
         } else if (frames_played > 0) {
-            consecutive_misses = 0;
+            rx_underrun_reset(&underrun_state);
         }
 
         pipeline->stats.buffer_fill_percent =
             (ring_buffer_available(pipeline->pcm_buffer) * 100) / PCM_BUFFER_SIZE;
+        if (pipeline->stats.buffer_fill_percent > pipeline->stats.buffer_fill_peak_percent) {
+            pipeline->stats.buffer_fill_peak_percent = pipeline->stats.buffer_fill_percent;
+        }
     }
 
     ESP_LOGI(TAG, "RX playback task exiting");

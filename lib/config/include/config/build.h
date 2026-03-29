@@ -59,9 +59,9 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               64000     // 64 kbps target for higher-fidelity mesh audio
+#define OPUS_BITRATE               48000     // 48 kbps reduces airtime under multi-OUT load while keeping good quality
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage
-#define OPUS_EXPECTED_LOSS_PCT     8         // Hint for in-band FEC tuning under mesh burst loss
+#define OPUS_EXPECTED_LOSS_PCT     10         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 
 // Opus frame duration is tied to the pipeline PCM frame duration
@@ -99,11 +99,12 @@
 #define MESH_ID                "MeshNet-Audio-48"
 #define MESH_SSID              MESH_ID
 #define MESH_PASSWORD          "meshnet123"
-#define MESH_CHANNEL           6
+#define MESH_DISABLED_ROUTER_SSID "MESHNET_DISABLED"  // Valid non-empty placeholder required by esp_mesh_set_config
+#define MESH_CHANNEL           11        // Channel 11 for reduced 2.4GHz interference
 #define MESH_ROUTE_TABLE_SIZE  50        // Max nodes in routing table
-#define MESH_AP_ASSOC_EXPIRE_S 90        // Longer auth window to reduce churn on relay links
-#define MESH_MAX_LAYER         2         // Flat topology for close-range multi-OUT stability
-#define MESH_XON_QSIZE         64        // Mesh RX queue size
+#define MESH_AP_ASSOC_EXPIRE_S 120       // Extended auth window to prevent audio-load disconnects
+#define MESH_MAX_LAYER         6         // Allow relay paths for weak/far OUT nodes
+#define MESH_XON_QSIZE         128       // Increased mesh RX queue for burst tolerance
 // RF power in quarter-dBm units (80 = 20 dBm max, 52 = 13 dBm).
 // In very close-range setups, reducing TX power can prevent receiver saturation/auth churn.
 #define WIFI_TX_POWER_QDBM     52
@@ -117,6 +118,11 @@
 #define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps
 #define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
 #define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
+// Demo transport baseline selected from 2026-03-29 send-mode A/B artifact.
+// Root fanout runs with MESH_DATA_GROUP | MESH_DATA_NONBLOCK in mesh_tx.c.
+#define TRANSPORT_SETTINGS_PROFILE_ID "baseline-current"
+#define TRANSPORT_ROOT_FANOUT_MODE    "GROUP|NONBLOCK"
+#define TRANSPORT_TO_ROOT_MODE        "TODS|NONBLOCK"
 
 #define STREAM_SILENCE_TIMEOUT_MS  3000
 // Require sustained silence beyond STREAM_SILENCE_TIMEOUT_MS before declaring loss.
@@ -158,17 +164,32 @@
 #define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_MONO * PCM_BUFFER_FRAMES)  // 61440 (16×3840)
 
 // Opus buffer includes 2-byte length prefix per frame
-#define OPUS_BUFFER_ITEM_MAX       (2 + OPUS_MAX_FRAME_BYTES)  // 514
+#define OPUS_BUFFER_ITEM_MAX       (3 + OPUS_MAX_FRAME_BYTES)  // flags + len + payload
 #define OPUS_BUFFER_SIZE           (OPUS_BUFFER_ITEM_MAX * OPUS_BUFFER_FRAMES)  // 4112
 
 // Jitter buffer (in codec frames)
 // Priority is smooth, uninterrupted playback under multi-node contention.
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
 #define JITTER_BUFFER_FRAMES       8    // 8 × 20ms = 160ms max depth
-#define JITTER_PREFILL_FRAMES      4    // 4 × 20ms = 80ms startup prefill
+#define JITTER_PREFILL_FRAMES      4    // baseline-current profile: 80ms startup prefill
 // Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
 // This prevents long loss bursts from flooding buffers while still smoothing short gaps.
 #define RX_PLC_MAX_FRAMES_PER_GAP  2
+// Drop packets that arrive this many frames behind the latest accepted sequence.
+// Larger backward jumps are treated as sequence discontinuities (new baseline).
+#define RX_MAX_STALE_FRAMES_TO_DROP 24
+// Decode fairness cap: limit RX decode bursts per scheduler slice to avoid CPU monopolization.
+#define RX_DECODE_MAX_ITEMS_PER_CYCLE 2
+// Stop decoding when PCM queue is near full so playback cadence can drain without catch-up bursts.
+#define RX_PCM_HIGH_WATER_FRAMES   (PCM_BUFFER_FRAMES - 2)
+#define RX_PCM_HIGH_WATER_BYTES    (AUDIO_FRAME_BYTES_MONO * RX_PCM_HIGH_WATER_FRAMES)
+// RX underrun smoothing policy:
+// - hold last good frame briefly to mask isolated misses
+// - then fade toward silence for sustained misses
+// - finally force rebuffer to avoid playing stale tails indefinitely
+#define RX_UNDERRUN_CONCEAL_FRAMES  3
+#define RX_UNDERRUN_FADE_FRAMES     4
+#define RX_UNDERRUN_REBUFFER_MISSES 8
 
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)
 #define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_MONO * JITTER_PREFILL_FRAMES)
@@ -254,12 +275,12 @@
 // UDA1334 and similar I2S DACs have no hardware volume control
 // Increase if audio is too quiet, decrease if it clips (distorts)
 // Start at 2.0x to compensate for quiet Opus decoder output
-#define RX_OUTPUT_VOLUME           2.0f   // 200% = +6dB amplification
+#define RX_OUTPUT_VOLUME           2.0f   // baseline-current profile: 200% (+6dB) amplification
 
 // Output gain control (mixer feature) - range 0-400% (0.0x to 4.0x multiplier)
 #define OUT_OUTPUT_GAIN_MIN_PCT    0     // 0% = mute
-#define OUT_OUTPUT_GAIN_DEFAULT_PCT 200  // 200% = 2.0x (matches RX_OUTPUT_VOLUME)
-#define OUT_OUTPUT_GAIN_MAX_PCT    400   // 400% = 4.0x max amplification
+#define OUT_OUTPUT_GAIN_DEFAULT_PCT 200  // baseline-current profile: 2.0x default gain
+#define OUT_OUTPUT_GAIN_MAX_PCT    400   // baseline-current profile: 4.0x max amplification
 
 // Mixer gain range constants (dB). Used by portal API and adf_pipeline gain setters.
 // Values <= MIXER_MIN_GAIN_DB are treated as -inf (silence).
@@ -299,6 +320,9 @@
 _Static_assert((AUDIO_FRAME_MS % I2S_DMA_CHUNK_MS) == 0,
                "AUDIO_FRAME_MS must be a multiple of I2S_DMA_CHUNK_MS");
 
+_Static_assert(sizeof(MESH_DISABLED_ROUTER_SSID) > 1,
+               "MESH_DISABLED_ROUTER_SSID must be non-empty");
+
 // FFT size must fit inside one codec PCM frame
 _Static_assert(FFT_ANALYSIS_SIZE <= AUDIO_FRAME_SAMPLES,
                "FFT_ANALYSIS_SIZE must be <= AUDIO_FRAME_SAMPLES");
@@ -311,9 +335,21 @@ _Static_assert((FFT_ANALYSIS_SIZE & (FFT_ANALYSIS_SIZE - 1)) == 0,
 _Static_assert(JITTER_PREFILL_FRAMES <= JITTER_BUFFER_FRAMES,
                "JITTER_PREFILL_FRAMES must be <= JITTER_BUFFER_FRAMES");
 
+_Static_assert(RX_UNDERRUN_CONCEAL_FRAMES >= 1,
+               "RX_UNDERRUN_CONCEAL_FRAMES must be >= 1");
+
+_Static_assert(RX_UNDERRUN_FADE_FRAMES >= 1,
+               "RX_UNDERRUN_FADE_FRAMES must be >= 1");
+
+_Static_assert(RX_UNDERRUN_REBUFFER_MISSES >= (RX_UNDERRUN_CONCEAL_FRAMES + RX_UNDERRUN_FADE_FRAMES),
+               "RX_UNDERRUN_REBUFFER_MISSES must allow conceal+fade before forced rebuffer");
+
 // Jitter target must fit in the actual PCM ring buffer capacity
 _Static_assert(JITTER_BUFFER_FRAMES <= PCM_BUFFER_FRAMES,
                "JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES");
+
+_Static_assert(RX_PCM_HIGH_WATER_FRAMES >= JITTER_PREFILL_FRAMES,
+               "RX_PCM_HIGH_WATER_FRAMES must stay above startup prefill");
 
 #ifdef NET_FRAME_HEADER_SIZE
 // Network packet buffer sizing must include the largest supported batched Opus payload.

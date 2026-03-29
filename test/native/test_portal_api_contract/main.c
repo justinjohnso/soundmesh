@@ -369,6 +369,22 @@ static bool validate_ota_contract(const char *json)
     return true;
 }
 
+static bool validate_transport_contract(const char *json)
+{
+    char profile[64] = {0};
+    char root_fanout_mode[64] = {0};
+    char to_root_mode[64] = {0};
+    if (!field_string(json, "profile", profile, sizeof(profile)) ||
+        !field_string(json, "rootFanoutMode", root_fanout_mode, sizeof(root_fanout_mode)) ||
+        !field_string(json, "toRootMode", to_root_mode, sizeof(to_root_mode))) {
+        return false;
+    }
+
+    return strcmp(profile, "baseline-current") == 0 &&
+           strcmp(root_fanout_mode, "GROUP|NONBLOCK") == 0 &&
+           strcmp(to_root_mode, "TODS|NONBLOCK") == 0;
+}
+
 static bool validate_fft_bins_field(const char *json)
 {
     const char *start = NULL;
@@ -603,6 +619,21 @@ static bool validate_status_contract(const char *json)
         }
     }
 
+    const char *transport_start = NULL;
+    const char *transport_end = NULL;
+    if (field_object_span(json, "transport", &transport_start, &transport_end)) {
+        size_t len = (size_t)(transport_end - transport_start + 1);
+        char transport_json[256];
+        if (len >= sizeof(transport_json)) {
+            return false;
+        }
+        memcpy(transport_json, transport_start, len);
+        transport_json[len] = '\0';
+        if (!validate_transport_contract(transport_json)) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -802,6 +833,7 @@ static const char *VALID_STATUS_JSON =
     "],"
     "\"monitor\":[{\"seq\":1,\"line\":\"ok\"}],"
     "\"ota\":{\"enabled\":true,\"mode\":\"https\"},"
+    "\"transport\":{\"profile\":\"baseline-current\",\"rootFanoutMode\":\"GROUP|NONBLOCK\",\"toRootMode\":\"TODS|NONBLOCK\"},"
     "\"uplink\":{"
       "\"enabled\":true,\"configured\":true,\"rootApplied\":false,\"pendingApply\":true,"
       "\"ssid\":\"<configured>\",\"lastError\":\"\",\"updatedMs\":99"

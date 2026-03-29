@@ -499,6 +499,16 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         off += snprintf(buf + off, buf_size - off, ",\"ota\":{\"enabled\":true,\"mode\":\"https\"}");
     }
 
+    if (off < (int)buf_size - 256) {
+        off += snprintf(
+            buf + off,
+            buf_size - off,
+            ",\"transport\":{\"profile\":\"%s\",\"rootFanoutMode\":\"%s\",\"toRootMode\":\"%s\"}",
+            TRANSPORT_SETTINGS_PROFILE_ID,
+            TRANSPORT_ROOT_FANOUT_MODE,
+            TRANSPORT_TO_ROOT_MODE);
+    }
+
     if (off < (int)buf_size - 196) {
         network_uplink_status_t uplink = {0};
         if (network_get_uplink_status(&uplink) == ESP_OK) {

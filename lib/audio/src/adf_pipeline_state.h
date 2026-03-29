@@ -35,8 +35,6 @@ struct adf_pipeline {
     uint16_t tx_seq;
     uint16_t last_rx_seq;
     bool first_rx_packet;
-    bool pending_fec_recovery;
-
     float fft_bins[FFT_PORTAL_BIN_COUNT];
     bool fft_valid;
     uint32_t fft_frame_counter;

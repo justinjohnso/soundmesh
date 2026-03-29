@@ -106,6 +106,7 @@ static uint32_t last_packet_time = 0;
 static uint32_t stream_silence_confirm_start = 0;
 static int64_t last_stream_rx_ms = 0;
 static int64_t last_rejoin_attempt_ms = 0;
+static uint32_t rx_obs_log_tick = 0;
 
 // One-way latency estimation from audio frame timestamps
 // Root puts esp_timer ms in each frame header; we compare to our local clock.
@@ -448,6 +449,56 @@ void app_main(void) {
                 status.loss_pct = loss_pct;
                 dashboard_log("RX: %lu pkts, %lu drops (%.1f%%), buf=%u%%",
                              packets_received, dropped_packets, loss_pct, stats.buffer_fill_percent);
+
+                rx_obs_log_tick++;
+                if ((rx_obs_log_tick % 5U) == 0U) {
+                    dashboard_log(
+                        "RX OBS: gap=%lu/%lu late=%lu hard=%lu fec=%lu plc=%lu/%lu ovf=%lu dec=%lu und=%lu rebuf=%lu miss_pk=%lu prefill=%lu wait_ms=%lu buf_peak=%u%%",
+                        (unsigned long)stats.rx_seq_gap_events,
+                        (unsigned long)stats.rx_seq_gap_frames,
+                        (unsigned long)stats.rx_late_or_duplicate_frames,
+                        (unsigned long)stats.rx_hard_reset_events,
+                        (unsigned long)stats.rx_fec_requests,
+                        (unsigned long)stats.rx_plc_events,
+                        (unsigned long)stats.rx_plc_frames_injected,
+                        (unsigned long)stats.rx_opus_buffer_overflows,
+                        (unsigned long)stats.rx_decode_errors,
+                        (unsigned long)stats.buffer_underruns,
+                        (unsigned long)stats.rx_underrun_rebuffer_events,
+                        (unsigned long)stats.rx_consecutive_miss_peak,
+                        (unsigned long)stats.rx_prefill_events,
+                        (unsigned long)stats.rx_prefill_wait_total_ms,
+                        (unsigned)stats.buffer_fill_peak_percent);
+
+                    network_transport_stats_t transport_stats = {0};
+                    if (network_get_transport_stats(&transport_stats) == ESP_OK) {
+                        dashboard_log(
+                            "RX NET: rx=%lu dup=%lu ttl0=%lu inv=%lu/%lu/%lu batch=%lu/%lu cb_miss=%lu recv=%lu/%lu ctrl=%lu/%lu/%lu/%lu/%lu churn=%lu/%lu/%lu/%lu rj=%lu/%lu/%lu",
+                            (unsigned long)transport_stats.rx_audio_packets,
+                            (unsigned long)transport_stats.rx_audio_duplicates,
+                            (unsigned long)transport_stats.rx_audio_ttl_expired,
+                            (unsigned long)transport_stats.rx_audio_invalid_header,
+                            (unsigned long)transport_stats.rx_audio_invalid_version,
+                            (unsigned long)transport_stats.rx_audio_invalid_payload,
+                            (unsigned long)transport_stats.rx_audio_batches,
+                            (unsigned long)transport_stats.rx_audio_batch_frames,
+                            (unsigned long)transport_stats.rx_audio_callback_missing,
+                            (unsigned long)transport_stats.mesh_recv_errors,
+                            (unsigned long)transport_stats.mesh_recv_empty_packets,
+                            (unsigned long)transport_stats.rx_heartbeat_packets,
+                            (unsigned long)transport_stats.rx_control_packets,
+                            (unsigned long)transport_stats.rx_ping_packets,
+                            (unsigned long)transport_stats.rx_pong_packets,
+                            (unsigned long)transport_stats.rx_stream_announce_packets,
+                            (unsigned long)transport_stats.parent_connect_events,
+                            (unsigned long)transport_stats.parent_disconnect_events,
+                            (unsigned long)transport_stats.no_parent_events,
+                            (unsigned long)transport_stats.scan_done_events,
+                            (unsigned long)transport_stats.rejoin_trigger_events,
+                            (unsigned long)transport_stats.rejoin_blocked_events,
+                            (unsigned long)transport_stats.rejoin_circuit_breaker_events);
+                    }
+                }
             }
             
             dashboard_render_out(&status);

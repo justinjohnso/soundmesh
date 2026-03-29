@@ -1,0 +1,30 @@
+{
+  "version": "2025-10-initial-calibration",
+  "description": "Initial practical pass/warn/fail calibration for two-node demo-quality gating.",
+  "calibration_notes": [
+    "Bands are calibrated from synthetic degradations of a clean tonal/chirp fixture and should be re-anchored with hardware captures before release sign-off.",
+    "Policy intent: fail = robotic/stuttery and not demo-safe, warn = borderline and requires reviewer judgment, pass = demo acceptable."
+  ],
+  "metrics": {
+    "dropout_ratio_pct": {
+      "direction": "lower_is_better",
+      "pass_max": 1.0,
+      "warn_max": 6.0
+    },
+    "lag_ms_std": {
+      "direction": "lower_is_better",
+      "pass_max": 12.0,
+      "warn_max": 25.0
+    },
+    "spectral_deviation_db": {
+      "direction": "lower_is_better",
+      "pass_max": 38.0,
+      "warn_max": 46.0
+    },
+    "quality_score": {
+      "direction": "higher_is_better",
+      "pass_min": 78.0,
+      "warn_min": 68.0
+    }
+  }
+}

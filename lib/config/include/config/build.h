@@ -59,7 +59,7 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               24000     // 24 kbps (lower airtime for GROUP multicast stability)
+#define OPUS_BITRATE               64000     // 64 kbps target for higher-fidelity mesh audio
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage
 #define OPUS_EXPECTED_LOSS_PCT     8         // Hint for in-band FEC tuning under mesh burst loss
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
@@ -114,9 +114,7 @@
 //   - Batch 1 → 50 pps, losing 1 packet = 20ms dropout (barely audible)
 //   - Batch 2 → 25 pps, losing 1 packet = 40ms dropout (PLC can mask short gaps)
 //   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
-// Demo quality profile: use single-frame packets so isolated losses are only 20ms.
-// This increases packet rate (50 pps) but significantly reduces robot/stutter artifacts.
-#define MESH_FRAMES_PER_PACKET     1   // 1 frame per packet = 50 pps (higher quality under loss)
+#define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps
 #define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
 #define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
 
@@ -153,8 +151,8 @@
 
 // Buffer depths in codec frames
 // JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES (validated by static_assert below)
-#define PCM_BUFFER_FRAMES          16   // 16 × 20ms = 320ms PCM buffer
-#define OPUS_BUFFER_FRAMES         14   // 14 × 20ms = 280ms compressed burst tolerance
+#define PCM_BUFFER_FRAMES          8    // 8 × 20ms = 160ms PCM buffer
+#define OPUS_BUFFER_FRAMES         8    // 8 × 20ms = 160ms compressed burst tolerance
 
 // Derived: buffer sizes in bytes
 #define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_MONO * PCM_BUFFER_FRAMES)  // 61440 (16×3840)
@@ -166,11 +164,11 @@
 // Jitter buffer (in codec frames)
 // Priority is smooth, uninterrupted playback under multi-node contention.
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
-#define JITTER_BUFFER_FRAMES       16   // 16 × 20ms = 320ms max depth (matches PCM buffer)
-#define JITTER_PREFILL_FRAMES      16   // 16 × 20ms = 320ms full-depth prefill for smoother playback
+#define JITTER_BUFFER_FRAMES       8    // 8 × 20ms = 160ms max depth
+#define JITTER_PREFILL_FRAMES      4    // 4 × 20ms = 80ms startup prefill
 // Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
 // This prevents long loss bursts from flooding buffers while still smoothing short gaps.
-#define RX_PLC_MAX_FRAMES_PER_GAP  4
+#define RX_PLC_MAX_FRAMES_PER_GAP  2
 
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)
 #define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_MONO * JITTER_PREFILL_FRAMES)

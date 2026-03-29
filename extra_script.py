@@ -1,12 +1,14 @@
 Import("env")
 
+import atexit
 from pathlib import Path
-import shutil
 
 # Get the PIOENV (e.g., "src" or "out")
 pio_env = env["PIOENV"]
 project_dir = Path(env["PROJECT_DIR"])
 build_dir = project_dir / ".pio" / "build" / pio_env
+compile_db_path = project_dir / ".pio" / "build" / "compile_commands.json"
+env.Replace(COMPILATIONDB_PATH=str(compile_db_path))
 
 # Define the source file based on the environment
 if pio_env == "src":
@@ -20,25 +22,36 @@ else:
 
 print(message)
 
-# PlatformIO's ESP-IDF builder expects a generated sdkconfig.<env> cache file.
-# Keep it synchronized with sdkconfig.<env>.defaults so stack/memory config updates
-# are applied reliably across builds.
-sdkconfig_cache = project_dir / f"sdkconfig.{pio_env}"
+# Keep root clean from stale generated artifacts.
+root_artifacts = [
+    project_dir / "compile_commands.json",
+    project_dir / f"sdkconfig.{pio_env}",
+]
+for artifact in root_artifacts:
+    if artifact.exists():
+        artifact.unlink()
+        print(f"[cleanup] removed stale {artifact.name}")
+
+# Track sdkconfig defaults in build workspace so config updates still force
+# deterministic reconfigure behavior without creating root-level cache files.
 sdkconfig_defaults = project_dir / f"sdkconfig.{pio_env}.defaults"
+sdkconfig_stamp = build_dir / "sdkconfig.defaults.snapshot"
 if not sdkconfig_defaults.exists():
     raise FileNotFoundError(f"Missing {sdkconfig_defaults}")
 
 defaults_text = sdkconfig_defaults.read_text()
-if (not sdkconfig_cache.exists()) or (sdkconfig_cache.read_text() != defaults_text):
-    sdkconfig_cache.write_text(defaults_text)
-    print(f"[sdkconfig] synchronized {sdkconfig_cache.name} from {sdkconfig_defaults.name}")
+needs_reconfigure = False
+if (not sdkconfig_stamp.exists()) or (sdkconfig_stamp.read_text() != defaults_text):
+    build_dir.mkdir(parents=True, exist_ok=True)
+    sdkconfig_stamp.write_text(defaults_text)
+    needs_reconfigure = True
+    print(f"[sdkconfig] detected defaults update for {pio_env}; forcing reconfigure")
 
 # Generate src/CMakeLists.txt with environment-specific sources
 cmake_content = f'idf_component_register(SRCS "{app_sources}")\n'
 cmake_path = project_dir / "src" / "CMakeLists.txt"
 
 # Check if content changed — if so, force CMake reconfigure
-needs_reconfigure = False
 if cmake_path.exists():
     existing = cmake_path.read_text()
     if existing != cmake_content:
@@ -56,3 +69,15 @@ if needs_reconfigure:
     if cmake_cache.exists():
         cmake_cache.unlink()
         print(f"[cmake] Removed {cmake_cache} to force reconfigure")
+
+
+def cleanup_root_artifacts(source, target, env):
+    for artifact in root_artifacts:
+        if artifact.exists():
+            artifact.unlink()
+            print(f"[cleanup] removed generated {artifact.name}")
+
+
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.elf", cleanup_root_artifacts)
+env.AddPostAction("envdump", cleanup_root_artifacts)
+atexit.register(lambda: cleanup_root_artifacts(None, None, None))

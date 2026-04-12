@@ -135,7 +135,32 @@ Stage 1 progress snapshot:
 
 ---
 
-## Feature-expansion lane (after Stage 0 gates pass)
+## Stage 3 — Demo Readiness (1-Week Deadline)
+
+### 3.1 Positional Audio DSP Engine
+- Implement a basic DSP effect chain in the RX pipeline (`lib/audio/`).
+- Add support for distance-based low-pass filtering and spatial panning.
+- Ensure parameters can be updated in real-time without audio glitches.
+
+### 3.2 Positional Metadata Protocol
+- Define `NET_PKT_TYPE_POSITIONS` in `mesh_net.h`.
+- Implement a broadcast mechanism from the SRC (root) to all nodes.
+- Update `portal_state` to store and sync (x, y, z) coordinates for all discovered nodes.
+
+### 3.3 Live Network Map UI
+- Build a `NetworkMap.astro` visualization in the portal using SVG or Canvas.
+- Use the existing `nodes` array in `/api/status` to render the mesh graph.
+- Allow users to drag-and-drop nodes in the UI to set their (x, y) coordinates.
+- Implement `POST /api/mesh/positions` to persist coordinate assignments.
+
+### 3.4 Scale and Endurance (4-node mesh)
+- Conduct stress tests with 1 SRC + 3 OUT nodes.
+- Verify that the network map and positional audio don't introduce lag or jitter.
+- Confirm hardware power requirements (UDA1334 VIN at 5V) are met for all demo units.
+
+---
+
+## Feature-expansion lane (after Stage 0-3 gates pass)
 
 These are intentionally sequenced after pilot blockers:
 

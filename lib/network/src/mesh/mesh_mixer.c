@@ -72,7 +72,12 @@ static esp_err_t mesh_mixer_apply_local(const network_mixer_status_t *next, bool
     esp_err_t err = ESP_OK;
     if (mixer_apply_callback) {
         err = mixer_apply_callback(&s_mixer);
+        if (err != ESP_OK) {
+            mixer_set_error("apply_callback_failed");
+            return err;
+        }
     }
+
 
     s_mixer.pending_apply = false;
     s_mixer.applied = (err == ESP_OK);
@@ -242,7 +247,7 @@ esp_err_t network_set_mixer_config(uint16_t out_gain_pct) {
     return network_set_mixer_state(&next);
 }
 
-esp_err_t network_get_mixer_status(network_mixer_status_t *out) {
+esp_err_t network_get_mixer_state(network_mixer_status_t *out) {
     if (!out) {
         return ESP_ERR_INVALID_ARG;
     }

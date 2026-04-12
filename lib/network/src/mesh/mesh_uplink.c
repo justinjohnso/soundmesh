@@ -151,26 +151,15 @@ void mesh_uplink_handle_control(const uplink_ctrl_message_t *msg) {
     }
 }
 
-esp_err_t network_set_uplink_config(const char *ssid, const char *password, bool enabled) {
-    uplink_ctrl_message_t msg = {
-        .subtype = enabled ? UPLINK_CTRL_SET : UPLINK_CTRL_CLEAR,
-        .enabled = enabled,
-    };
-
-    if (enabled) {
-        if (!ssid || ssid[0] == '\0') {
-            return ESP_ERR_INVALID_ARG;
-        }
-        snprintf(msg.ssid, sizeof(msg.ssid), "%s", ssid);
-        snprintf(msg.password, sizeof(msg.password), "%s", password ? password : "");
-    }
+esp_err_t network_set_uplink_config(const uplink_ctrl_message_t *msg) {
+    if (!msg) return ESP_ERR_INVALID_ARG;
 
     uplink_ctrl_packet_t pkt;
-    if (!uplink_ctrl_encode(&msg, &pkt)) {
+    if (!uplink_ctrl_encode(msg, &pkt)) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    mesh_uplink_handle_control(&msg);
+    mesh_uplink_handle_control(msg);
     if (!is_mesh_root) {
         return network_send_control((const uint8_t *)&pkt, sizeof(pkt));
     }

@@ -77,6 +77,46 @@ Use the SRC monitor port for `--src-port` and verify serial output stays healthy
 - `ENABLE_OUT_USB_PORTAL_NETWORK=0`
 - Portal enablement/continuation requires approved runtime evidence markers.
 
+## USB compound no-manual-reset update checklist (SRC)
+
+- Decision lock for this run: use OTA over existing `/api/ota`; do **not** rely on runtime direct-CDC `esptool` for no-button updates.
+- Direct runtime `esptool` probe result: `0/1` success (`sync failed: No serial data received` in app mode).
+- Decision source file: `docs/operations/runtime-evidence/usb-compound-autoflash-esptool-matrix.md`
+
+Minimum required arguments for `tools/usb_compound_autoflash.py`:
+
+- `--base-url` (portal root, no path; example: `http://192.168.4.1`)
+- `--firmware-url` (HTTPS `.bin` URL reachable from SRC; existing `/api/ota` expects this URL)
+- `--auth-mode` (`bearer` or `x-token`; selects token header format)
+- `--token` (**always required** by `tools/usb_compound_autoflash.py`; no unauthenticated mode in this helper contract)
+
+Dry-run preflight (recommended before real trigger):
+
+```bash
+python3 tools/usb_compound_autoflash.py \
+  --base-url http://192.168.4.1 \
+  --firmware-url https://fw.example.com/releases/src-canary.bin \
+  --auth-mode bearer \
+  --token "$SOUNDMESH_TOKEN" \
+  --dry-run
+```
+
+No-manual-reset execution flow:
+
+- Verify firmware URL, token mode, and token are correct.
+- Run dry-run command and confirm planned POST payload targets `/api/ota`.
+- Run the same command without `--dry-run` to trigger OTA and poll status:
+
+```bash
+python3 tools/usb_compound_autoflash.py \
+  --base-url http://192.168.4.1 \
+  --firmware-url https://fw.example.com/releases/src-canary.bin \
+  --auth-mode bearer \
+  --token "$SOUNDMESH_TOKEN"
+```
+
+- Treat non-zero exit as failed update; stop rollout and follow rollback checklist below.
+
 ## OTA rollback verification checklist
 
 - Trigger OTA to one canary node only.

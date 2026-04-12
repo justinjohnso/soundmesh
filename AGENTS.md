@@ -28,7 +28,9 @@ pio run -e out -t uploadfs
 ```bash
 cd lib/control/portal-ui
 pnpm install
-pnpm run dev --demo
+pnpm run dev --demo       # Dev server with mock data
+pnpm run build            # Build static assets
+pnpm run export:spiffs    # Copy dist/ to data/ for SPIFFS upload
 ```
 
 ### Verify Builds
@@ -38,11 +40,15 @@ pio run -e src && pio run -e out
 ```
 
 ### Run Tests
-Run native Unity unit tests for transport/frame parsing, sequence-gap tracking, and portal API contract validation (`/api/status`, `/api/uplink`, `/api/ota`).
-PlatformIO auto-discovers every `test/native/test_*` suite, including `test_portal_api_contract`:
+Run native Unity unit tests. PlatformIO auto-discovers every `test/native/test_*` suite:
 ```bash
 pio test -e native
 ```
+
+Current test suites (12): `test_frame_codec`, `test_sequence_tracker`, `test_mesh_dedupe`,
+`test_mesh_queries`, `test_mesh_uplink_runtime`, `test_mixer_control`, `test_portal_api_contract`,
+`test_portal_json_extract`, `test_control_metrics_serialization`, `test_rx_underrun_concealment`,
+`test_uplink_control`.
 
 Recommended full validation:
 ```bash
@@ -187,7 +193,7 @@ sdkconfig.out.defaults     → OUT-specific (I2S TX channel)
 - **Ring buffers**: BYTEBUF mode for PCM streams, NOSPLIT/item mode for Opus frames
 - **Event-driven**: Tasks block on `ulTaskNotifyTake()` — no busy-wait polling loops
 
-## Known Issues & Bugs (as of Feb 2025)
+## Known Issues & Bugs
 
 ### Fixed (Feb 2025)
 
@@ -352,3 +358,9 @@ soundmesh/
 5. **Keep working trees clean:** before context-switching, either commit, or explicitly stash with a clear label.
 6. **Merge readiness gate:** merge to `main` only after relevant checks pass (`pio test -e native` and `pio run -e src && pio run -e out` unless docs-only change).
 7. **PR-first integration:** prefer merge via PR (even solo) to preserve review history and rollback clarity.
+
+## Context Management Note
+
+This AGENTS.md is comprehensive (~360 lines) because it serves as the single architecture reference.
+Path-scoped rules in `.claude/rules/` handle file-type-specific conventions (C/ESP-IDF patterns,
+portal-ui patterns) and only load when working on matching files, keeping context lean for focused tasks.

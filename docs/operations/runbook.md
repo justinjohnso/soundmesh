@@ -56,6 +56,16 @@ This runbook is the active operator reference for two-node pilot operation (`SRC
 8. For OTA canary, verify rollback confirmation log on first boot:
    - `OTA image confirmed valid; rollback canceled`
 
+### USB-NCM OTA autoflash canary path (SRC, no manual reset)
+
+- Decision lock for this run: `docs/operations/runtime-evidence/usb-compound-autoflash-esptool-matrix.md` → **Final decision** is OTA-over-USB-NCM primary.
+- Use `tools/usb_compound_autoflash.py` as the canary trigger/poll helper for `/api/ota`:
+  - Dry run first:
+    - `python3 tools/usb_compound_autoflash.py --base-url http://192.168.4.1 --firmware-url https://fw.example.com/releases/src-canary.bin --auth-mode bearer --token "$SOUNDMESH_TOKEN" --dry-run`
+  - Canary execution:
+    - `python3 tools/usb_compound_autoflash.py --base-url http://192.168.4.1 --firmware-url https://fw.example.com/releases/src-canary.bin --auth-mode bearer --token "$SOUNDMESH_TOKEN"`
+- Keep scope to one canary SRC node first; expand only after success + rollback-confirmation log + soak stability checks.
+
 ## Abort criteria (stop rollout immediately)
 
 Abort and block further uploads if any of the following occur:
@@ -67,6 +77,15 @@ Abort and block further uploads if any of the following occur:
 - Reboot loop persists beyond initial USB reset window.
 - Protected portal endpoints accept unauthenticated control actions.
 - Stream continuity is unstable (repeated stream-loss/rejoin churn).
+
+### Autoflash-specific abort criteria (USB-NCM OTA helper)
+
+Abort and stop further canary rollout immediately if any of the following occur while using `tools/usb_compound_autoflash.py`:
+
+- Auth rejection from OTA endpoint (`401/403`, invalid/missing token).
+- OTA status enters failed terminal phase (`phase=failed` and/or non-zero `lastErr`).
+- Helper exits on timeout before successful completion (`EXIT_TIMEOUT`).
+- Device becomes unreachable after restart and does not recover within configured timeout window.
 
 ## Rollback and reset procedure
 
@@ -86,6 +105,8 @@ Abort and block further uploads if any of the following occur:
    - failing serial logs
    - gate output
    - exact commit hash
+
+Rollback/reset policy above remains unchanged for USB-NCM OTA autoflash failures.
 
 ## OTA bad-image recovery verification
 

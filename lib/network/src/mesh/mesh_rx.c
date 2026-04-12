@@ -5,6 +5,7 @@
 #include "mesh/mesh_uplink.h"
 #include "mesh/mesh_mixer.h"
 #include "network/uplink_control.h"
+#include "control/portal_state.h"
 #include "network/mixer_control.h"
 #include "network/frame_codec.h"
 #include "network/mesh_net.h"
@@ -189,6 +190,16 @@ void mesh_rx_task(void *arg) {
         } else if (first_byte == NET_PKT_TYPE_STREAM_ANNOUNCE) {
             g_transport_stats.rx_stream_announce_packets++;
             ESP_LOGD(TAG, "Stream announcement received");
+        } else if (first_byte == NET_PKT_TYPE_POSITIONS) {
+            if (data.size >= 2) {
+                uint8_t count = data.data[1];
+                if (data.size >= 2 + count * sizeof(mesh_node_position_t)) {
+                    mesh_node_position_t *pos_list = (mesh_node_position_t *)&data.data[2];
+                    for (uint8_t i = 0; i < count; i++) {
+                        portal_state_update_position(pos_list[i].mac, pos_list[i].x, pos_list[i].y, pos_list[i].z);
+                    }
+                }
+            }
         } else if (first_byte == NET_PKT_TYPE_CONTROL) {
             g_transport_stats.rx_control_packets++;
             if (data.size == sizeof(uplink_ctrl_packet_t)) {

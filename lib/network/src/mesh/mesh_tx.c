@@ -128,6 +128,22 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     return err;
 }
 
+esp_err_t network_broadcast_positions(const mesh_positions_t *pos) {
+    if (!is_mesh_root || !is_mesh_root_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    mesh_data_t mesh_data = {
+        .data = (uint8_t *)pos,
+        .size = 2 + pos->count * sizeof(mesh_node_position_t),
+        .proto = MESH_PROTO_BIN,
+        .tos = MESH_TOS_DEF,
+    };
+
+    return esp_mesh_send((mesh_addr_t *)&audio_multicast_group, &mesh_data,
+                        kAudioRootFanoutFlags, NULL, 0);
+}
+
 esp_err_t network_send_control(const uint8_t *data, size_t len) {
     if (!is_mesh_connected && !(is_mesh_root && is_mesh_root_ready)) {
         transport_record_control_tx_result(ESP_ERR_INVALID_STATE);

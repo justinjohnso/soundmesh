@@ -79,26 +79,26 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     bool should_log = ((++log_counter & 0x7F) == 0);
 
     if (is_mesh_root) {
-        mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
-        int route_table_size = 0;
-        esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
-        int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
-        if (descendant_count <= 0) {
-            transport_record_audio_tx_result(ESP_ERR_MESH_NO_ROUTE_FOUND, len);
-            return ESP_ERR_MESH_NO_ROUTE_FOUND;
-        }
-
         err = esp_mesh_send((mesh_addr_t *)&audio_multicast_group, &mesh_data,
                             kAudioRootFanoutFlags, NULL, 0);
         transport_record_audio_tx_result(err, len);
         if (err == ESP_OK) {
             total_sent++;
             tx_bytes_counter += len;
-        } else if (err == ESP_ERR_MESH_QUEUE_FULL) {
-            total_drops++;
+        } else {
+            if (err == ESP_ERR_MESH_QUEUE_FULL) {
+                total_drops++;
+            } else if (should_log) {
+                ESP_LOGW(TAG, "Audio broadcast failed: %s", esp_err_to_name(err));
+            }
         }
 
         if (should_log) {
+            mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
+            int route_table_size = 0;
+            esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
+            int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
+
             int packets_per_second = 1000 / (AUDIO_FRAME_EFFECTIVE_MS * MESH_FRAMES_PER_PACKET);
             int target_packets_per_second = 1000 / (AUDIO_FRAME_TARGET_MS * MESH_FRAMES_PER_PACKET);
             ESP_LOGI(TAG,
@@ -122,6 +122,8 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
         if (err == ESP_OK) {
             total_sent++;
             tx_bytes_counter += len;
+        } else if (err != ESP_ERR_MESH_QUEUE_FULL && should_log) {
+            ESP_LOGW(TAG, "Audio uplink failed: %s", esp_err_to_name(err));
         }
     }
 

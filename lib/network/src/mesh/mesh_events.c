@@ -92,6 +92,15 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "Root: parent connected event (self-org disabled, no scan to stop)");
             } else {
                 ESP_LOGI(TAG, "OUT connected: preserving startup self-organized config");
+                
+                // Subscribe to audio multicast group now that we have a parent
+                esp_err_t grp_err = esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
+                if (grp_err == ESP_OK) {
+                    ESP_LOGI(TAG, "OUT: subscribed to audio multicast group");
+                } else {
+                    ESP_LOGW(TAG, "OUT: failed to subscribe to multicast group: %s", esp_err_to_name(grp_err));
+                }
+
                 mesh_uplink_request_sync_from_root();
                 mesh_mixer_request_sync_from_root();
             }

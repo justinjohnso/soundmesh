@@ -206,14 +206,6 @@ esp_err_t network_init_mesh(void) {
         heartbeat_task_handle = NULL;
         return ret;
     }
-    if (my_node_role == NODE_ROLE_OUT) {
-        esp_err_t grp_err = esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
-        if (grp_err == ESP_OK) {
-            ESP_LOGI(TAG, "OUT: subscribed to audio multicast group");
-        } else {
-            ESP_LOGW(TAG, "OUT: failed to subscribe to multicast group: %s", esp_err_to_name(grp_err));
-        }
-    }
 
     ESP_LOGI(TAG, "Mesh initialized: ID=%s, Channel=%d", MESH_ID, MESH_CHANNEL);
 

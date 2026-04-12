@@ -98,6 +98,9 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
                 } else if (first_err == ESP_OK) {
                     first_err = perr;
                 }
+                
+                // Yield to prevent watchdog on CPU 1 during multi-child fanout
+                vTaskDelay(1);
             }
             err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);
         } else if (descendant_count > 10) {

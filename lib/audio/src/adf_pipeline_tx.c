@@ -361,12 +361,6 @@ void tx_encode_task(void *arg)
                                                1);
                 if (ret == ESP_OK) {
                     pipeline->stats.frames_processed += batch_count;
-                    
-                    static uint32_t net_send_count = 0;
-                    if ((++net_send_count % 100) == 0) {
-                        ESP_LOGI(TAG, "TX Batch sent: seq=%u, frames=%u, bytes=%u", 
-                                 pipeline->tx_seq, batch_count, (unsigned)batch_payload_len);
-                    }
                 } else if (ret != ESP_ERR_MESH_DISCONNECTED && ret != ESP_ERR_INVALID_STATE) {
                     pipeline->stats.frames_dropped += batch_count;
                 }

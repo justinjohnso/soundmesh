@@ -15,15 +15,16 @@ typedef struct ring_buffer_t ring_buffer_t;
 ring_buffer_t* ring_buffer_create(size_t size);
 
 /**
- * Create a ring buffer with explicit mode.
+ * Create a ring buffer with explicit mode and memory policy.
  * @param item_mode true for NOSPLIT (discrete items), false for BYTEBUF (stream)
+ * @param allow_psram true to attempt allocation in external PSRAM
  * 
  * NOSPLIT: Each write creates a discrete item. Receive gets exactly what was sent.
  *          Use for variable-length packets (e.g., Opus frames with length prefix).
  * BYTEBUF: Stream-based. Reads can span multiple writes.
  *          Use for continuous data like PCM audio.
  */
-ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode);
+ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode, bool allow_psram);
 
 void ring_buffer_destroy(ring_buffer_t *rb);
 

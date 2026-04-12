@@ -17,31 +17,28 @@ struct ring_buffer_t {
 };
 
 ring_buffer_t* ring_buffer_create(size_t size) {
-    return ring_buffer_create_ex(size, false);
+    return ring_buffer_create_ex(size, false, false);
 }
 
-// PSRAM allocation threshold - larger buffers go to PSRAM
-#define PSRAM_ALLOCATION_THRESHOLD (1024)
-
-ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode) {
+ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode, bool allow_psram) {
     ring_buffer_t *rb = malloc(sizeof(ring_buffer_t));
     if (!rb) return NULL;
     
     RingbufferType_t type = item_mode ? RINGBUF_TYPE_NOSPLIT : RINGBUF_TYPE_BYTEBUF;
     
 #if CONFIG_SPIRAM_USE_MALLOC
-    // If PSRAM is enabled and buffer is large enough, try PSRAM first
-    if (size >= PSRAM_ALLOCATION_THRESHOLD) {
+    // If PSRAM is allowed, try PSRAM first
+    if (allow_psram) {
         // Must use xRingbufferCreateStatic or xRingbufferCreateWithCaps if available
         // But ESP-IDF 5.2 has xRingbufferCreateWithCaps
         rb->handle = xRingbufferCreateWithCaps(size, type, MALLOC_CAP_SPIRAM);
         if (rb->handle) {
-             ESP_LOGI(TAG, "Ring buffer created in PSRAM: %u bytes, mode=%s", size, 
+             ESP_LOGI(TAG, "Ring buffer created in PSRAM: %u bytes, mode=%s", (unsigned)size, 
                       item_mode ? "ITEM" : "BYTE");
              rb->consumer = NULL;
              return rb;
         }
-        ESP_LOGW(TAG, "PSRAM allocation failed for %u bytes, falling back to internal RAM", size);
+        ESP_LOGW(TAG, "PSRAM allocation failed for %u bytes, falling back to internal RAM", (unsigned)size);
     }
 #endif
 
@@ -53,7 +50,7 @@ ring_buffer_t* ring_buffer_create_ex(size_t size, bool item_mode) {
     
     rb->consumer = NULL;
     
-    ESP_LOGI(TAG, "Ring buffer created in SRAM: %u bytes, mode=%s", size, 
+    ESP_LOGI(TAG, "Ring buffer created in SRAM: %u bytes, mode=%s", (unsigned)size, 
              item_mode ? "ITEM" : "BYTE");
     return rb;
 }

@@ -148,7 +148,7 @@
 //   - Batch 1 → 50 pps, losing 1 packet = 20ms dropout (barely audible)
 //   - Batch 2 → 25 pps, losing 1 packet = 40ms dropout (PLC can mask short gaps)
 //   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
-#define MESH_FRAMES_PER_PACKET     1   // 1 frame per packet = 50 pps
+#define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps; sweet spot for reliability vs overhead
 #define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
 #define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
 // Demo transport baseline selected from 2026-03-29 send-mode A/B artifact.

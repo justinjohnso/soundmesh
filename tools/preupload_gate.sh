@@ -42,23 +42,78 @@ extract_define_expr() {
   local name="$1"
   local line
   line="$(grep -E "^#define[[:space:]]+${name}[[:space:]]+" "$BUILD_H" | head -n1 || true)"
-  [[ -n "$line" ]] || fail "Missing #define ${name} in ${BUILD_H}"
+  [[ -n "$line" ]] || return 1
   echo "$line" | sed -E "s/^#define[[:space:]]+${name}[[:space:]]+//" | sed -E 's://.*$::' | xargs
 }
 
 extract_define_int() {
   local name="$1"
-  local expr
-  expr="$(extract_define_expr "$name")"
-  python3 - "$name" "$expr" <<'PY'
+  python3 - "$name" "$BUILD_H" <<'PY'
 import re
 import sys
-name = sys.argv[1]
-expr = sys.argv[2].strip()
-if not re.fullmatch(r"[0-9()\s+\-*/%]+", expr):
-    raise SystemExit(f"invalid-expression:{name}:{expr}")
-val = int(eval(expr, {"__builtins__": None}, {}))
-print(val)
+
+def extract_defines(file_path):
+    defines = {}
+    # Basic regex to find #define NAME VALUE
+    pattern = re.compile(r"^#define\s+([A-Za-z0-9_]+)\s+(.+)$")
+    try:
+        with open(file_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                # Remove comments
+                line = re.sub(r"//.*$", "", line)
+                line = re.sub(r"/\*.*?\*/", "", line)
+                match = pattern.match(line)
+                if match:
+                    name, expr = match.groups()
+                    defines[name.strip()] = expr.strip()
+    except Exception as e:
+        print(f"Error reading {file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    return defines
+
+def resolve(name, defines, visited=None):
+    if visited is None:
+        visited = set()
+    if name in visited:
+        raise ValueError(f"Circular dependency detected for {name}")
+    
+    if name not in defines:
+        # Might be a literal number
+        if re.fullmatch(r"0x[0-9A-Fa-f]+|[0-9]+", name):
+            return name
+        return None
+
+    visited.add(name)
+    expr = defines[name]
+    
+    # Find all potential symbols in the expression
+    symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr)
+    for sym in symbols:
+        res = resolve(sym, defines, visited.copy())
+        if res is not None:
+            # Replace the symbol with its resolved value (wrapped in parens)
+            expr = re.sub(r"\b" + sym + r"\b", f"({res})", expr)
+    
+    return expr
+
+target_name = sys.argv[1]
+file_path = sys.argv[2]
+defines = extract_defines(file_path)
+
+if target_name not in defines:
+    print(f"Error: {target_name} not found in {file_path}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    resolved = resolve(target_name, defines)
+    # Clean up any non-math characters just in case
+    math_expr = re.sub(r"[^0-9()\s+\-*/%]", "", resolved)
+    val = int(eval(math_expr, {"__builtins__": None}, {}))
+    print(val)
+except Exception as e:
+    print(f"Error resolving {target_name}: {e}", file=sys.stderr)
+    sys.exit(1)
 PY
 }
 
@@ -150,6 +205,22 @@ while IFS= read -r line; do
 done < <(grep 'RAM:' "$build_log")
 [[ ${#ram_report_lines[@]} -ge 2 ]] || fail "Could not parse RAM usage for src/out"
 
+# Runtime memory model constants (SRAM)
+RUNTIME_SRAM_TOTAL_MAX=220000 # Keep 100KB+ headroom for WiFi/Mesh/LWIP/Heaps
+
+echo "[gate] Extracting pipeline and stack constants for runtime budget..."
+pcm_buf_size="$(extract_define_int PCM_BUFFER_SIZE)"
+opus_buf_size="$(extract_define_int OPUS_BUFFER_SIZE)"
+capture_stack="$(extract_define_int CAPTURE_TASK_STACK_BYTES)"
+encode_stack="$(extract_define_int ENCODE_TASK_STACK_BYTES)"
+decode_stack="$(extract_define_int DECODE_TASK_STACK_BYTES)"
+playback_stack="$(extract_define_int PLAYBACK_TASK_STACK_BYTES)"
+mesh_rx_stack="$(extract_define_int MESH_RX_TASK_STACK_BYTES)"
+hb_stack="$(extract_define_int HEARTBEAT_TASK_STACK_BYTES)"
+
+# Note: PCM buffer is moved to PSRAM if > 16KB, so we conditionally count it
+pcm_in_sram=$(( pcm_buf_size > 16384 ? 0 : pcm_buf_size ))
+
 ENVS=(src out)
 for i in 0 1; do
   line="${ram_report_lines[$i]}"
@@ -164,6 +235,19 @@ for i in 0 1; do
   [[ "$ram_total" =~ ^[0-9]+$ ]] || fail "Unable to parse RAM total bytes for ${env} from: ${line}"
 
   (( ram_total == RAM_TOTAL_BYTES )) || fail "Unexpected RAM total for ${env}: ${ram_total} (expected ${RAM_TOTAL_BYTES})"
+
+  # Calculate Predicted Peak SRAM Usage
+  if [[ "$env" == "src" ]]; then
+    predicted_sram=$((ram_used + pcm_in_sram + opus_buf_size + capture_stack + encode_stack + mesh_rx_stack + hb_stack))
+  else
+    predicted_sram=$((ram_used + pcm_in_sram + opus_buf_size + decode_stack + playback_stack + mesh_rx_stack + hb_stack))
+  fi
+
+  echo "[gate] ${env} predicted peak SRAM: ${predicted_sram} bytes (limit: ${RUNTIME_SRAM_TOTAL_MAX})"
+
+  if (( predicted_sram > RUNTIME_SRAM_TOTAL_MAX )); then
+    fail "${env} predicted SRAM ${predicted_sram} exceeds safety limit ${RUNTIME_SRAM_TOTAL_MAX}"
+  fi
 
   ram_free=$((ram_total - ram_used))
   elf_size="$(stat -f%z ".pio/build/${env}/firmware.elf")"
@@ -190,12 +274,7 @@ portal_ws_stack="$(extract_define_int PORTAL_WS_PUSH_STACK_BYTES)"
 portal_dns_stack="$(extract_define_int PORTAL_DNS_STACK_BYTES)"
 portal_min_heap="$(extract_define_int PORTAL_MIN_FREE_HEAP)"
 
-capture_stack="$(extract_define_int CAPTURE_TASK_STACK_BYTES)"
-encode_stack="$(extract_define_int ENCODE_TASK_STACK_BYTES)"
-decode_stack="$(extract_define_int DECODE_TASK_STACK_BYTES)"
-playback_stack="$(extract_define_int PLAYBACK_TASK_STACK_BYTES)"
-mesh_rx_stack="$(extract_define_int MESH_RX_TASK_STACK_BYTES)"
-hb_stack="$(extract_define_int HEARTBEAT_TASK_STACK_BYTES)"
+# Already extracted capture_stack etc above for SRAM prediction
 
 (( portal_http_stack >= 6144 )) || fail "PORTAL_HTTP_STACK_BYTES too small (${portal_http_stack})"
 (( portal_ws_stack >= 4096 )) || fail "PORTAL_WS_PUSH_STACK_BYTES too small (${portal_ws_stack})"
@@ -208,6 +287,11 @@ hb_stack="$(extract_define_int HEARTBEAT_TASK_STACK_BYTES)"
 (( playback_stack >= 4096 )) || fail "PLAYBACK_TASK_STACK_BYTES too small (${playback_stack})"
 (( mesh_rx_stack >= 4096 )) || fail "MESH_RX_TASK_STACK_BYTES too small (${mesh_rx_stack})"
 (( hb_stack >= 3072 )) || fail "HEARTBEAT_TASK_STACK_BYTES too small (${hb_stack})"
+
+# Verify consistency between PCM and Jitter buffers
+jitter_frames="$(extract_define_int JITTER_BUFFER_FRAMES)"
+pcm_frames="$(extract_define_int PCM_BUFFER_FRAMES)"
+(( jitter_frames <= pcm_frames )) || fail "JITTER_BUFFER_FRAMES (${jitter_frames}) cannot exceed PCM_BUFFER_FRAMES (${pcm_frames})"
 
 portal_static_runtime_budget=$((portal_http_stack + portal_ws_stack + portal_dns_stack + portal_min_heap + PORTAL_RUNTIME_GUARD_BYTES))
 pass "Stack/heap floors valid (portal runtime budget=${portal_static_runtime_budget} bytes)"

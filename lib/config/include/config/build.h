@@ -190,8 +190,8 @@
 
 // Buffer depths in codec frames
 // JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES (validated by static_assert below)
-#define PCM_BUFFER_FRAMES          30    // 30 × 20ms = 600ms PCM buffer
-#define OPUS_BUFFER_FRAMES         30    // 30 × 20ms = 600ms compressed burst tolerance
+#define PCM_BUFFER_FRAMES          16    // 16 × 20ms = 320ms PCM buffer (memory-safe limit)
+#define OPUS_BUFFER_FRAMES         16    // 16 × 20ms = 320ms compressed burst tolerance
 
 // Derived: buffer sizes in bytes
 #define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_INTERNAL_MONO * PCM_BUFFER_FRAMES)
@@ -203,7 +203,7 @@
 // Jitter buffer (in codec frames)
 // Priority is smooth, uninterrupted playback under multi-node contention.
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
-#define JITTER_BUFFER_FRAMES       25    // 25 × 20ms = 500ms max depth
+#define JITTER_BUFFER_FRAMES       12    // 12 × 20ms = 240ms max depth
 #define JITTER_PREFILL_FRAMES      6    // restored to 6 (120ms) for test compatibility; adaptive logic handles growth
 #define JITTER_HYSTERESIS_HOLD_FRAMES 3
 #define JITTER_ADAPTIVE_DECAY_FRAMES 500
@@ -217,7 +217,7 @@
 // Decode fairness cap: limit RX decode bursts per scheduler slice to avoid CPU monopolization.
 #define RX_DECODE_MAX_ITEMS_PER_CYCLE 8
 // Stop decoding when PCM queue is near full so playback cadence can drain without catch-up bursts.
-#define RX_PCM_HIGH_WATER_FRAMES   15
+#define RX_PCM_HIGH_WATER_FRAMES   10
 #define RX_PCM_HIGH_WATER_BYTES    (AUDIO_FRAME_BYTES_INTERNAL_MONO * RX_PCM_HIGH_WATER_FRAMES)
 // RX underrun smoothing policy:
 // - hold last good frame briefly to mask isolated misses

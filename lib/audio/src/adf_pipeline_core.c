@@ -114,9 +114,12 @@ esp_err_t adf_pipeline_create_impl(const adf_pipeline_config_t *config, adf_pipe
         return ESP_ERR_NO_MEM;
     }
 
-    pipeline->pcm_buffer = ring_buffer_create(PCM_BUFFER_SIZE);
+    // Safety check: large PCM buffers MUST use PSRAM to avoid crashing internal RAM
+    bool allow_external = (PCM_BUFFER_SIZE > 16384);
+    pipeline->pcm_buffer = ring_buffer_create_ex(PCM_BUFFER_SIZE, allow_external);
     if (!pipeline->pcm_buffer) {
-        ESP_LOGE(TAG, "Failed to create PCM buffer");
+        ESP_LOGE(TAG, "Failed to create PCM buffer (size=%u, psram=%d)", 
+                 (unsigned)PCM_BUFFER_SIZE, allow_external);
         vSemaphoreDelete(pipeline->mutex);
         free(pipeline);
         return ESP_ERR_NO_MEM;

@@ -93,12 +93,19 @@ void tx_capture_task(void *arg)
     TickType_t usb_inactive_confirm_start = 0;
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t frame_ticks = pdMS_TO_TICKS(AUDIO_FRAME_MS);
+    adf_input_mode_t last_mode = ADF_INPUT_MODE_AUX;
 
     while (pipeline->running) {
         size_t frames_read = 0;
         esp_err_t ret = ESP_OK;
 
         adf_input_mode_t mode = pipeline->input_mode;
+        
+        // Reset timing baseline if mode changed to ensure synthetic modes don't spin
+        if (mode != last_mode) {
+            last_wake_time = xTaskGetTickCount();
+            last_mode = mode;
+        }
 
         switch (mode) {
             case ADF_INPUT_MODE_TONE:

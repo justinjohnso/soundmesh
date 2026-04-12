@@ -77,7 +77,7 @@ void ring_buffer_set_consumer(ring_buffer_t *rb, TaskHandle_t consumer) {
 esp_err_t ring_buffer_write(ring_buffer_t *rb, const uint8_t *data, size_t len) {
     if (!rb || !rb->handle) return ESP_ERR_INVALID_ARG;
     
-    if (xRingbufferSend(rb->handle, data, len, 0) != pdTRUE) {
+    if (xRingbufferSend(rb->handle, data, len, pdMS_TO_TICKS(10)) != pdTRUE) {
         return ESP_ERR_NO_MEM;
     }
     

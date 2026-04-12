@@ -214,11 +214,9 @@ void tx_capture_task(void *arg)
                                  ret, frames_read, no_data_count);
                     }
                     vTaskDelay(1);
-                    last_wake_time = xTaskGetTickCount();
                     continue;
                 }
                 no_data_count = 0;
-                last_wake_time = xTaskGetTickCount(); // sync cadence to successful I2S block release
 
                 if (frames_read < AUDIO_FRAME_SAMPLES) {
                     memset(stereo_frame + (frames_read * 2), 0,

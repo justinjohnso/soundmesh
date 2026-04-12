@@ -75,7 +75,7 @@
 // ============================================================================
 
 #define OPUS_BITRATE               64000     // 64 kbps for 'crystal clear' audio; multicast keeps airtime constant
-#define OPUS_COMPLEXITY            5         // Increased complexity for better quality/bitrate efficiency
+#define OPUS_COMPLEXITY            2         // Reduced complexity to ensure Core 1 tasks (capture/encode/decode/play) aren't starved
 #define OPUS_EXPECTED_LOSS_PCT     20         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 

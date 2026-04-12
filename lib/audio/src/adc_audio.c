@@ -7,6 +7,7 @@
 #include <string.h>
 #include "config/pins.h"
 #include "config/build.h"
+#include "audio/pcm_convert.h"
 
 static const char *TAG = "adc_audio";
 
@@ -19,6 +20,7 @@ static adc_continuous_handle_t adc_handle = NULL;
 
 // Static buffers to avoid stack overflow
 static int16_t mono_samples[ADC_READ_LEN / 4];
+static int32_t mono_samples_s24[ADC_READ_LEN / 4];
 
 // ADC mid-point with preamp biasing circuit (1.65V bias, ~2048 with DB_11 attenuation)
 // Measure actual value with no input signal and adjust if needed
@@ -26,7 +28,7 @@ static int16_t mono_samples[ADC_READ_LEN / 4];
 
 // Simple low-pass filter to reduce high-frequency noise
 #define LPF_ALPHA              0.1f  // 1.0 = no filtering
-static int16_t lpf_prev = 0;
+static int32_t lpf_prev = 0;
 
 esp_err_t adc_audio_init(void) {
     if (adc_handle != NULL) {
@@ -151,14 +153,20 @@ esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size
 
         // Only process the configured channel (left)
         if (chan_num == ADC_LEFT_CHANNEL) {
-            // Remove DC bias and scale 12-bit to 16-bit (left-shift by 4)
-            int16_t sample = (int16_t)((data - ADC_MID_CODE) << 4);
+            // Remove DC bias and normalize 12-bit ADC to signed 24-bit lane in int32.
+            // 12-bit centered range: +/-2048; shifting by 12 maps near full-scale 24-bit.
+            int32_t sample_s24 = ((int32_t)data - ADC_MID_CODE) << 12;
+            sample_s24 = pcm_clamp_s24_in_s32(sample_s24);
 
             // Apply low-pass filter to reduce high-frequency noise
-            int16_t filtered_sample = (int16_t)(LPF_ALPHA * sample + (1.0f - LPF_ALPHA) * lpf_prev);
-            lpf_prev = filtered_sample;
+            int32_t filtered_sample_s24 =
+                (int32_t)(LPF_ALPHA * sample_s24 + (1.0f - LPF_ALPHA) * lpf_prev);
+            filtered_sample_s24 = pcm_clamp_s24_in_s32(filtered_sample_s24);
+            lpf_prev = filtered_sample_s24;
 
-            mono_samples[mono_count++] = filtered_sample;
+            mono_samples_s24[mono_count] = filtered_sample_s24;
+            mono_samples[mono_count] = pcm_s24_in_s32_to_s16(filtered_sample_s24);
+            mono_count++;
         }
     }
 

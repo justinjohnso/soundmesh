@@ -2,6 +2,7 @@
 
 #include "audio/es8388_audio.h"
 #include "audio/i2s_audio.h"
+#include "audio/pcm_convert.h"
 #include "audio/rx_underrun_concealment.h"
 #include "audio/sequence_tracker.h"
 #include "network/mesh_net.h"
@@ -17,7 +18,7 @@ static const char *TAG = "adf_pipeline";
 
 // Static buffers moved from stack to reduce task stack usage
 static uint8_t s_feed_opus_tmp[3 + OPUS_MAX_FRAME_BYTES];  // flags + len + payload
-static int16_t s_prefill_silence[AUDIO_FRAME_SAMPLES];     // 3840 bytes
+static int32_t s_prefill_silence[AUDIO_FRAME_SAMPLES];
 
 static volatile uint16_t s_runtime_out_gain_pct = OUT_OUTPUT_GAIN_DEFAULT_PCT;
 
@@ -30,15 +31,10 @@ static inline void update_peak_u32(uint32_t *dst, uint32_t value)
     }
 }
 
-static inline int16_t scale_q15(int16_t sample, uint16_t gain_q15)
+static inline int32_t scale_q15(int32_t sample, uint16_t gain_q15)
 {
     int32_t scaled = ((int32_t)sample * (int32_t)gain_q15) / (int32_t)RX_UNDERRUN_GAIN_Q15_ONE;
-    if (scaled > 32767) {
-        scaled = 32767;
-    } else if (scaled < -32768) {
-        scaled = -32768;
-    }
-    return (int16_t)scaled;
+    return pcm_clamp_s24_in_s32(scaled);
 }
 
 static inline void playback_wait_for_slot(int64_t *next_play_us, int64_t frame_period_us)
@@ -172,6 +168,7 @@ void rx_decode_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
     int16_t *pcm_frame = s_decode_pcm_frame;
+    int32_t *decode_frame = s_decode_mono_frame;
     uint32_t decode_iteration = 0;
 
     ESP_LOGI(TAG, "RX decode task started (event-driven, item-based), stack_hwm=%u",
@@ -243,8 +240,9 @@ void rx_decode_task(void *arg)
                     );
                     if (fec_samples > 0) {
                         fft_process_frame(pipeline, pcm_frame, (size_t)fec_samples);
-                        size_t fec_bytes = fec_samples * sizeof(int16_t);
-                        if (ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)pcm_frame, fec_bytes) == ESP_OK) {
+                        pcm_convert_mono_s16_to_s24(pcm_frame, decode_frame, (size_t)fec_samples);
+                        size_t fec_bytes = fec_samples * sizeof(int32_t);
+                        if (ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)decode_frame, fec_bytes) == ESP_OK) {
                             pipeline->stats.frames_processed++;
                         } else {
                             pipeline->stats.frames_dropped++;
@@ -289,8 +287,9 @@ void rx_decode_task(void *arg)
                          (int)pcm_frame[2], (int)pcm_frame[3]);
             }
 
-            size_t pcm_bytes = samples_decoded * sizeof(int16_t);
-            esp_err_t ret = ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)pcm_frame, pcm_bytes);
+            pcm_convert_mono_s16_to_s24(pcm_frame, decode_frame, (size_t)samples_decoded);
+            size_t pcm_bytes = samples_decoded * sizeof(int32_t);
+            esp_err_t ret = ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)decode_frame, pcm_bytes);
             if (ret != ESP_OK) {
                 pipeline->stats.frames_dropped++;
             } else {
@@ -322,18 +321,25 @@ void rx_decode_task(void *arg)
 void rx_playback_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
-    int16_t *mono_frame = s_playback_mono_frame;
-    int16_t *last_good_mono = s_playback_last_good_mono;
+    int32_t *mono_frame = s_playback_mono_frame;
+    int32_t *last_good_mono = s_playback_last_good_mono;
+#if !defined(CONFIG_USE_ES8388)
+    int16_t *mono_frame_s16 = s_playback_mono_frame_s16;
+#endif
     int16_t *stereo_frame = s_playback_stereo_frame;
-    int16_t *silence = s_playback_silence;
+    int16_t *stereo_silence = s_playback_silence;
 
     bool prefilled = false;
-    size_t prefill_bytes = AUDIO_FRAME_BYTES * JITTER_PREFILL_FRAMES;
+    size_t prefill_bytes = AUDIO_FRAME_BYTES_INTERNAL_MONO * JITTER_PREFILL_FRAMES;
+    uint8_t adaptive_prefill = JITTER_PREFILL_FRAMES;
     uint16_t rebuffer_prefill_frames = JITTER_PREFILL_FRAMES;
+    uint8_t hysteresis_hold_remaining = 0;
+    uint32_t consecutive_clean_playback_frames = 0;
     rx_underrun_state_t underrun_state = {0};
     const int64_t frame_period_us = (int64_t)AUDIO_FRAME_MS * 1000;
     int64_t next_play_us = 0;
     int64_t prefill_wait_start_ms = 0;
+    int64_t last_rebuffer_ms = 0;
 
     ESP_LOGI(TAG, "RX playback task started (event-driven), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
@@ -381,8 +387,8 @@ void rx_playback_task(void *arg)
                 prefilled = true;
                 next_play_us = 0;
                 pipeline->stats.rx_prefill_events++;
+                int64_t now_ms = esp_timer_get_time() / 1000;
                 if (prefill_wait_start_ms > 0) {
-                    int64_t now_ms = esp_timer_get_time() / 1000;
                     if (now_ms > prefill_wait_start_ms) {
                         pipeline->stats.rx_prefill_wait_total_ms += (uint32_t)(now_ms - prefill_wait_start_ms);
                     }
@@ -390,73 +396,93 @@ void rx_playback_task(void *arg)
                 }
                 static uint32_t prefill_count = 0;
                 prefill_count++;
+                hysteresis_hold_remaining = JITTER_HYSTERESIS_HOLD_FRAMES;
                 if (prefill_count <= 3 || (prefill_count % 50) == 0) {
-                    ESP_LOGI(TAG, "Playback prefilled #%lu (%zu bytes)", prefill_count, available);
+                    int64_t since_last_rebuffer_ms = 0;
+                    if (last_rebuffer_ms > 0 && now_ms > last_rebuffer_ms) {
+                        since_last_rebuffer_ms = now_ms - last_rebuffer_ms;
+                    }
+                    ESP_LOGI(TAG, "Playback prefilled #%lu (%zu bytes, since_rebuffer=%lldms)",
+                             prefill_count, available, (long long)since_last_rebuffer_ms);
                 }
             } else {
                 if (prefill_wait_start_ms == 0) {
                     prefill_wait_start_ms = esp_timer_get_time() / 1000;
                 }
 #if defined(CONFIG_USE_ES8388)
-                es8388_audio_write_stereo(silence, AUDIO_FRAME_SAMPLES);
+                es8388_audio_write_stereo(stereo_silence, AUDIO_FRAME_SAMPLES);
 #else
-                // Use file-scope static buffer (was 3840 bytes on stack in conditional)
-                i2s_audio_write_mono_as_stereo(s_prefill_silence, AUDIO_FRAME_SAMPLES);
+                pcm_convert_mono_s24_to_s16(s_prefill_silence, mono_frame_s16, AUDIO_FRAME_SAMPLES);
+                i2s_audio_write_mono_as_stereo(mono_frame_s16, AUDIO_FRAME_SAMPLES);
 #endif
                 continue;
             }
         }
 
         int frames_played = 0;
+        bool played_audio_frame = false;
 
         available = ring_buffer_available(pipeline->pcm_buffer);
 
-        if (available < AUDIO_FRAME_BYTES && prefilled) {
-            vTaskDelay(pdMS_TO_TICKS(4));
+        if (prefilled && hysteresis_hold_remaining > 0) {
+            hysteresis_hold_remaining--;
+#if defined(CONFIG_USE_ES8388)
+            playback_wait_for_slot(&next_play_us, frame_period_us);
+            es8388_audio_write_stereo(stereo_silence, AUDIO_FRAME_SAMPLES);
+#else
+            playback_wait_for_slot(&next_play_us, frame_period_us);
+            pcm_convert_mono_s24_to_s16(s_prefill_silence, mono_frame_s16, AUDIO_FRAME_SAMPLES);
+            i2s_audio_write_mono_as_stereo(mono_frame_s16, AUDIO_FRAME_SAMPLES);
+#endif
+            frames_played = 1;
+        }
+
+        if (frames_played == 0 && available < AUDIO_FRAME_BYTES_INTERNAL_MONO && prefilled) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(4));
             available = ring_buffer_available(pipeline->pcm_buffer);
         }
 
-        if (available >= AUDIO_FRAME_BYTES) {
-            esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)mono_frame, AUDIO_FRAME_BYTES);
+        if (frames_played == 0 && available >= AUDIO_FRAME_BYTES_INTERNAL_MONO) {
+            esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)mono_frame, AUDIO_FRAME_BYTES_INTERNAL_MONO);
             if (ret == ESP_OK) {
                 static uint32_t playback_count = 0;
                 playback_count++;
                 float out_gain = current_out_gain_multiplier();
 
                 if (pipeline->output_mute) {
-                    memset(mono_frame, 0, AUDIO_FRAME_BYTES);
+                    memset(mono_frame, 0, AUDIO_FRAME_BYTES_INTERNAL_MONO);
                 } else if (fabsf(out_gain - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                         int32_t scaled = (int32_t)(mono_frame[i] * out_gain);
-                        if (scaled > 32767) scaled = 32767;
-                        else if (scaled < -32768) scaled = -32768;
-                        mono_frame[i] = (int16_t)scaled;
+                        mono_frame[i] = pcm_clamp_s24_in_s32(scaled);
                     }
                 }
 
                 if (playback_count <= 5 || (playback_count % 1000) == 0) {
                     ESP_LOGI(TAG, "Playback #%lu: s[0]=%d s[100]=%d stack_hwm=%u",
-                             playback_count, (int)mono_frame[0], (int)mono_frame[100],
+                             playback_count,
+                             (int)pcm_s24_in_s32_to_s16(mono_frame[0]),
+                             (int)pcm_s24_in_s32_to_s16(mono_frame[100]),
                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
-                memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES);
+                memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES_INTERNAL_MONO);
 
 #if defined(CONFIG_USE_ES8388)
                 playback_wait_for_slot(&next_play_us, frame_period_us);
-                for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                    stereo_frame[2 * i]     = mono_frame[i];
-                    stereo_frame[2 * i + 1] = mono_frame[i];
-                }
+                pcm_convert_mono_s24_to_stereo_s16(mono_frame, stereo_frame, AUDIO_FRAME_SAMPLES);
                 es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
                 playback_wait_for_slot(&next_play_us, frame_period_us);
-                i2s_audio_write_mono_as_stereo(mono_frame, AUDIO_FRAME_SAMPLES);
+                pcm_convert_mono_s24_to_s16(mono_frame, mono_frame_s16, AUDIO_FRAME_SAMPLES);
+                i2s_audio_write_mono_as_stereo(mono_frame_s16, AUDIO_FRAME_SAMPLES);
 #endif
                 frames_played = 1;
+                played_audio_frame = true;
             }
         }
 
         if (frames_played == 0 && prefilled) {
+            consecutive_clean_playback_frames = 0;
             pipeline->stats.buffer_underruns++;
             rx_underrun_action_t underrun_action = rx_underrun_on_miss(&underrun_state);
             update_peak_u32(&pipeline->stats.rx_consecutive_miss_peak, underrun_action.consecutive_misses);
@@ -464,12 +490,13 @@ void rx_playback_task(void *arg)
             static uint32_t underrun_count = 0;
             underrun_count++;
             if (underrun_count <= 5 || (underrun_count % 20) == 0) {
-                ESP_LOGW(TAG, "Underrun #%lu (miss=%lu) - prefill target: %d frames (%zu bytes)",
+                ESP_LOGW(TAG,
+                         "Underrun #%lu (consecutive_misses=%lu adaptive_prefill=%u) - prefill target: %u frames (%zu bytes)",
                          underrun_count, (unsigned long)underrun_action.consecutive_misses,
-                         rebuffer_prefill_frames, prefill_bytes);
+                         adaptive_prefill, rebuffer_prefill_frames, prefill_bytes);
             }
 
-            int16_t *conceal_frame = last_good_mono;
+            int32_t *conceal_frame = last_good_mono;
             if (pipeline->output_mute || underrun_action.gain_q15 == 0) {
                 conceal_frame = s_prefill_silence;
             } else if (underrun_action.gain_q15 < RX_UNDERRUN_GAIN_Q15_ONE) {
@@ -481,32 +508,50 @@ void rx_playback_task(void *arg)
 
 #if defined(CONFIG_USE_ES8388)
             playback_wait_for_slot(&next_play_us, frame_period_us);
-            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                stereo_frame[2 * i]     = conceal_frame[i];
-                stereo_frame[2 * i + 1] = conceal_frame[i];
-            }
+            pcm_convert_mono_s24_to_stereo_s16(conceal_frame, stereo_frame, AUDIO_FRAME_SAMPLES);
             es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
             playback_wait_for_slot(&next_play_us, frame_period_us);
-            i2s_audio_write_mono_as_stereo(conceal_frame, AUDIO_FRAME_SAMPLES);
+            pcm_convert_mono_s24_to_s16(conceal_frame, mono_frame_s16, AUDIO_FRAME_SAMPLES);
+            i2s_audio_write_mono_as_stereo(mono_frame_s16, AUDIO_FRAME_SAMPLES);
 #endif
 
             if (underrun_action.force_rebuffer) {
                 prefilled = false;
                 prefill_wait_start_ms = esp_timer_get_time() / 1000;
+                last_rebuffer_ms = prefill_wait_start_ms;
                 next_play_us = 0;
+                hysteresis_hold_remaining = 0;
                 pipeline->stats.rx_underrun_rebuffer_events++;
-                rebuffer_prefill_frames = network_get_jitter_prefill_frames();
-                if (rebuffer_prefill_frames < JITTER_PREFILL_FRAMES) {
-                    rebuffer_prefill_frames = JITTER_PREFILL_FRAMES;
-                } else if (rebuffer_prefill_frames > JITTER_BUFFER_FRAMES) {
-                    rebuffer_prefill_frames = JITTER_BUFFER_FRAMES;
+                if (adaptive_prefill < JITTER_BUFFER_FRAMES) {
+                    adaptive_prefill++;
                 }
-                prefill_bytes = AUDIO_FRAME_BYTES * rebuffer_prefill_frames;
+                uint16_t network_prefill_frames = network_get_jitter_prefill_frames();
+                if (network_prefill_frames < JITTER_PREFILL_FRAMES) {
+                    network_prefill_frames = JITTER_PREFILL_FRAMES;
+                } else if (network_prefill_frames > JITTER_BUFFER_FRAMES) {
+                    network_prefill_frames = JITTER_BUFFER_FRAMES;
+                }
+                rebuffer_prefill_frames = adaptive_prefill;
+                if (rebuffer_prefill_frames < network_prefill_frames) {
+                    rebuffer_prefill_frames = network_prefill_frames;
+                }
+                prefill_bytes = AUDIO_FRAME_BYTES_INTERNAL_MONO * rebuffer_prefill_frames;
                 rx_underrun_reset(&underrun_state);
             }
         } else if (frames_played > 0) {
             rx_underrun_reset(&underrun_state);
+            if (played_audio_frame) {
+                if (consecutive_clean_playback_frames < UINT32_MAX) {
+                    consecutive_clean_playback_frames++;
+                }
+                if (consecutive_clean_playback_frames >= JITTER_ADAPTIVE_DECAY_FRAMES) {
+                    if (adaptive_prefill > JITTER_PREFILL_FRAMES) {
+                        adaptive_prefill--;
+                    }
+                    consecutive_clean_playback_frames = 0;
+                }
+            }
         }
 
         pipeline->stats.buffer_fill_percent =

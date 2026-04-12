@@ -4,14 +4,14 @@
 #include <assert.h>
 
 // ============================================================================
-// Audio Configuration - 48 kHz, 16-bit, mono pipeline
+// Audio Configuration - 48 kHz, 24-bit-capable internal pipeline
 // ============================================================================
 // 
 // CONFIGURATION HIERARCHY:
 // 
 // BASE VALUES (manually chosen):
-//   - AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE
-//   - AUDIO_FRAME_MS (Opus/codec frame duration)
+//   - AUDIO_SAMPLE_RATE, AUDIO_BOUNDARY_BITS_PER_SAMPLE, AUDIO_INTERNAL_BITS_PER_SAMPLE
+//   - AUDIO_FRAME_TARGET_MS / fallback knobs
 //   - I2S_DMA_CHUNK_MS (low-level DMA timing - INDEPENDENT of codec frame)
 //   - Buffer frame counts, task stack sizes
 //
@@ -25,20 +25,35 @@
 
 // ---- Base Stream Parameters ----
 #define AUDIO_SAMPLE_RATE          48000
-#define AUDIO_BITS_PER_SAMPLE      16
-#define AUDIO_BYTES_PER_SAMPLE     (AUDIO_BITS_PER_SAMPLE / 8)   // 2 bytes
+#define AUDIO_BOUNDARY_BITS_PER_SAMPLE 16  // Opus + codec/I2S boundary depth
+#define AUDIO_INTERNAL_BITS_PER_SAMPLE 24  // Internal processing target
+#define AUDIO_BITS_PER_SAMPLE      AUDIO_BOUNDARY_BITS_PER_SAMPLE
+#define AUDIO_BYTES_PER_SAMPLE     (AUDIO_BOUNDARY_BITS_PER_SAMPLE / 8)   // 2 bytes
+#define AUDIO_INTERNAL_BYTES_PER_SAMPLE 4  // Stored in int32_t lanes
 #define AUDIO_CHANNELS_MONO        1    // Internal pipeline (Opus)
 #define AUDIO_CHANNELS_STEREO      2    // I2S / ES8388
 
 // ---- High-Level Codec/Pipeline Frame (Opus frame == PCM frame) ----
 // This is the frame size Opus encodes/decodes per call.
 // Changing this affects Opus latency and packets-per-second.
-#define AUDIO_FRAME_MS             20   // 20ms = 50 fps capture/encode (proven clean for local output)
+#define AUDIO_FRAME_TARGET_MS      20   // Stable cadence for current pilot
+#define AUDIO_FRAME_FALLBACK_MS    20   // Keep deterministic fallback equal to target
+#define AUDIO_ALLOW_5MS_CADENCE    0    // Disable 5ms rollout during stability recovery
+#define AUDIO_CODEC_SUPPORTS_5MS   0    // Gate 5ms path off while recovering audio quality
+#if AUDIO_ALLOW_5MS_CADENCE && AUDIO_CODEC_SUPPORTS_5MS
+#define AUDIO_FRAME_MS             AUDIO_FRAME_TARGET_MS
+#else
+#define AUDIO_FRAME_MS             AUDIO_FRAME_FALLBACK_MS
+#endif
+#define AUDIO_FRAME_EFFECTIVE_MS   AUDIO_FRAME_MS
+#define AUDIO_FRAME_FALLBACK_ACTIVE (AUDIO_FRAME_EFFECTIVE_MS != AUDIO_FRAME_TARGET_MS)
 
 // Derived: samples and bytes per codec frame
 #define AUDIO_FRAME_SAMPLES        ((AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS) / 1000)  // 1920
 #define AUDIO_FRAME_BYTES_MONO     (AUDIO_FRAME_SAMPLES * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS_MONO)    // 3840
 #define AUDIO_FRAME_BYTES_STEREO   (AUDIO_FRAME_SAMPLES * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS_STEREO)  // 7680
+#define AUDIO_FRAME_BYTES_INTERNAL_MONO (AUDIO_FRAME_SAMPLES * AUDIO_INTERNAL_BYTES_PER_SAMPLE * AUDIO_CHANNELS_MONO)
+#define AUDIO_FRAME_BYTES_INTERNAL_STEREO (AUDIO_FRAME_SAMPLES * AUDIO_INTERNAL_BYTES_PER_SAMPLE * AUDIO_CHANNELS_STEREO)
 
 #define AUDIO_FRAME_BYTES          AUDIO_FRAME_BYTES_MONO
 
@@ -61,11 +76,11 @@
 
 #define OPUS_BITRATE               48000     // 48 kbps reduces airtime under multi-OUT load while keeping good quality
 #define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage
-#define OPUS_EXPECTED_LOSS_PCT     10         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
+#define OPUS_EXPECTED_LOSS_PCT     15         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 
 // Opus frame duration is tied to the pipeline PCM frame duration
-#define OPUS_FRAME_DURATION_MS     AUDIO_FRAME_MS
+#define OPUS_FRAME_DURATION_MS     AUDIO_FRAME_EFFECTIVE_MS
 
 // Target bytes per Opus frame (for documentation/sizing estimates)
 #define OPUS_TARGET_FRAME_BYTES    ((OPUS_BITRATE * OPUS_FRAME_DURATION_MS) / (8 * 1000))  // ~60 at 24kbps/20ms
@@ -80,11 +95,29 @@
 #define AUDIO_INPUT_ACTIVITY_HOLD_FRAMES \
     ((AUDIO_INPUT_ACTIVITY_HOLD_MS + AUDIO_FRAME_MS - 1) / AUDIO_FRAME_MS)
 
+// USB input capture/runtime policy (SRC USB mode)
+#define USB_AUDIO_BUFFER_MS                  200
+#define USB_AUDIO_FRAME_BYTES_STEREO         (AUDIO_CHANNELS_STEREO * AUDIO_BYTES_PER_SAMPLE)
+#define USB_AUDIO_BUFFER_BYTES \
+    (((AUDIO_SAMPLE_RATE * USB_AUDIO_BUFFER_MS) / 1000) * USB_AUDIO_FRAME_BYTES_STEREO)
+#define USB_AUDIO_INACTIVITY_TIMEOUT_MS      1500
+#define USB_AUDIO_INACTIVITY_CONFIRM_MS      300
+#define USB_AUDIO_INACTIVITY_TIMEOUT_FRAMES \
+    ((USB_AUDIO_INACTIVITY_TIMEOUT_MS + AUDIO_FRAME_MS - 1) / AUDIO_FRAME_MS)
+#define USB_AUDIO_INACTIVITY_CONFIRM_FRAMES \
+    ((USB_AUDIO_INACTIVITY_CONFIRM_MS + AUDIO_FRAME_MS - 1) / AUDIO_FRAME_MS)
+
 // ============================================================================
 // Audio FFT Analysis (Portal Telemetry)
 // ============================================================================
 // FFT runs on local PCM frames and is exposed to the portal as 28 normalized bins.
-#define FFT_ANALYSIS_SIZE              512       // Must be power-of-two and <= AUDIO_FRAME_SAMPLES
+#if AUDIO_FRAME_SAMPLES >= 512
+#define FFT_ANALYSIS_SIZE              512
+#elif AUDIO_FRAME_SAMPLES >= 256
+#define FFT_ANALYSIS_SIZE              256
+#else
+#define FFT_ANALYSIS_SIZE              128
+#endif
 #define FFT_PORTAL_BIN_COUNT           28
 #define FFT_MIN_FREQ_HZ                20
 #define FFT_MAX_FREQ_HZ                20000
@@ -132,7 +165,7 @@
 // OUT self-heal rejoin policy (stream-starvation recovery)
 // Circuit breaker prevents endless reconnect churn on persistent upstream faults.
 #define OUT_REJOIN_STARVATION_MS     60000   // 60s no-data timeout triggers rejoin
-#define OUT_REJOIN_MIN_INTERVAL_MS   2000    // Minimum 2s between rejoin attempts
+#define OUT_REJOIN_MIN_INTERVAL_MS   2500    // Minimum 2.5s between rejoin attempts
 #define OUT_REJOIN_MAX_ATTEMPTS      3       // Max retries before cooldown
 #define OUT_REJOIN_WINDOW_MS         (15 * 60 * 1000)  // 15-minute eligibility window
 #define OUT_REJOIN_COOLDOWN_MS       (15 * 60 * 1000)  // 15-minute cooldown after max attempts
@@ -161,7 +194,7 @@
 #define OPUS_BUFFER_FRAMES         8    // 8 × 20ms = 160ms compressed burst tolerance
 
 // Derived: buffer sizes in bytes
-#define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_MONO * PCM_BUFFER_FRAMES)  // 61440 (16×3840)
+#define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_INTERNAL_MONO * PCM_BUFFER_FRAMES)
 
 // Opus buffer includes 2-byte length prefix per frame
 #define OPUS_BUFFER_ITEM_MAX       (3 + OPUS_MAX_FRAME_BYTES)  // flags + len + payload
@@ -172,27 +205,30 @@
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
 #define JITTER_BUFFER_FRAMES       8    // 8 × 20ms = 160ms max depth
 #define JITTER_PREFILL_FRAMES      4    // baseline-current profile: 80ms startup prefill
+#define JITTER_HYSTERESIS_HOLD_FRAMES 3
+#define JITTER_ADAPTIVE_DECAY_FRAMES 500
 // Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
 // This prevents long loss bursts from flooding buffers while still smoothing short gaps.
-#define RX_PLC_MAX_FRAMES_PER_GAP  2
+#define RX_PLC_MAX_FRAMES_PER_GAP  5
+#define RX_BURST_LOSS_THRESHOLD     2
 // Drop packets that arrive this many frames behind the latest accepted sequence.
 // Larger backward jumps are treated as sequence discontinuities (new baseline).
 #define RX_MAX_STALE_FRAMES_TO_DROP 24
 // Decode fairness cap: limit RX decode bursts per scheduler slice to avoid CPU monopolization.
-#define RX_DECODE_MAX_ITEMS_PER_CYCLE 2
+#define RX_DECODE_MAX_ITEMS_PER_CYCLE 4
 // Stop decoding when PCM queue is near full so playback cadence can drain without catch-up bursts.
 #define RX_PCM_HIGH_WATER_FRAMES   (PCM_BUFFER_FRAMES - 2)
-#define RX_PCM_HIGH_WATER_BYTES    (AUDIO_FRAME_BYTES_MONO * RX_PCM_HIGH_WATER_FRAMES)
+#define RX_PCM_HIGH_WATER_BYTES    (AUDIO_FRAME_BYTES_INTERNAL_MONO * RX_PCM_HIGH_WATER_FRAMES)
 // RX underrun smoothing policy:
 // - hold last good frame briefly to mask isolated misses
 // - then fade toward silence for sustained misses
 // - finally force rebuffer to avoid playing stale tails indefinitely
 #define RX_UNDERRUN_CONCEAL_FRAMES  3
 #define RX_UNDERRUN_FADE_FRAMES     4
-#define RX_UNDERRUN_REBUFFER_MISSES 8
+#define RX_UNDERRUN_REBUFFER_MISSES 12
 
-#define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_MONO * JITTER_BUFFER_FRAMES)
-#define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_MONO * JITTER_PREFILL_FRAMES)
+#define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_INTERNAL_MONO * JITTER_BUFFER_FRAMES)
+#define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_INTERNAL_MONO * JITTER_PREFILL_FRAMES)
 
 #define RING_BUFFER_SIZE           PCM_BUFFER_SIZE
 
@@ -243,7 +279,7 @@
 // ============================================================================
 
 #define CONTROL_TELEMETRY_RATE_MS    1000
-#define CONTROL_HEARTBEAT_RATE_MS    2000
+#define CONTROL_TIMER_JITTER_MS      500
 #define CONTROL_STATE_CACHE_TTL_MS   120000
 #define CONTROL_STATE_CACHE_MAX_NODES 32
 
@@ -291,6 +327,15 @@
 // Epsilon for float unity-gain check: skip gain loop when linear ≈ 1.0
 #define MIXER_GAIN_UNITY_EPSILON   (0.0001f)
 
+// Mixer control/state schema (multi-stream command plane)
+#define MIXER_SCHEMA_VERSION           2
+#define MIXER_MAX_STREAMS              4
+#define MIXER_STREAM_ID_MIN            1
+#define MIXER_STREAM_ID_MAX            MIXER_MAX_STREAMS
+#define MIXER_STREAM_GAIN_MIN_PCT      0
+#define MIXER_STREAM_GAIN_DEFAULT_PCT  100
+#define MIXER_STREAM_GAIN_MAX_PCT      400
+
 // ============================================================================
 // Memory Monitoring Thresholds
 // ============================================================================
@@ -317,8 +362,9 @@
 // ============================================================================
 
 // Codec frame must be a multiple of DMA chunk for clean accumulation
-_Static_assert((AUDIO_FRAME_MS % I2S_DMA_CHUNK_MS) == 0,
-               "AUDIO_FRAME_MS must be a multiple of I2S_DMA_CHUNK_MS");
+_Static_assert(((AUDIO_FRAME_MS % I2S_DMA_CHUNK_MS) == 0) ||
+               ((I2S_DMA_CHUNK_MS % AUDIO_FRAME_MS) == 0),
+               "AUDIO_FRAME_MS and I2S_DMA_CHUNK_MS must be integer-aligned");
 
 _Static_assert(sizeof(MESH_DISABLED_ROUTER_SSID) > 1,
                "MESH_DISABLED_ROUTER_SSID must be non-empty");
@@ -334,6 +380,12 @@ _Static_assert((FFT_ANALYSIS_SIZE & (FFT_ANALYSIS_SIZE - 1)) == 0,
 // Jitter prefill can't exceed buffer depth
 _Static_assert(JITTER_PREFILL_FRAMES <= JITTER_BUFFER_FRAMES,
                "JITTER_PREFILL_FRAMES must be <= JITTER_BUFFER_FRAMES");
+
+_Static_assert(JITTER_HYSTERESIS_HOLD_FRAMES >= 1,
+               "JITTER_HYSTERESIS_HOLD_FRAMES must be >= 1");
+
+_Static_assert(JITTER_ADAPTIVE_DECAY_FRAMES >= 1,
+               "JITTER_ADAPTIVE_DECAY_FRAMES must be >= 1");
 
 _Static_assert(RX_UNDERRUN_CONCEAL_FRAMES >= 1,
                "RX_UNDERRUN_CONCEAL_FRAMES must be >= 1");

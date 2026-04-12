@@ -1,6 +1,8 @@
 #include "adf_pipeline_internal.h"
+#include "adf_pipeline_usb_fallback.h"
 
 #include "audio/es8388_audio.h"
+#include "audio/pcm_convert.h"
 #include "audio/tone_gen.h"
 #include "audio/usb_audio.h"
 #include "network/audio_transport.h"
@@ -14,9 +16,10 @@
 static const char *TAG = "adf_pipeline";
 static uint8_t s_batch_buffer[MESH_OPUS_BATCH_MAX_BYTES];
 
-static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count)
+#ifndef UNIT_TEST
+static uint32_t calculate_pcm_peak_s24(const int32_t *samples, size_t sample_count)
 {
-    uint16_t peak = 0;
+    uint32_t peak = 0;
     if (!samples || sample_count == 0) {
         return peak;
     }
@@ -26,11 +29,31 @@ static uint16_t calculate_pcm_peak(const int16_t *samples, size_t sample_count)
         if (sample < 0) {
             sample = -sample;
         }
-        if (sample > peak) {
-            peak = (uint16_t)sample;
+        if ((uint32_t)sample > peak) {
+            peak = (uint32_t)sample;
         }
     }
     return peak;
+}
+
+static inline uint16_t peak_s24_to_s16(uint32_t peak_s24)
+{
+    uint32_t peak_s16 = peak_s24 >> 8;
+    if (peak_s16 > 32767U) {
+        peak_s16 = 32767U;
+    }
+    return (uint16_t)peak_s16;
+}
+
+static inline void apply_input_gain_s24_inplace(int32_t *samples, size_t sample_count, float gain_linear)
+{
+    if (!samples) {
+        return;
+    }
+    for (size_t i = 0; i < sample_count; i++) {
+        int32_t scaled = (int32_t)(samples[i] * gain_linear);
+        samples[i] = pcm_clamp_s24_in_s32(scaled);
+    }
 }
 
 static void tx_update_input_activity(adf_pipeline_handle_t pipeline, bool signal_present, uint16_t peak)
@@ -59,13 +82,15 @@ void tx_capture_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
     int16_t *stereo_frame = s_capture_stereo_frame;
-    int16_t *mono_frame = s_capture_mono_frame;
+    int32_t *mono_frame = s_capture_mono_frame;
+    int16_t *mono_frame_s16 = s_capture_mono_frame_s16;
 
     ESP_LOGI(TAG, "TX capture task started (mode-aware), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
 
     static uint32_t no_data_count = 0;
     static uint32_t local_output_count = 0;
+    TickType_t usb_inactive_confirm_start = 0;
 
     while (pipeline->running) {
         size_t frames_read = 0;
@@ -75,15 +100,16 @@ void tx_capture_task(void *arg)
 
         switch (mode) {
             case ADF_INPUT_MODE_TONE:
-                tone_gen_fill_buffer(mono_frame, AUDIO_FRAME_SAMPLES);
+                tone_gen_fill_buffer(mono_frame_s16, AUDIO_FRAME_SAMPLES);
+                pcm_convert_mono_s16_to_s24(mono_frame_s16, mono_frame, AUDIO_FRAME_SAMPLES);
                 frames_read = AUDIO_FRAME_SAMPLES;
                 tx_update_input_activity(pipeline, true, 16000);
-                fft_process_frame(pipeline, mono_frame, frames_read);
+                fft_process_frame(pipeline, mono_frame_s16, frames_read);
 
                 if (pipeline->enable_local_output) {
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                        stereo_frame[i * 2] = mono_frame[i];
-                        stereo_frame[i * 2 + 1] = mono_frame[i];
+                        stereo_frame[i * 2] = mono_frame_s16[i];
+                        stereo_frame[i * 2 + 1] = mono_frame_s16[i];
                     }
                     es8388_audio_write_stereo(stereo_frame, frames_read);
                     local_output_count++;
@@ -95,7 +121,61 @@ void tx_capture_task(void *arg)
                 break;
 
             case ADF_INPUT_MODE_USB:
-                tx_update_input_activity(pipeline, usb_audio_is_active(), 0);
+                pipeline->stats.usb_input_ready = usb_audio_is_ready();
+                pipeline->stats.usb_input_active = usb_audio_is_active();
+
+                ret = usb_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
+                if (ret == ESP_OK && frames_read > 0) {
+                    if (frames_read < AUDIO_FRAME_SAMPLES) {
+                        memset(stereo_frame + (frames_read * 2), 0,
+                               (AUDIO_FRAME_SAMPLES - frames_read) * 2 * sizeof(int16_t));
+                        frames_read = AUDIO_FRAME_SAMPLES;
+                    }
+
+                    pcm_convert_stereo_s16_to_mono_s24(stereo_frame, mono_frame, frames_read);
+                    pcm_convert_mono_s24_to_s16(mono_frame, mono_frame_s16, frames_read);
+
+                    uint32_t peak_s24 = calculate_pcm_peak_s24(mono_frame, frames_read);
+                    uint16_t peak = peak_s24_to_s16(peak_s24);
+                    tx_update_input_activity(pipeline,
+                                             peak_s24 >= ((uint32_t)AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD << 8),
+                                             peak);
+                    fft_process_frame(pipeline, mono_frame_s16, frames_read);
+
+                    if (pipeline->input_mute) {
+                        memset(mono_frame, 0, frames_read * sizeof(int32_t));
+                    } else if (fabsf(pipeline->input_gain_linear - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
+                        apply_input_gain_s24_inplace(mono_frame, frames_read, pipeline->input_gain_linear);
+                    }
+
+                    if (pipeline->enable_local_output) {
+                        es8388_audio_write_stereo(stereo_frame, frames_read);
+                    }
+
+                    usb_inactive_confirm_start = 0;
+                    pipeline->stats.usb_fallback_to_aux = false;
+                    break;
+                }
+
+                if (ret != ESP_ERR_NOT_FOUND && ret != ESP_OK) {
+                    ESP_LOGW(TAG, "USB read failed: %s", esp_err_to_name(ret));
+                }
+
+                pipeline->stats.usb_input_ready = usb_audio_is_ready();
+                pipeline->stats.usb_input_active = usb_audio_is_active();
+                tx_update_input_activity(pipeline, pipeline->stats.usb_input_active, 0);
+
+                uint32_t inactive_ms = usb_audio_get_inactive_ms();
+                if (adf_pipeline_usb_should_fallback(pipeline->stats.usb_input_ready,
+                                                     inactive_ms,
+                                                     xTaskGetTickCount(),
+                                                     &usb_inactive_confirm_start)) {
+                    pipeline->stats.usb_fallback_to_aux = true;
+                    ESP_LOGW(TAG, "USB input inactive (%lums), falling back to AUX",
+                             (unsigned long)inactive_ms);
+                    adf_pipeline_set_input_mode_impl(pipeline, ADF_INPUT_MODE_AUX);
+                }
+
                 vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
                 continue;
 
@@ -108,7 +188,7 @@ void tx_capture_task(void *arg)
                 const float amplitude = 16000.0f;
                 for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                     float t = (float)(tone_sample_offset + i) / (float)AUDIO_SAMPLE_RATE;
-                    mono_frame[i] = (int16_t)(amplitude * sinf(2.0f * M_PI * freq * t));
+                    mono_frame[i] = pcm_s16_to_s24_in_s32((int16_t)(amplitude * sinf(2.0f * M_PI * freq * t)));
                 }
                 tone_sample_offset += AUDIO_FRAME_SAMPLES;
                 frames_read = AUDIO_FRAME_SAMPLES;
@@ -141,23 +221,20 @@ void tx_capture_task(void *arg)
                     frames_read = AUDIO_FRAME_SAMPLES;
                 }
 
-                for (size_t i = 0; i < frames_read; i++) {
-                    mono_frame[i] = (stereo_frame[i * 2] + stereo_frame[i * 2 + 1]) / 2;
-                }
+                pcm_convert_stereo_s16_to_mono_s24(stereo_frame, mono_frame, frames_read);
+                pcm_convert_mono_s24_to_s16(mono_frame, mono_frame_s16, frames_read);
 
-                uint16_t peak = calculate_pcm_peak(mono_frame, frames_read);
-                tx_update_input_activity(pipeline, peak >= AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD, peak);
-                fft_process_frame(pipeline, mono_frame, frames_read);
+                uint32_t peak_s24 = calculate_pcm_peak_s24(mono_frame, frames_read);
+                uint16_t peak = peak_s24_to_s16(peak_s24);
+                tx_update_input_activity(pipeline,
+                                         peak_s24 >= ((uint32_t)AUDIO_INPUT_ACTIVITY_PEAK_THRESHOLD << 8),
+                                         peak);
+                fft_process_frame(pipeline, mono_frame_s16, frames_read);
 
                 if (pipeline->input_mute) {
-                    memset(mono_frame, 0, frames_read * sizeof(int16_t));
+                    memset(mono_frame, 0, frames_read * sizeof(int32_t));
                 } else if (fabsf(pipeline->input_gain_linear - 1.0f) > MIXER_GAIN_UNITY_EPSILON) {
-                    for (size_t i = 0; i < frames_read; i++) {
-                        int32_t s = (int32_t)(mono_frame[i] * pipeline->input_gain_linear);
-                        if (s > 32767) s = 32767;
-                        else if (s < -32768) s = -32768;
-                        mono_frame[i] = (int16_t)s;
-                    }
+                    apply_input_gain_s24_inplace(mono_frame, frames_read, pipeline->input_gain_linear);
                 }
 
                 static uint32_t capture_count = 0;
@@ -165,7 +242,7 @@ void tx_capture_task(void *arg)
                 if (capture_count <= 5 || (capture_count % 1000) == 0) {
                     ESP_LOGI(TAG, "Capture #%lu: stereo[0]=%d stereo[1]=%d mono[0]=%d mono[100]=%d stack_hwm=%u",
                              capture_count, (int)stereo_frame[0], (int)stereo_frame[1],
-                             (int)mono_frame[0], (int)mono_frame[100],
+                             (int)mono_frame_s16[0], (int)mono_frame_s16[100],
                              (unsigned)uxTaskGetStackHighWaterMark(NULL));
                 }
 
@@ -189,7 +266,7 @@ void tx_capture_task(void *arg)
         }
 
         ret = ring_buffer_write(pipeline->pcm_buffer, (uint8_t *)mono_frame,
-                                frames_read * sizeof(int16_t));
+                                frames_read * sizeof(int32_t));
         if (ret != ESP_OK) {
             pipeline->stats.frames_dropped++;
         }
@@ -200,11 +277,13 @@ void tx_capture_task(void *arg)
         vTaskDelay(portMAX_DELAY);
     }
 }
+#endif
 
 void tx_encode_task(void *arg)
 {
     adf_pipeline_handle_t pipeline = (adf_pipeline_handle_t)arg;
-    int16_t *pcm_frame = s_encode_pcm_frame;
+    int32_t *pcm_frame = s_encode_pcm_frame;
+    int16_t *pcm_frame_s16 = s_encode_pcm_frame_s16;
     uint8_t *opus_frame = s_encode_opus_frame;
 
     uint8_t batch_count = 0;
@@ -220,8 +299,8 @@ void tx_encode_task(void *arg)
             break;
         }
 
-        while (ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES) {
-            esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)pcm_frame, AUDIO_FRAME_BYTES);
+        while (ring_buffer_available(pipeline->pcm_buffer) >= AUDIO_FRAME_BYTES_INTERNAL_MONO) {
+            esp_err_t ret = ring_buffer_read(pipeline->pcm_buffer, (uint8_t *)pcm_frame, AUDIO_FRAME_BYTES_INTERNAL_MONO);
             if (ret != ESP_OK) {
                 break;
             }
@@ -238,10 +317,11 @@ void tx_encode_task(void *arg)
 #endif
 
             int64_t start_us = esp_timer_get_time();
+            pcm_convert_mono_s24_to_s16(pcm_frame, pcm_frame_s16, AUDIO_FRAME_SAMPLES);
 
             int opus_len = opus_encode(
                 pipeline->encoder,
-                pcm_frame,
+                pcm_frame_s16,
                 AUDIO_FRAME_SAMPLES,
                 opus_frame,
                 OPUS_MAX_FRAME_BYTES

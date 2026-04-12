@@ -119,6 +119,9 @@ typedef struct {
     uint8_t buffer_fill_peak_percent;
     uint16_t input_peak;
     bool input_signal_present;
+    bool usb_input_ready;
+    bool usb_input_active;
+    bool usb_fallback_to_aux;
 } adf_pipeline_stats_t;
 
 esp_err_t adf_pipeline_get_stats(adf_pipeline_handle_t pipeline, adf_pipeline_stats_t *stats);
@@ -129,7 +132,7 @@ esp_err_t adf_pipeline_get_stats(adf_pipeline_handle_t pipeline, adf_pipeline_st
 typedef enum {
     ADF_INPUT_MODE_AUX,   // I2S/ES8388 line input (default)
     ADF_INPUT_MODE_TONE,  // Tone generator
-    ADF_INPUT_MODE_USB    // USB audio (future)
+    ADF_INPUT_MODE_USB    // USB audio
 } adf_input_mode_t;
 
 /**

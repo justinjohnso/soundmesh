@@ -2,6 +2,8 @@
 
 #include "audio/es8388_audio.h"
 #include "audio/i2s_audio.h"
+#include "audio/usb_audio.h"
+#include "config/build_role.h"
 #include "network/mesh_net.h"
 
 #include <esp_heap_caps.h>
@@ -13,12 +15,16 @@
 static const char *TAG = "adf_pipeline";
 
 int16_t s_capture_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
-int16_t s_capture_mono_frame[AUDIO_FRAME_SAMPLES];
-int16_t s_encode_pcm_frame[AUDIO_FRAME_SAMPLES];
+int32_t s_capture_mono_frame[AUDIO_FRAME_SAMPLES];
+int16_t s_capture_mono_frame_s16[AUDIO_FRAME_SAMPLES];
+int32_t s_encode_pcm_frame[AUDIO_FRAME_SAMPLES];
+int16_t s_encode_pcm_frame_s16[AUDIO_FRAME_SAMPLES];
 uint8_t s_encode_opus_frame[OPUS_MAX_FRAME_BYTES];
 int16_t s_decode_pcm_frame[AUDIO_FRAME_SAMPLES];
-int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];
-int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
+int32_t s_decode_mono_frame[AUDIO_FRAME_SAMPLES];
+int32_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];
+int32_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
+int16_t s_playback_mono_frame_s16[AUDIO_FRAME_SAMPLES];
 int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];
 
@@ -259,6 +265,9 @@ esp_err_t adf_pipeline_stop_impl(adf_pipeline_handle_t pipeline)
         return ESP_OK;
     }
     pipeline->running = false;
+    if (pipeline->type == ADF_PIPELINE_TX && pipeline->input_mode == ADF_INPUT_MODE_USB) {
+        usb_audio_deinit();
+    }
     xSemaphoreGive(pipeline->mutex);
 
     if (pipeline->encode_task) xTaskNotifyGive(pipeline->encode_task);
@@ -348,9 +357,53 @@ esp_err_t adf_pipeline_set_input_mode_impl(adf_pipeline_handle_t pipeline, adf_i
     if (pipeline->type != ADF_PIPELINE_TX) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (mode != ADF_INPUT_MODE_AUX &&
+        mode != ADF_INPUT_MODE_TONE &&
+        mode != ADF_INPUT_MODE_USB) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(pipeline->mutex, portMAX_DELAY);
+
+    if (pipeline->input_mode == mode) {
+        pipeline->stats.usb_input_ready = usb_audio_is_ready();
+        pipeline->stats.usb_input_active = usb_audio_is_active();
+        xSemaphoreGive(pipeline->mutex);
+        return ESP_OK;
+    }
+
+#if !BUILD_IS_SOURCE
+    if (mode == ADF_INPUT_MODE_USB) {
+        xSemaphoreGive(pipeline->mutex);
+        ESP_LOGW(TAG, "USB input mode is only supported on SRC builds");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+#endif
+
+    adf_input_mode_t previous_mode = pipeline->input_mode;
+
+    if (mode == ADF_INPUT_MODE_USB) {
+        esp_err_t ret = usb_audio_init();
+        if (ret != ESP_OK) {
+            pipeline->input_mode = ADF_INPUT_MODE_AUX;
+            pipeline->stats.usb_input_ready = false;
+            pipeline->stats.usb_input_active = false;
+            pipeline->stats.usb_fallback_to_aux = true;
+            xSemaphoreGive(pipeline->mutex);
+            ESP_LOGW(TAG, "USB input init failed (%s), falling back to AUX", esp_err_to_name(ret));
+            return ret;
+        }
+        pipeline->stats.usb_fallback_to_aux = false;
+    } else if (previous_mode == ADF_INPUT_MODE_USB) {
+        usb_audio_deinit();
+    }
 
     pipeline->input_mode = mode;
-    ESP_LOGI(TAG, "Input mode set to %d", mode);
+    pipeline->stats.usb_input_ready = usb_audio_is_ready();
+    pipeline->stats.usb_input_active = usb_audio_is_active();
+    xSemaphoreGive(pipeline->mutex);
+
+    ESP_LOGI(TAG, "Input mode set to %d (usb_ready=%d)", mode, pipeline->stats.usb_input_ready ? 1 : 0);
 
     return ESP_OK;
 }
@@ -465,5 +518,5 @@ void adf_pipeline_set_input_mode_latest(adf_input_mode_t mode)
     adf_pipeline_handle_t p = s_latest_pipeline;
     if (!p) return;
     if (p->type != ADF_PIPELINE_TX) return;
-    p->input_mode = mode;
+    adf_pipeline_set_input_mode_impl(p, mode);
 }

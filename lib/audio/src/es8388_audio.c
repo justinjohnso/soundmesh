@@ -106,6 +106,24 @@ static i2s_chan_handle_t i2s_rx_handle = NULL;
 static bool es8388_initialized = false;
 static bool dac_enabled = false;
 
+static inline uint8_t es8388_codec_wordlen_reg_value(void)
+{
+#if AUDIO_BOUNDARY_BITS_PER_SAMPLE == 16
+    return 0x18;
+#else
+    return 0x18;
+#endif
+}
+
+static inline i2s_data_bit_width_t es8388_i2s_boundary_width(void)
+{
+#if AUDIO_BOUNDARY_BITS_PER_SAMPLE == 16
+    return I2S_DATA_BIT_WIDTH_16BIT;
+#else
+    return I2S_DATA_BIT_WIDTH_16BIT;
+#endif
+}
+
 
 
 static esp_err_t es8388_write_reg(uint8_t reg, uint8_t val)
@@ -164,7 +182,7 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     // Configure DAC
     res |= es8388_write_reg(ES8388_DACPOWER, 0xC0);     // Disable DAC outputs initially
     res |= es8388_write_reg(ES8388_CONTROL1, 0x12);     // ADC+DAC mode
-    res |= es8388_write_reg(ES8388_DACCONTROL1, 0x18);  // 16-bit I2S
+    res |= es8388_write_reg(ES8388_DACCONTROL1, es8388_codec_wordlen_reg_value());  // Boundary I2S width
     res |= es8388_write_reg(ES8388_DACCONTROL2, 0x02);  // DACFsMode=single speed, ratio=256
     res |= es8388_write_reg(ES8388_DACCONTROL16, 0x00); // Audio from I2S (not analog bypass)
     res |= es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer (LD2LO=1)
@@ -186,7 +204,7 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     res |= es8388_write_reg(ES8388_ADCCONTROL2, ADC_INPUT_LINPUT2_RINPUT2);
     
     res |= es8388_write_reg(ES8388_ADCCONTROL3, 0x02);  // DS: stereo
-    res |= es8388_write_reg(ES8388_ADCCONTROL4, 0x0C);  // 16-bit I2S, left/right normal
+    res |= es8388_write_reg(ES8388_ADCCONTROL4, 0x0C);  // Left/right normal, 16-bit boundary path
     res |= es8388_write_reg(ES8388_ADCCONTROL5, 0x02);  // ADCFsMode=single speed, ratio=256
     
     // Set ADC volume
@@ -208,6 +226,11 @@ static esp_err_t es8388_codec_init(bool enable_dac)
     es8388_read_reg(ES8388_ADCCONTROL5, &adc_ctrl5);
     ESP_LOGI(TAG, "ADC config: CTRL2=0x%02x (input sel), CTRL4=0x%02x (format), CTRL5=0x%02x (fs)",
              adc_ctrl2, adc_ctrl4, adc_ctrl5);
+    if (AUDIO_INTERNAL_BITS_PER_SAMPLE > AUDIO_BOUNDARY_BITS_PER_SAMPLE) {
+        ESP_LOGI(TAG,
+                 "Boundary depth fallback active: internal=%d-bit, codec/i2s=%d-bit",
+                 AUDIO_INTERNAL_BITS_PER_SAMPLE, AUDIO_BOUNDARY_BITS_PER_SAMPLE);
+    }
     
     // Enable DAC if requested (for COMBO mode headphone output)
     if (enable_dac) {
@@ -270,7 +293,7 @@ static esp_err_t i2s_init(bool enable_dac)
             .clk_src = I2S_CLK_SRC_DEFAULT,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,  // MCLK = 256 * Fs = 12.288 MHz
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(es8388_i2s_boundary_width(), I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = ES8388_MCLK_IO,
             .bclk = ES8388_BCLK_IO,
@@ -316,8 +339,9 @@ static esp_err_t i2s_init(bool enable_dac)
         }
     }
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit stereo, MCLK=GPIO%d, DIN=GPIO%d", 
-             AUDIO_SAMPLE_RATE, ES8388_MCLK_IO, ES8388_DIN_IO);
+    ESP_LOGI(TAG, "I2S initialized: %dHz, boundary=%d-bit stereo (internal=%d-bit), MCLK=GPIO%d, DIN=GPIO%d",
+             AUDIO_SAMPLE_RATE, AUDIO_BOUNDARY_BITS_PER_SAMPLE, AUDIO_INTERNAL_BITS_PER_SAMPLE,
+             ES8388_MCLK_IO, ES8388_DIN_IO);
     ESP_LOGI(TAG, "I2S DMA: %d descriptors x %d frames = %d samples buffered",
              I2S_DMA_DESC_NUM, I2S_DMA_FRAME_NUM, I2S_DMA_DESC_NUM * I2S_DMA_FRAME_NUM);
     

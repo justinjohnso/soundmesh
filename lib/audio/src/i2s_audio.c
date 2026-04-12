@@ -8,6 +8,15 @@
 static const char *TAG = "i2s_audio";
 static i2s_chan_handle_t tx_handle = NULL;
 
+static inline i2s_data_bit_width_t i2s_boundary_width(void)
+{
+#if AUDIO_BOUNDARY_BITS_PER_SAMPLE == 16
+    return I2S_DATA_BIT_WIDTH_16BIT;
+#else
+    return I2S_DATA_BIT_WIDTH_16BIT;
+#endif
+}
+
 esp_err_t i2s_audio_init(void) {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_PORT, I2S_ROLE_MASTER);
     // Use default DMA config (6 desc × 240 frames = ~5.7KB) to save internal SRAM
@@ -19,7 +28,7 @@ esp_err_t i2s_audio_init(void) {
             .clk_src = I2S_CLK_SRC_DEFAULT,
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,  // UDA1334 has internal PLL; MCLK helps ESP32 timing
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(i2s_boundary_width(), I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,  // UDA1334 has built-in PLL - leave MCLK unconnected (not GPIO1)
             .bclk = I2S_BCK_IO,
@@ -37,7 +46,8 @@ esp_err_t i2s_audio_init(void) {
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     
-    ESP_LOGI(TAG, "I2S initialized: %dHz, 16-bit, stereo (UDA1334 with internal PLL)", AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S initialized: %dHz, boundary=%d-bit stereo (internal=%d-bit, UDA1334 PLL)",
+             AUDIO_SAMPLE_RATE, AUDIO_BOUNDARY_BITS_PER_SAMPLE, AUDIO_INTERNAL_BITS_PER_SAMPLE);
     return ESP_OK;
 }
 
@@ -59,6 +69,9 @@ esp_err_t i2s_audio_write_samples(const int16_t *samples, size_t num_samples) {
 
 esp_err_t i2s_audio_write_mono_as_stereo(const int16_t *mono_samples, size_t num_mono_samples) {
     if (!tx_handle) return ESP_ERR_INVALID_STATE;
+    if (!mono_samples || num_mono_samples == 0 || num_mono_samples > AUDIO_FRAME_SAMPLES) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
     static int16_t stereo_buffer[AUDIO_FRAME_SAMPLES * 2];
     static uint32_t write_count = 0;

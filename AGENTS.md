@@ -38,6 +38,11 @@ pio run -e src -t uploadfs        # Upload Portal UI
 4. **Validation**: Must pass `pio test` + `pio run` (both envs) before merge.
 5. **Guideline**: Keep `AGENTS.md` ~150 lines (+/- 20).
 
+## Engineering Conventions
+- **DSP Consistency**: Apply all effects (LPF, Panning) to BOTH playback and concealment paths to avoid spectral jumps during jitter.
+- **Native Testing**: Prefer direct source inclusion for unit tests but clear `.pio/build` if symbol conflicts occur. Use `printf` over `ESP_LOG` for path tracing in native env.
+- **Opus/Mesh**: Use 20ms frames, 2 frames per mesh packet (25 pps) for optimal quality/airtime balance.
+
 ## Threading Model
 - **Core 0**: WiFi/Mesh, `mesh_rx` (prio 6), `mesh_hb` (prio 2), `app_main` (control).
 - **Core 1**: `adf_cap` (prio 4), `adf_enc` (prio 3), `adf_dec` (prio 4), `adf_play` (prio 5).

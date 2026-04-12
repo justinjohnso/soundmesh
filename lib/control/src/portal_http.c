@@ -580,9 +580,20 @@ static esp_err_t handle_api_mesh_positions(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    portal_control_plane_record_request(PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS);
+
+    if (!portal_control_plane_request_has_valid_token(req)) {
+        ESP_LOGW(TAG, "Rejecting unauthorized mesh positions control request");
+        return portal_control_plane_send_unauthorized(req);
+    }
+    if (!portal_control_plane_allow_rate_limited_request(PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS, "/api/mesh/positions")) {
+        return portal_control_plane_send_rate_limited(req);
+    }
+
     char body[1024] = {0};
     int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
     if (rcvd <= 0) {
+        portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;

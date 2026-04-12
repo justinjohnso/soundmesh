@@ -187,13 +187,16 @@ void rx_decode_task(void *arg)
         uint8_t *item;
         uint8_t items_processed = 0;
 
-        while (items_processed < RX_DECODE_MAX_ITEMS_PER_CYCLE &&
-               (item = ring_buffer_receive_item(pipeline->opus_buffer, &item_size)) != NULL) {
+        while (items_processed < RX_DECODE_MAX_ITEMS_PER_CYCLE) {
             if (ring_buffer_available(pipeline->pcm_buffer) >= RX_PCM_HIGH_WATER_BYTES) {
-                ring_buffer_return_item(pipeline->opus_buffer, item);
                 break;
             }
-
+            
+            item = ring_buffer_receive_item(pipeline->opus_buffer, &item_size);
+            if (item == NULL) {
+                break;
+            }
+            
             if (item_size < 3) {
                 ESP_LOGW(TAG, "Opus item too small: %u", (unsigned)item_size);
                 ring_buffer_return_item(pipeline->opus_buffer, item);

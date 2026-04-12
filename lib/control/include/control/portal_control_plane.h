@@ -9,6 +9,7 @@ typedef enum {
     PORTAL_CONTROL_ENDPOINT_OTA = 0,
     PORTAL_CONTROL_ENDPOINT_UPLINK,
     PORTAL_CONTROL_ENDPOINT_MIXER,
+    PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS,
 } portal_control_endpoint_t;
 
 void portal_control_plane_reset(void);

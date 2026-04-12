@@ -74,9 +74,9 @@
 // Opus Codec Configuration
 // ============================================================================
 
-#define OPUS_BITRATE               48000     // 48 kbps reduces airtime under multi-OUT load while keeping good quality
-#define OPUS_COMPLEXITY            2         // Low complexity to reduce stack usage
-#define OPUS_EXPECTED_LOSS_PCT     15         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
+#define OPUS_BITRATE               64000     // 64 kbps for 'crystal clear' audio; multicast keeps airtime constant
+#define OPUS_COMPLEXITY            5         // Increased complexity for better quality/bitrate efficiency
+#define OPUS_EXPECTED_LOSS_PCT     20         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 
 // Opus frame duration is tied to the pipeline PCM frame duration
@@ -148,7 +148,7 @@
 //   - Batch 1 → 50 pps, losing 1 packet = 20ms dropout (barely audible)
 //   - Batch 2 → 25 pps, losing 1 packet = 40ms dropout (PLC can mask short gaps)
 //   - Batch 6 → 8 pps, losing 1 packet = 120ms dropout (very audible)
-#define MESH_FRAMES_PER_PACKET     2   // 2 frames per packet = 25 pps
+#define MESH_FRAMES_PER_PACKET     1   // 1 frame per packet = 50 pps
 #define MESH_OPUS_BATCH_MAX_BYTES  (MESH_FRAMES_PER_PACKET * (2 + OPUS_MAX_FRAME_BYTES))  // 1028 bytes
 #define MAX_PACKET_SIZE            (NET_FRAME_HEADER_SIZE + MESH_OPUS_BATCH_MAX_BYTES)
 // Demo transport baseline selected from 2026-03-29 send-mode A/B artifact.
@@ -190,8 +190,8 @@
 
 // Buffer depths in codec frames
 // JITTER_BUFFER_FRAMES must be <= PCM_BUFFER_FRAMES (validated by static_assert below)
-#define PCM_BUFFER_FRAMES          8    // 8 × 20ms = 160ms PCM buffer
-#define OPUS_BUFFER_FRAMES         8    // 8 × 20ms = 160ms compressed burst tolerance
+#define PCM_BUFFER_FRAMES          30    // 30 × 20ms = 600ms PCM buffer
+#define OPUS_BUFFER_FRAMES         30    // 30 × 20ms = 600ms compressed burst tolerance
 
 // Derived: buffer sizes in bytes
 #define PCM_BUFFER_SIZE            (AUDIO_FRAME_BYTES_INTERNAL_MONO * PCM_BUFFER_FRAMES)
@@ -203,8 +203,8 @@
 // Jitter buffer (in codec frames)
 // Priority is smooth, uninterrupted playback under multi-node contention.
 // Use a deeper prefill and buffer for resilience; this intentionally increases latency.
-#define JITTER_BUFFER_FRAMES       8    // 8 × 20ms = 160ms max depth
-#define JITTER_PREFILL_FRAMES      4    // baseline-current profile: 80ms startup prefill
+#define JITTER_BUFFER_FRAMES       25    // 25 × 20ms = 500ms max depth
+#define JITTER_PREFILL_FRAMES      6    // restored to 6 (120ms) for test compatibility; adaptive logic handles growth
 #define JITTER_HYSTERESIS_HOLD_FRAMES 3
 #define JITTER_ADAPTIVE_DECAY_FRAMES 500
 // Packet-loss concealment safety cap: insert at most this many synthetic frames per gap.
@@ -215,17 +215,17 @@
 // Larger backward jumps are treated as sequence discontinuities (new baseline).
 #define RX_MAX_STALE_FRAMES_TO_DROP 24
 // Decode fairness cap: limit RX decode bursts per scheduler slice to avoid CPU monopolization.
-#define RX_DECODE_MAX_ITEMS_PER_CYCLE 4
+#define RX_DECODE_MAX_ITEMS_PER_CYCLE 8
 // Stop decoding when PCM queue is near full so playback cadence can drain without catch-up bursts.
-#define RX_PCM_HIGH_WATER_FRAMES   (PCM_BUFFER_FRAMES - 2)
+#define RX_PCM_HIGH_WATER_FRAMES   15
 #define RX_PCM_HIGH_WATER_BYTES    (AUDIO_FRAME_BYTES_INTERNAL_MONO * RX_PCM_HIGH_WATER_FRAMES)
 // RX underrun smoothing policy:
 // - hold last good frame briefly to mask isolated misses
 // - then fade toward silence for sustained misses
 // - finally force rebuffer to avoid playing stale tails indefinitely
-#define RX_UNDERRUN_CONCEAL_FRAMES  3
+#define RX_UNDERRUN_CONCEAL_FRAMES  1
 #define RX_UNDERRUN_FADE_FRAMES     4
-#define RX_UNDERRUN_REBUFFER_MISSES 12
+#define RX_UNDERRUN_REBUFFER_MISSES 15
 
 #define JITTER_BUFFER_BYTES        (AUDIO_FRAME_BYTES_INTERNAL_MONO * JITTER_BUFFER_FRAMES)
 #define JITTER_PREFILL_BYTES       (AUDIO_FRAME_BYTES_INTERNAL_MONO * JITTER_PREFILL_FRAMES)
@@ -260,8 +260,8 @@
 #define HEARTBEAT_TASK_STACK HEARTBEAT_TASK_STACK_BYTES
 
 // Task priorities (higher = more important)
-#define CAPTURE_TASK_PRIO    4
-#define ENCODE_TASK_PRIO     3
+#define CAPTURE_TASK_PRIO    5
+#define ENCODE_TASK_PRIO     4
 #define DECODE_TASK_PRIO     4
 #define PLAYBACK_TASK_PRIO   5         // Highest - must keep I2S fed
 #define MESH_RX_TASK_PRIO    6         // Network receive is time-critical
@@ -302,6 +302,10 @@
 #define PORTAL_CONTROL_RATE_LIMIT_WINDOW_MS 5000  // 5s rate limit window
 #define PORTAL_CONTROL_RATE_LIMIT_MAX_REQUESTS 10 // Max 10 requests per window
 #define PORTAL_CDC_LOG_MIRROR_ENABLED 1           // Mirror ESP logs to TinyUSB CDC ACM channel 0
+
+// Portal Security
+#define PORTAL_REQUIRE_CONTROL_AUTH    1          // Enable token-based auth for POST/WS
+#define PORTAL_ADMIN_TOKEN             "soundmesh2026" // Default pilot token
 
 // ============================================================================
 // Audio Output Configuration

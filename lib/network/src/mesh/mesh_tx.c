@@ -6,8 +6,8 @@
 #include <string.h>
 
 static const char *TAG = "network_mesh";
-static const int kAudioRootFanoutFlags = MESH_DATA_GROUP | MESH_DATA_NONBLOCK;
-static const int kAudioToRootFlags = MESH_DATA_TODS | MESH_DATA_NONBLOCK;
+static const int kAudioRootFanoutFlags = MESH_DATA_GROUP;
+static const int kAudioToRootFlags = MESH_DATA_TODS;
 
 static uint8_t transport_backpressure_level(uint32_t queue_full_streak)
 {

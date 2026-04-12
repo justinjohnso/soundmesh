@@ -224,14 +224,18 @@ void test_jitter_prefill_penalties_increase_monotonically(void)
 {
     const uint8_t expected_baseline =
         (JITTER_PREFILL_FRAMES > JITTER_BUFFER_FRAMES) ? JITTER_BUFFER_FRAMES : JITTER_PREFILL_FRAMES;
-    const uint8_t expected_with_single_penalty =
-        ((uint16_t)JITTER_PREFILL_FRAMES + 1u > JITTER_BUFFER_FRAMES)
-            ? JITTER_BUFFER_FRAMES
-            : (uint8_t)(JITTER_PREFILL_FRAMES + 1u);
-    const uint8_t expected_with_double_penalty =
+    const uint8_t expected_with_hop_penalty =
         ((uint16_t)JITTER_PREFILL_FRAMES + 2u > JITTER_BUFFER_FRAMES)
             ? JITTER_BUFFER_FRAMES
             : (uint8_t)(JITTER_PREFILL_FRAMES + 2u);
+    const uint8_t expected_with_node_penalty =
+        ((uint16_t)JITTER_PREFILL_FRAMES + 1u > JITTER_BUFFER_FRAMES)
+            ? JITTER_BUFFER_FRAMES
+            : (uint8_t)(JITTER_PREFILL_FRAMES + 1u);
+    const uint8_t expected_with_combined_penalty =
+        ((uint16_t)JITTER_PREFILL_FRAMES + 3u > JITTER_BUFFER_FRAMES)
+            ? JITTER_BUFFER_FRAMES
+            : (uint8_t)(JITTER_PREFILL_FRAMES + 3u);
 
     mesh_layer = 1;
     measured_latency_ms = 50;
@@ -251,17 +255,17 @@ void test_jitter_prefill_penalties_increase_monotonically(void)
     mesh_layer = 2;
     measured_latency_ms = 51;
     stub_routing_table_size = 2;
-    uint8_t with_latency_penalty = network_get_jitter_prefill_frames();
+    uint8_t with_combined_penalty = network_get_jitter_prefill_frames();
 
     TEST_ASSERT_EQUAL_UINT8(expected_baseline, baseline);
-    TEST_ASSERT_EQUAL_UINT8(expected_with_single_penalty, with_hop_penalty);
-    TEST_ASSERT_EQUAL_UINT8(expected_with_single_penalty, with_node_penalty);
-    TEST_ASSERT_EQUAL_UINT8(expected_with_double_penalty, with_latency_penalty);
+    TEST_ASSERT_EQUAL_UINT8(expected_with_hop_penalty, with_hop_penalty);
+    TEST_ASSERT_EQUAL_UINT8(expected_with_node_penalty, with_node_penalty);
+    TEST_ASSERT_EQUAL_UINT8(expected_with_combined_penalty, with_combined_penalty);
 
     TEST_ASSERT_TRUE(with_hop_penalty >= baseline);
     TEST_ASSERT_TRUE(with_node_penalty >= baseline);
-    TEST_ASSERT_TRUE(with_latency_penalty >= with_hop_penalty);
-    TEST_ASSERT_TRUE(with_latency_penalty >= with_node_penalty);
+    TEST_ASSERT_TRUE(with_combined_penalty >= with_hop_penalty);
+    TEST_ASSERT_TRUE(with_combined_penalty >= with_node_penalty);
 }
 
 void test_jitter_prefill_clamps_to_buffer_limit(void)

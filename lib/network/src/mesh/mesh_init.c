@@ -140,8 +140,8 @@ esp_err_t network_init_mesh(void) {
 
     ESP_ERROR_CHECK(esp_mesh_set_config(&mesh_config));
 
-    ESP_ERROR_CHECK(esp_mesh_set_self_organized(true, my_node_role == NODE_ROLE_OUT));
-    mesh_self_organized_mode = true;
+    ESP_ERROR_CHECK(esp_mesh_set_self_organized(my_node_role == NODE_ROLE_OUT, my_node_role == NODE_ROLE_OUT));
+    mesh_self_organized_mode = (my_node_role == NODE_ROLE_OUT);
     ESP_ERROR_CHECK(esp_mesh_set_max_layer(MESH_MAX_LAYER));
     ESP_ERROR_CHECK(esp_mesh_set_xon_qsize(MESH_XON_QSIZE));
     ESP_ERROR_CHECK(esp_mesh_set_ap_assoc_expire(MESH_AP_ASSOC_EXPIRE_S));

@@ -11,14 +11,6 @@
 
 static const char *TAG = "network_mesh";
 
-static bool should_skip_wifi_runtime_ops(const char *op_name) {
-    if (mesh_self_organized_mode && mesh_runtime_started) {
-        ESP_LOGW(TAG, "Skipping %s while self-organized mesh runtime is active", op_name);
-        return true;
-    }
-    return false;
-}
-
 static const char *wifi_disconnect_reason_to_str(uint8_t reason) {
     switch (reason) {
         case WIFI_REASON_UNSPECIFIED: return "UNSPECIFIED";

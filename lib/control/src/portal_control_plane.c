@@ -19,19 +19,26 @@ typedef struct {
 static portal_rate_limiter_t s_ota_rate_limit = {0};
 static portal_rate_limiter_t s_uplink_rate_limit = {0};
 static portal_rate_limiter_t s_mixer_rate_limit = {0};
+static portal_rate_limiter_t s_mesh_pos_rate_limit = {0};
 static uint32_t s_auth_reject_count = 0;
 static uint32_t s_ota_requests_total = 0;
 static uint32_t s_uplink_requests_total = 0;
 static uint32_t s_mixer_requests_total = 0;
+static uint32_t s_mesh_pos_requests_total = 0;
 static uint32_t s_ota_apply_fail_count = 0;
 static uint32_t s_uplink_apply_fail_count = 0;
 static uint32_t s_mixer_apply_fail_count = 0;
+static uint32_t s_mesh_pos_apply_fail_count = 0;
 static uint32_t s_bad_request_count = 0;
-static char s_auth_token_buf[96];
 
 static uint32_t now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static const char *portal_auth_token(void)
+{
+    return PORTAL_ADMIN_TOKEN;
 }
 
 static portal_rate_limiter_t *rate_limiter_for_endpoint(portal_control_endpoint_t endpoint)
@@ -43,24 +50,11 @@ static portal_rate_limiter_t *rate_limiter_for_endpoint(portal_control_endpoint_
             return &s_uplink_rate_limit;
         case PORTAL_CONTROL_ENDPOINT_MIXER:
             return &s_mixer_rate_limit;
+        case PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS:
+            return &s_mesh_pos_rate_limit;
         default:
             return NULL;
     }
-}
-
-static const char *portal_auth_token(void)
-{
-#if PORTAL_REQUIRE_CONTROL_AUTH
-    const char *env_token = getenv("SOUNDMESH_CONTROL_TOKEN");
-    if (env_token && env_token[0] != '\0') {
-        strlcpy(s_auth_token_buf, env_token, sizeof(s_auth_token_buf));
-    } else {
-        strlcpy(s_auth_token_buf, PORTAL_CONTROL_AUTH_TOKEN, sizeof(s_auth_token_buf));
-    }
-    return s_auth_token_buf;
-#else
-    return NULL;
-#endif
 }
 
 void portal_control_plane_reset(void)
@@ -68,13 +62,16 @@ void portal_control_plane_reset(void)
     memset(&s_ota_rate_limit, 0, sizeof(s_ota_rate_limit));
     memset(&s_uplink_rate_limit, 0, sizeof(s_uplink_rate_limit));
     memset(&s_mixer_rate_limit, 0, sizeof(s_mixer_rate_limit));
+    memset(&s_mesh_pos_rate_limit, 0, sizeof(s_mesh_pos_rate_limit));
     s_auth_reject_count = 0;
     s_ota_requests_total = 0;
     s_uplink_requests_total = 0;
     s_mixer_requests_total = 0;
+    s_mesh_pos_requests_total = 0;
     s_ota_apply_fail_count = 0;
     s_uplink_apply_fail_count = 0;
     s_mixer_apply_fail_count = 0;
+    s_mesh_pos_apply_fail_count = 0;
     s_bad_request_count = 0;
 }
 
@@ -86,6 +83,8 @@ void portal_control_plane_record_request(portal_control_endpoint_t endpoint)
         s_uplink_requests_total++;
     } else if (endpoint == PORTAL_CONTROL_ENDPOINT_MIXER) {
         s_mixer_requests_total++;
+    } else if (endpoint == PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS) {
+        s_mesh_pos_requests_total++;
     }
 }
 
@@ -97,6 +96,8 @@ void portal_control_plane_record_apply_failure(portal_control_endpoint_t endpoin
         s_uplink_apply_fail_count++;
     } else if (endpoint == PORTAL_CONTROL_ENDPOINT_MIXER) {
         s_mixer_apply_fail_count++;
+    } else if (endpoint == PORTAL_CONTROL_ENDPOINT_MESH_POSITIONS) {
+        s_mesh_pos_apply_fail_count++;
     }
 }
 
@@ -205,9 +206,9 @@ int portal_control_plane_serialize_metrics_json(char *buf, size_t buf_len)
     return snprintf(
         buf,
         buf_len,
-        "{\"schemaVersion\":%u,\"authRejects\":%lu,\"otaRejects\":%lu,\"uplinkRejects\":%lu,\"mixerRejects\":%lu,"
-        "\"otaRequests\":%lu,\"uplinkRequests\":%lu,\"mixerRequests\":%lu,"
-        "\"otaApplyFails\":%lu,\"uplinkApplyFails\":%lu,\"mixerApplyFails\":%lu,"
+        "{\"schemaVersion\":%u,\"authRejects\":%lu,\"otaRejects\":%lu,\"uplinkRejects\":%lu,\"mixerRejects\":%lu,\"meshPosRejects\":%lu,"
+        "\"otaRequests\":%lu,\"uplinkRequests\":%lu,\"mixerRequests\":%lu,\"meshPosRequests\":%lu,"
+        "\"otaApplyFails\":%lu,\"uplinkApplyFails\":%lu,\"mixerApplyFails\":%lu,\"meshPosApplyFails\":%lu,"
         "\"badRequests\":%lu,"
         "\"rateLimit\":{\"windowMs\":%u,\"maxRequests\":%u}}",
         (unsigned)PORTAL_CONTROL_METRICS_SCHEMA_VERSION,
@@ -215,12 +216,15 @@ int portal_control_plane_serialize_metrics_json(char *buf, size_t buf_len)
         (unsigned long)s_ota_rate_limit.rejected_count,
         (unsigned long)s_uplink_rate_limit.rejected_count,
         (unsigned long)s_mixer_rate_limit.rejected_count,
+        (unsigned long)s_mesh_pos_rate_limit.rejected_count,
         (unsigned long)s_ota_requests_total,
         (unsigned long)s_uplink_requests_total,
         (unsigned long)s_mixer_requests_total,
+        (unsigned long)s_mesh_pos_requests_total,
         (unsigned long)s_ota_apply_fail_count,
         (unsigned long)s_uplink_apply_fail_count,
         (unsigned long)s_mixer_apply_fail_count,
+        (unsigned long)s_mesh_pos_apply_fail_count,
         (unsigned long)s_bad_request_count,
         (unsigned)PORTAL_CONTROL_RATE_LIMIT_WINDOW_MS,
         (unsigned)PORTAL_CONTROL_RATE_LIMIT_MAX_REQUESTS);

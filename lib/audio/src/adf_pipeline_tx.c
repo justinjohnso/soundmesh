@@ -91,6 +91,8 @@ void tx_capture_task(void *arg)
     static uint32_t no_data_count = 0;
     static uint32_t local_output_count = 0;
     TickType_t usb_inactive_confirm_start = 0;
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t frame_ticks = pdMS_TO_TICKS(AUDIO_FRAME_MS);
 
     while (pipeline->running) {
         size_t frames_read = 0;
@@ -117,7 +119,7 @@ void tx_capture_task(void *arg)
                         ESP_LOGI(TAG, "Local output: %lu frames, mode=TONE", local_output_count);
                     }
                 }
-                vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+                vTaskDelayUntil(&last_wake_time, frame_ticks);
                 break;
 
             case ADF_INPUT_MODE_USB:
@@ -154,6 +156,7 @@ void tx_capture_task(void *arg)
 
                     usb_inactive_confirm_start = 0;
                     pipeline->stats.usb_fallback_to_aux = false;
+                    last_wake_time = xTaskGetTickCount(); // sync cadence to successful read
                     break;
                 }
 
@@ -176,7 +179,7 @@ void tx_capture_task(void *arg)
                     adf_pipeline_set_input_mode_impl(pipeline, ADF_INPUT_MODE_AUX);
                 }
 
-                vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+                vTaskDelayUntil(&last_wake_time, frame_ticks);
                 continue;
 
             case ADF_INPUT_MODE_AUX:
@@ -198,7 +201,7 @@ void tx_capture_task(void *arg)
                     tone_log_once = false;
                     ESP_LOGW(TAG, "*** TX TEST TONE MODE - bypassing ES8388 ***");
                 }
-                vTaskDelay(pdMS_TO_TICKS(AUDIO_FRAME_MS));
+                vTaskDelayUntil(&last_wake_time, frame_ticks);
                 break;
 #endif
                 ret = es8388_audio_read_stereo(stereo_frame, AUDIO_FRAME_SAMPLES, &frames_read);
@@ -211,9 +214,11 @@ void tx_capture_task(void *arg)
                                  ret, frames_read, no_data_count);
                     }
                     vTaskDelay(1);
+                    last_wake_time = xTaskGetTickCount();
                     continue;
                 }
                 no_data_count = 0;
+                last_wake_time = xTaskGetTickCount(); // sync cadence to successful I2S block release
 
                 if (frames_read < AUDIO_FRAME_SAMPLES) {
                     memset(stereo_frame + (frames_read * 2), 0,

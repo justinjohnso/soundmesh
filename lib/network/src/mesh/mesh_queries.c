@@ -10,23 +10,6 @@
 static const char *TAG = "network_mesh";
 
 static int s_jitter_override = -1;  // -1 = auto; 1-16 = fixed override
-static bool s_logged_parent_rssi_skip = false;
-static bool s_logged_child_rssi_skip = false;
-
-static bool should_skip_wifi_query(bool *logged_flag, const char *query_name) {
-    if (mesh_self_organized_mode && mesh_runtime_started) {
-        if (logged_flag && !(*logged_flag)) {
-            ESP_LOGW(TAG, "Skipping %s while self-organized mesh runtime is active", query_name);
-            *logged_flag = true;
-        }
-        return true;
-    }
-
-    if (logged_flag) {
-        *logged_flag = false;
-    }
-    return false;
-}
 
 bool network_is_root(void) {
     return esp_mesh_is_root();
@@ -66,7 +49,8 @@ uint8_t network_get_jitter_prefill_frames(void) {
     uint8_t extra = 0;
 
     if (mesh_layer > 1) {
-        extra += (mesh_layer - 1);
+        // Deep layers need significantly more buffer to survive cumulative hop jitter
+        extra += (mesh_layer - 1) * 2;
     }
 
     uint32_t nodes = network_get_connected_nodes();
@@ -197,13 +181,10 @@ esp_err_t network_get_transport_stats_and_reset(network_transport_stats_t *out_s
 int network_get_nearest_child_rssi(void) {
     if (!is_mesh_root) return -100;
 
-    if (should_skip_wifi_query(&s_logged_child_rssi_skip, "esp_wifi_ap_get_sta_list")) {
-        return nearest_child_rssi;
-    }
-
     wifi_sta_list_t sta_list;
     if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK || sta_list.num == 0) {
-        return -100;
+        // Return cached value if WiFi calls are blocked or fail
+        return nearest_child_rssi;
     }
 
     int8_t best_rssi = -100;

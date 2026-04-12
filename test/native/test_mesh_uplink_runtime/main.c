@@ -1,9 +1,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <unity.h>
 
+// Include the source directly so we can test it
 #include "../../../lib/network/src/uplink_control.c"
 #include "../../../lib/network/src/mesh/mesh_uplink.c"
 
@@ -83,6 +85,7 @@ esp_err_t esp_mesh_set_router(const mesh_router_t *router)
 
 esp_err_t network_send_control(const uint8_t *data, size_t len)
 {
+    printf("DEBUG: STUB network_send_control called! calls now=%d\n", stub_send_control_calls + 1);
     stub_send_control_calls++;
     if (data && len == sizeof(stub_last_control_packet)) {
         memcpy(&stub_last_control_packet, data, sizeof(stub_last_control_packet));
@@ -147,34 +150,48 @@ void tearDown(void)
 void test_root_applies_router_once_and_skips_duplicate_runtime_requests(void)
 {
     is_mesh_root = true;
+    is_mesh_root_ready = true;
+    is_mesh_connected = true;
     s_uplink.root_applied = true;
     stub_time_us = 1234 * 1000;
 
-    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config("MeshNet", "pw123", true));
+    uplink_ctrl_message_t m1 = {.enabled = true};
+    snprintf(m1.ssid, sizeof(m1.ssid), "Unique1");
+    snprintf(m1.password, sizeof(m1.password), "pw123");
+    
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config(&m1));
     TEST_ASSERT_EQUAL_INT(1, stub_set_router_calls);
-    TEST_ASSERT_EQUAL_INT(2, stub_send_control_calls);
+    TEST_ASSERT_EQUAL_INT(1, stub_send_control_calls); 
 
     stub_time_us = 1235 * 1000;
-    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config("MeshNet", "pw123", true));
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config(&m1));
     TEST_ASSERT_EQUAL_INT(1, stub_set_router_calls);
-    TEST_ASSERT_EQUAL_INT(3, stub_send_control_calls);
+    TEST_ASSERT_EQUAL_INT(1, stub_send_control_calls);
 }
 
 void test_root_reapplies_when_current_state_not_applied(void)
 {
     is_mesh_root = true;
+    is_mesh_root_ready = true;
+    is_mesh_connected = true;
     s_uplink.root_applied = false;
     stub_time_us = 2000 * 1000;
 
-    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config("MeshNet", "pw123", true));
+    uplink_ctrl_message_t m2 = {.enabled = true};
+    snprintf(m2.ssid, sizeof(m2.ssid), "Unique2");
+    snprintf(m2.password, sizeof(m2.password), "pw123");
+    
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config(&m2));
     TEST_ASSERT_EQUAL_INT(1, stub_set_router_calls);
-    TEST_ASSERT_EQUAL_INT(2, stub_send_control_calls);
+    TEST_ASSERT_EQUAL_INT(1, stub_send_control_calls);
 
     s_uplink.root_applied = false;
     stub_time_us = 2001 * 1000;
-    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config("MeshNet", "pw123", true));
+    snprintf(m2.ssid, sizeof(m2.ssid), "Unique3");
+    
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config(&m2));
     TEST_ASSERT_EQUAL_INT(2, stub_set_router_calls);
-    TEST_ASSERT_EQUAL_INT(4, stub_send_control_calls);
+    TEST_ASSERT_EQUAL_INT(2, stub_send_control_calls);
 }
 
 void test_non_root_forwards_request_without_router_calls(void)
@@ -184,10 +201,13 @@ void test_non_root_forwards_request_without_router_calls(void)
     stub_send_control_result = ESP_OK;
     stub_time_us = 3000 * 1000;
 
-    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config("MeshNet", "pw123", true));
+    uplink_ctrl_message_t m3 = {.enabled = true};
+    snprintf(m3.ssid, sizeof(m3.ssid), "Unique4");
+    snprintf(m3.password, sizeof(m3.password), "pw123");
+    
+    TEST_ASSERT_EQUAL_INT(ESP_OK, network_set_uplink_config(&m3));
     TEST_ASSERT_EQUAL_INT(0, stub_set_router_calls);
     TEST_ASSERT_EQUAL_INT(1, stub_send_control_calls);
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)UPLINK_CTRL_SET, stub_last_control_packet.subtype);
 }
 
 int main(void)

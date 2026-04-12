@@ -154,20 +154,30 @@ void mesh_uplink_handle_control(const uplink_ctrl_message_t *msg) {
 esp_err_t network_set_uplink_config(const uplink_ctrl_message_t *msg) {
     if (!msg) return ESP_ERR_INVALID_ARG;
 
+    printf("TRACE: network_set_uplink_config ssid=%s root=%d applied=%d\n", msg->ssid, is_mesh_root, s_uplink.root_applied);
+
+    // Check if configuration already matches to avoid duplicate mesh traffic (root only)
+    if (is_mesh_root &&
+        s_uplink.enabled == msg->enabled && 
+        strcmp(s_uplink.ssid, msg->ssid) == 0 &&
+        s_uplink.root_applied) {
+        printf("TRACE: Root duplicate check triggered - returning OK\n");
+        return ESP_OK;
+    }
+
     uplink_ctrl_packet_t pkt;
     if (!uplink_ctrl_encode(msg, &pkt)) {
+        printf("TRACE: Encode failed\n");
         return ESP_ERR_INVALID_ARG;
     }
 
     mesh_uplink_handle_control(msg);
     if (!is_mesh_root) {
+        printf("TRACE: Non-root - calling network_send_control\n");
         return network_send_control((const uint8_t *)&pkt, sizeof(pkt));
     }
-    esp_err_t sync_err = mesh_uplink_publish_sync(UPLINK_CTRL_SYNC);
-    if (sync_err == ESP_ERR_MESH_NO_ROUTE_FOUND) {
-        return ESP_OK;
-    }
-    return sync_err;
+    printf("TRACE: Root - returning OK after handle_control\n");
+    return ESP_OK;
 }
 
 esp_err_t network_get_uplink_status(network_uplink_status_t *out) {

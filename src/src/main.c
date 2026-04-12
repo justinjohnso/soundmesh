@@ -41,6 +41,9 @@ static const char *TAG = "src_main";
 static src_status_t status = {
     .input_mode = INPUT_MODE_AUX,
     .audio_active = false,
+    .usb_ready = false,
+    .usb_active = false,
+    .usb_fallback_to_aux = false,
     .connected_nodes = 0,
     .bandwidth_kbps = 0,
     .tone_freq_hz = 440,
@@ -50,6 +53,27 @@ static src_status_t status = {
 
 static display_view_t current_view = DISPLAY_VIEW_AUDIO;
 static adf_pipeline_handle_t tx_pipeline = NULL;
+
+static input_mode_t status_input_mode_from_adf(adf_input_mode_t mode) {
+    if (mode == ADF_INPUT_MODE_USB) {
+        return INPUT_MODE_USB;
+    }
+    if (mode == ADF_INPUT_MODE_TONE) {
+        return INPUT_MODE_TONE;
+    }
+    return INPUT_MODE_AUX;
+}
+
+static void update_status_from_pipeline_stats(const adf_pipeline_stats_t *stats) {
+    if (!stats) {
+        return;
+    }
+    status.input_mode = status_input_mode_from_adf(adf_pipeline_get_input_mode());
+    status.audio_active = stats->input_signal_present;
+    status.usb_ready = stats->usb_input_ready;
+    status.usb_active = stats->usb_input_active;
+    status.usb_fallback_to_aux = stats->usb_fallback_to_aux;
+}
 
 void update_tone_oscillate(int64_t now_ms) {
     static int64_t last_log_ms = 0;
@@ -76,8 +100,11 @@ void app_main(void) {
     ESP_LOGI(TAG, "======================================");
     ESP_LOGI(TAG, "MeshNet Audio SRC starting (Opus)...");
     ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
-    ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames, Opus %d kbps",
-             AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS, OPUS_BITRATE / 1000);
+    ESP_LOGI(TAG,
+             "Audio: %dHz, boundary=%d-bit (internal=%d-bit), frame=%dms (target=%dms fallback=%d), Opus %d kbps",
+             AUDIO_SAMPLE_RATE, AUDIO_BOUNDARY_BITS_PER_SAMPLE, AUDIO_INTERNAL_BITS_PER_SAMPLE,
+             AUDIO_FRAME_EFFECTIVE_MS, AUDIO_FRAME_TARGET_MS, AUDIO_FRAME_FALLBACK_ACTIVE ? 1 : 0,
+             OPUS_BITRATE / 1000);
     ESP_LOGI(TAG, "======================================");
 
     // Initialize memory monitor early for pre-flight checks
@@ -254,6 +281,7 @@ void app_main(void) {
             // Get pipeline stats
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
+                update_status_from_pipeline_stats(&stats);
                 // Bandwidth from actual bytes sent over mesh
                 uint32_t tx_bytes = network_get_tx_bytes_and_reset();
                 status.bandwidth_kbps = (tx_bytes * 8) / 1000;
@@ -292,7 +320,7 @@ void app_main(void) {
             last_display_ms = now_ms;
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(tx_pipeline, &stats) == ESP_OK) {
-                status.audio_active = stats.input_signal_present;
+                update_status_from_pipeline_stats(&stats);
             }
             display_render_src(current_view, &status);
         }

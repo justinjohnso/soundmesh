@@ -305,6 +305,133 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static bool mixer_body_has_field_token(const char *body, const char *field) {
+    if (!body || !field) {
+        return false;
+    }
+    char key[64];
+    int written = snprintf(key, sizeof(key), "\"%s\":", field);
+    if (written <= 0 || (size_t)written >= sizeof(key)) {
+        return false;
+    }
+    return strstr(body, key) != NULL;
+}
+
+static network_mixer_stream_status_t *find_mixer_stream_by_id(network_mixer_status_t *mixer, uint8_t stream_id) {
+    if (!mixer) {
+        return NULL;
+    }
+    for (uint8_t i = 0; i < mixer->stream_count; i++) {
+        if (mixer->streams[i].stream_id == stream_id) {
+            return &mixer->streams[i];
+        }
+    }
+    if (mixer->stream_count >= MIXER_MAX_STREAMS) {
+        return NULL;
+    }
+    network_mixer_stream_status_t *slot = &mixer->streams[mixer->stream_count++];
+    memset(slot, 0, sizeof(*slot));
+    slot->stream_id = stream_id;
+    return slot;
+}
+
+static bool parse_mixer_stream_updates(const char *body, network_mixer_status_t *next, bool *has_streams) {
+    if (!body || !next || !has_streams) {
+        return false;
+    }
+    *has_streams = false;
+    if (!mixer_body_has_field_token(body, "streams")) {
+        return true;
+    }
+
+    const char *array_start = NULL;
+    const char *array_end = NULL;
+    if (!json_extract_array_field_span(body, "streams", &array_start, &array_end)) {
+        return false;
+    }
+
+    bool seen[MIXER_MAX_STREAMS] = {false};
+    uint8_t parsed_count = 0;
+    const char *cursor = NULL;
+    while (1) {
+        const char *obj_start = NULL;
+        const char *obj_end = NULL;
+        if (!json_extract_next_array_object_span(array_start, array_end, &cursor, &obj_start, &obj_end)) {
+            return false;
+        }
+        if (!obj_start || !obj_end) {
+            break;
+        }
+
+        size_t obj_len = (size_t)(obj_end - obj_start + 1);
+        char obj_json[192];
+        if (obj_len >= sizeof(obj_json)) {
+            return false;
+        }
+        memcpy(obj_json, obj_start, obj_len);
+        obj_json[obj_len] = '\0';
+
+        uint16_t stream_id_u16 = 0;
+        uint16_t gain_pct = 0;
+        bool enabled = false;
+        bool muted = false;
+        bool solo = false;
+        if (!json_extract_uint16_field(obj_json, "id", &stream_id_u16)) {
+            return false;
+        }
+        if (!json_extract_uint16_field(obj_json, "gainPct", &gain_pct) &&
+            !json_extract_uint16_field(obj_json, "gain", &gain_pct)) {
+            return false;
+        }
+        if (!json_extract_bool_field(obj_json, "enabled", &enabled) &&
+            !json_extract_bool_field(obj_json, "enable", &enabled)) {
+            return false;
+        }
+        if (!json_extract_bool_field(obj_json, "muted", &muted) &&
+            !json_extract_bool_field(obj_json, "mute", &muted)) {
+            return false;
+        }
+        if (!json_extract_bool_field(obj_json, "solo", &solo)) {
+            return false;
+        }
+        bool active = enabled && !muted;
+        if (mixer_body_has_field_token(obj_json, "active") &&
+            !json_extract_bool_field(obj_json, "active", &active)) {
+            return false;
+        }
+
+        if (stream_id_u16 < MIXER_STREAM_ID_MIN || stream_id_u16 > MIXER_STREAM_ID_MAX) {
+            return false;
+        }
+        if (gain_pct < MIXER_STREAM_GAIN_MIN_PCT || gain_pct > MIXER_STREAM_GAIN_MAX_PCT) {
+            return false;
+        }
+        uint8_t stream_id = (uint8_t)stream_id_u16;
+        if (seen[stream_id - MIXER_STREAM_ID_MIN]) {
+            return false;
+        }
+        seen[stream_id - MIXER_STREAM_ID_MIN] = true;
+
+        network_mixer_stream_status_t *stream = find_mixer_stream_by_id(next, stream_id);
+        if (!stream) {
+            return false;
+        }
+        stream->stream_id = stream_id;
+        stream->gain_pct = gain_pct;
+        stream->enabled = enabled;
+        stream->muted = muted;
+        stream->solo = solo;
+        stream->active = active;
+        parsed_count++;
+    }
+
+    if (parsed_count == 0) {
+        return false;
+    }
+    *has_streams = true;
+    return true;
+}
+
 static esp_err_t handle_api_mixer(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
         network_mixer_status_t st = {0};
@@ -313,16 +440,36 @@ static esp_err_t handle_api_mixer(httpd_req_t *req) {
             httpd_resp_send(req, "{\"error\":\"mixer_status_failed\"}", HTTPD_RESP_USE_STRLEN);
             return ESP_OK;
         }
-        char buf[256];
+        char buf[1024];
         int len = snprintf(
             buf,
             sizeof(buf),
-            "{\"outGainPct\":%u,\"applied\":%s,\"pendingApply\":%s,\"lastError\":\"%s\",\"updatedMs\":%lu}",
+            "{\"schemaVersion\":%u,\"outGainPct\":%u,\"streamCount\":%u,\"applied\":%s,\"pendingApply\":%s,"
+            "\"lastError\":\"%s\",\"updatedMs\":%lu,\"streams\":[",
+            (unsigned)st.schema_version,
             (unsigned)st.out_gain_pct,
+            (unsigned)st.stream_count,
             st.applied ? "true" : "false",
             st.pending_apply ? "true" : "false",
             st.last_error,
             (unsigned long)st.updated_ms);
+        for (uint8_t i = 0; i < st.stream_count && len > 0 && len < (int)sizeof(buf) - 128; i++) {
+            const network_mixer_stream_status_t *stream = &st.streams[i];
+            len += snprintf(
+                buf + len,
+                sizeof(buf) - (size_t)len,
+                "%s{\"id\":%u,\"gainPct\":%u,\"enabled\":%s,\"muted\":%s,\"solo\":%s,\"active\":%s}",
+                (i == 0) ? "" : ",",
+                (unsigned)stream->stream_id,
+                (unsigned)stream->gain_pct,
+                stream->enabled ? "true" : "false",
+                stream->muted ? "true" : "false",
+                stream->solo ? "true" : "false",
+                stream->active ? "true" : "false");
+        }
+        if (len > 0 && len < (int)sizeof(buf) - 2) {
+            len += snprintf(buf + len, sizeof(buf) - (size_t)len, "]}");
+        }
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req, buf, len);
         return ESP_OK;
@@ -344,7 +491,7 @@ static esp_err_t handle_api_mixer(httpd_req_t *req) {
         return portal_control_plane_send_rate_limited(req);
     }
 
-    char body[128] = {0};
+    char body[768] = {0};
     int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
     if (rcvd <= 0) {
         portal_control_plane_record_bad_request();
@@ -353,21 +500,60 @@ static esp_err_t handle_api_mixer(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    uint16_t out_gain_pct = 0;
-    if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
+    network_mixer_status_t next = {0};
+    if (network_get_mixer_status(&next) != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "{\"error\":\"mixer_status_failed\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    bool has_out_gain = false;
+    if (mixer_body_has_field_token(body, "outGainPct")) {
+        uint16_t out_gain_pct = 0;
+        if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
+            portal_control_plane_record_bad_request();
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "{\"error\":\"missing outGainPct\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+        if (out_gain_pct < MIXER_OUT_GAIN_MIN_PCT || out_gain_pct > MIXER_OUT_GAIN_MAX_PCT) {
+            portal_control_plane_record_bad_request();
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "{\"error\":\"invalid outGainPct\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+        next.out_gain_pct = out_gain_pct;
+        has_out_gain = true;
+    }
+
+    if (mixer_body_has_field_token(body, "schemaVersion")) {
+        uint16_t schema_version = 0;
+        if (!json_extract_uint16_field(body, "schemaVersion", &schema_version) ||
+            schema_version != MIXER_SCHEMA_VERSION) {
+            portal_control_plane_record_bad_request();
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "{\"error\":\"invalid schemaVersion\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+    }
+
+    bool has_streams = false;
+    if (!parse_mixer_stream_updates(body, &next, &has_streams)) {
+        portal_control_plane_record_bad_request();
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"invalid streams\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    if (!has_out_gain && !has_streams) {
         portal_control_plane_record_bad_request();
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "{\"error\":\"missing outGainPct\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
-    if (out_gain_pct < MIXER_OUT_GAIN_MIN_PCT || out_gain_pct > MIXER_OUT_GAIN_MAX_PCT) {
-        portal_control_plane_record_bad_request();
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_send(req, "{\"error\":\"invalid outGainPct\"}", HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
-    }
 
-    esp_err_t ret = network_set_mixer_config(out_gain_pct);
+    next.schema_version = MIXER_SCHEMA_VERSION;
+    esp_err_t ret = network_set_mixer_state(&next);
     if (ret != ESP_OK) {
         portal_control_plane_record_apply_failure(PORTAL_CONTROL_ENDPOINT_MIXER);
         httpd_resp_set_status(req, "409 Conflict");

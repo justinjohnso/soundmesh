@@ -14,6 +14,53 @@ static bool build_json_field_key(const char *field, char *key, size_t key_size) 
     return written > 0 && (size_t)written < key_size;
 }
 
+static const char *skip_json_ws(const char *p) {
+    while (p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        p++;
+    }
+    return p;
+}
+
+static const char *json_extract_find_matching_delim(const char *start, char open, char close) {
+    if (!start || *start != open) {
+        return NULL;
+    }
+
+    int depth = 0;
+    bool in_string = false;
+    bool escape = false;
+    for (const char *p = start; *p; p++) {
+        if (in_string) {
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (*p == '\\') {
+                escape = true;
+                continue;
+            }
+            if (*p == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if (*p == '"') {
+            in_string = true;
+            continue;
+        }
+        if (*p == open) {
+            depth++;
+        } else if (*p == close) {
+            depth--;
+            if (depth == 0) {
+                return p;
+            }
+        }
+    }
+    return NULL;
+}
+
 bool json_extract_string_field(const char *body, const char *field, char *out, size_t out_size) {
     if (!body || !field || !out || out_size == 0) {
         return false;
@@ -166,5 +213,78 @@ bool json_extract_int_field(const char *body, const char *field, int *out)
         return false;
     }
     *out = (int)val;
+    return true;
+}
+
+bool json_extract_array_field_span(
+    const char *body, const char *field, const char **start_out, const char **end_out)
+{
+    if (!body || !field || !start_out || !end_out) {
+        return false;
+    }
+
+    char key[64];
+    if (!build_json_field_key(field, key, sizeof(key))) {
+        return false;
+    }
+
+    const char *start = strstr(body, key);
+    if (!start) {
+        return false;
+    }
+    start += strlen(key);
+    start = skip_json_ws(start);
+    if (!start || *start != '[') {
+        return false;
+    }
+
+    const char *end = json_extract_find_matching_delim(start, '[', ']');
+    if (!end) {
+        return false;
+    }
+
+    *start_out = start;
+    *end_out = end;
+    return true;
+}
+
+bool json_extract_next_array_object_span(const char *array_start,
+                                         const char *array_end,
+                                         const char **cursor_io,
+                                         const char **obj_start_out,
+                                         const char **obj_end_out)
+{
+    if (!array_start || !array_end || !cursor_io || !obj_start_out || !obj_end_out) {
+        return false;
+    }
+    if (*array_start != '[' || *array_end != ']' || array_end < array_start) {
+        return false;
+    }
+
+    const char *cursor = *cursor_io ? *cursor_io : array_start + 1;
+    cursor = skip_json_ws(cursor);
+    while (cursor < array_end && *cursor == ',') {
+        cursor++;
+        cursor = skip_json_ws(cursor);
+    }
+
+    if (cursor >= array_end) {
+        *cursor_io = array_end;
+        *obj_start_out = NULL;
+        *obj_end_out = NULL;
+        return true;
+    }
+    if (*cursor != '{') {
+        return false;
+    }
+
+    const char *end = json_extract_find_matching_delim(cursor, '{', '}');
+    if (!end || end > array_end) {
+        return false;
+    }
+
+    *obj_start_out = cursor;
+    *obj_end_out = end;
+    *cursor_io = end + 1;
     return true;
 }

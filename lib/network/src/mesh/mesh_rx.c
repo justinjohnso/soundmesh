@@ -8,6 +8,8 @@
 #include "network/mixer_control.h"
 #include "network/frame_codec.h"
 #include "network/mesh_net.h"
+#include "config/build.h"
+#include <esp_timer.h>
 #include <esp_log.h>
 #include <esp_mesh.h>
 #include <string.h>
@@ -19,7 +21,7 @@ static void mesh_rx_log_observability_snapshot(void)
     ESP_LOGI(TAG,
              "RX OBS: audio=%lu fwd=%lu dup=%lu ttl0=%lu inv={hdr:%lu ver:%lu pay:%lu} "
              "batch={pkts:%lu frames:%lu} cb_miss=%lu recv={err:%lu empty:%lu} "
-             "ctrl={hb:%lu ctl:%lu ping:%lu pong:%lu ann:%lu} "
+             "burst_loss=%lu burst_max=%lu jitter_us=%lu ctrl={hb:%lu ctl:%lu ping:%lu pong:%lu ann:%lu} "
              "churn={pc:%lu pd:%lu np:%lu sc:%lu rj:%lu/%lu/%lu}",
              (unsigned long)g_transport_stats.rx_audio_packets,
              (unsigned long)g_transport_stats.rx_audio_forwarded,
@@ -33,6 +35,9 @@ static void mesh_rx_log_observability_snapshot(void)
              (unsigned long)g_transport_stats.rx_audio_callback_missing,
              (unsigned long)g_transport_stats.mesh_recv_errors,
              (unsigned long)g_transport_stats.mesh_recv_empty_packets,
+             (unsigned long)g_transport_stats.rx_audio_burst_loss_events,
+             (unsigned long)g_transport_stats.rx_audio_burst_loss_max,
+             (unsigned long)g_transport_stats.rx_audio_interarrival_jitter_us,
              (unsigned long)g_transport_stats.rx_heartbeat_packets,
              (unsigned long)g_transport_stats.rx_control_packets,
              (unsigned long)g_transport_stats.rx_ping_packets,
@@ -45,6 +50,52 @@ static void mesh_rx_log_observability_snapshot(void)
              (unsigned long)g_transport_stats.rejoin_trigger_events,
              (unsigned long)g_transport_stats.rejoin_blocked_events,
              (unsigned long)g_transport_stats.rejoin_circuit_breaker_events);
+}
+
+static void mesh_rx_update_audio_loss_and_jitter(uint16_t seq,
+                                                 uint8_t frame_count,
+                                                 uint32_t sender_timestamp_ms)
+{
+    static bool initialized = false;
+    static uint16_t expected_next_seq = 0;
+    static uint64_t last_arrival_us = 0;
+    static uint32_t last_sender_timestamp_ms = 0;
+
+    uint8_t effective_frame_count = frame_count > 0 ? frame_count : 1;
+    uint64_t now_us = (uint64_t)esp_timer_get_time();
+
+    if (initialized) {
+        int16_t seq_delta = (int16_t)(seq - expected_next_seq);
+        if (seq_delta > 0) {
+            uint32_t missing_frames = (uint32_t)seq_delta;
+            if (missing_frames >= RX_BURST_LOSS_THRESHOLD) {
+                g_transport_stats.rx_audio_burst_loss_events++;
+                if (missing_frames > g_transport_stats.rx_audio_burst_loss_max) {
+                    g_transport_stats.rx_audio_burst_loss_max = missing_frames;
+                }
+            }
+        }
+
+        uint64_t arrival_delta_us = now_us - last_arrival_us;
+        uint32_t sender_delta_ms = sender_timestamp_ms - last_sender_timestamp_ms;
+        uint64_t sender_delta_us = (uint64_t)sender_delta_ms * 1000ULL;
+        int64_t transit_delta_us = (int64_t)arrival_delta_us - (int64_t)sender_delta_us;
+        uint64_t abs_transit_delta_us =
+            (transit_delta_us >= 0) ? (uint64_t)transit_delta_us : (uint64_t)(-transit_delta_us);
+
+        int64_t jitter_us = (int64_t)g_transport_stats.rx_audio_interarrival_jitter_us;
+        jitter_us += ((int64_t)abs_transit_delta_us - jitter_us) / 16;
+        if (jitter_us < 0) {
+            jitter_us = 0;
+        }
+        g_transport_stats.rx_audio_interarrival_jitter_us = (uint32_t)jitter_us;
+    } else {
+        initialized = true;
+    }
+
+    expected_next_seq = (uint16_t)(seq + effective_frame_count);
+    last_arrival_us = now_us;
+    last_sender_timestamp_ms = sender_timestamp_ms;
 }
 
 typedef struct {
@@ -173,10 +224,14 @@ void mesh_rx_task(void *arg) {
 
             if (hdr->type == NET_PKT_TYPE_AUDIO_RAW || hdr->type == NET_PKT_TYPE_AUDIO_OPUS) {
                 g_transport_stats.rx_audio_packets++;
-                if ((g_transport_stats.rx_audio_packets % 500) == 1) {
+                static uint64_t last_obs_log_us = 0;
+                uint64_t now_us = (uint64_t)esp_timer_get_time();
+                uint64_t telemetry_interval_us = (uint64_t)CONTROL_TELEMETRY_RATE_MS * 1000ULL;
+                if (last_obs_log_us == 0 || (now_us - last_obs_log_us) >= telemetry_interval_us) {
                     ESP_LOGI(TAG, "Audio frame RX #%lu: seq=%u size=%d",
                              (unsigned long)g_transport_stats.rx_audio_packets, seq, data.size);
                     mesh_rx_log_observability_snapshot();
+                    last_obs_log_us = now_us;
                 }
 
                 if (mesh_dedupe_is_duplicate(hdr->stream_id, seq)) {
@@ -212,18 +267,20 @@ void mesh_rx_task(void *arg) {
                                                                             hdr_size,
                                                                             hdr->frame_count,
                                                                             13);
+                    uint8_t effective_frame_count = frame_count > 0 ? frame_count : 1;
                     const char *src_id = (hdr_size == NET_FRAME_HEADER_SIZE) ? hdr->src_id : "";
+                    mesh_rx_update_audio_loss_and_jitter(seq, effective_frame_count, timestamp);
 
-                    if (frame_count <= 1) {
+                    if (effective_frame_count <= 1) {
                         g_transport_stats.rx_audio_forwarded++;
                         audio_rx_callback(payload, total_payload_len, seq, timestamp, src_id);
                     } else {
                         audio_batch_callback_ctx_t cb_ctx = {.timestamp = timestamp, .src_id = src_id};
                         g_transport_stats.rx_audio_batches++;
-                        g_transport_stats.rx_audio_batch_frames += frame_count;
+                        g_transport_stats.rx_audio_batch_frames += effective_frame_count;
                         network_frame_unpack_batch(payload,
                                                    total_payload_len,
-                                                   frame_count,
+                                                   effective_frame_count,
                                                    seq,
                                                    on_audio_batch_frame,
                                                    &cb_ctx);

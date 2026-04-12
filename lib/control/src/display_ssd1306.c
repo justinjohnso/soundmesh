@@ -554,6 +554,15 @@ void display_render_src(display_view_t view, const src_status_t *status) {
             display_draw_string(0, 1, buf);
         }
 
+        if (status->input_mode == INPUT_MODE_USB) {
+            snprintf(buf, sizeof(buf), "USB R:%c A:%c",
+                     status->usb_ready ? 'Y' : 'N',
+                     status->usb_active ? 'Y' : 'N');
+            display_draw_string(0, 2, buf);
+        } else if (status->usb_fallback_to_aux) {
+            display_draw_string(0, 2, "USB fallback->Aux");
+        }
+
         snprintf(buf, sizeof(buf), "SRC: %lu kbps", status->bandwidth_kbps);
         display_draw_string(0, 3, buf);
     } else if (view == DISPLAY_VIEW_NETWORK) {

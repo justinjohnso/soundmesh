@@ -2,6 +2,7 @@
 #include "mesh/mesh_state.h"
 #include "network/mesh_net.h"
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <string.h>
 
@@ -63,16 +64,21 @@ static void send_stream_announcement(void) {
     announce.stream_id = my_stream_id;
     announce.sample_rate = htonl(AUDIO_SAMPLE_RATE);
     announce.channels = AUDIO_CHANNELS_MONO;
-    announce.bits_per_sample = AUDIO_BITS_PER_SAMPLE;
-    announce.frame_size_ms = htons(AUDIO_FRAME_MS);
+    announce.bits_per_sample = AUDIO_BOUNDARY_BITS_PER_SAMPLE;
+    announce.frame_size_ms = htons(AUDIO_FRAME_EFFECTIVE_MS);
 
     esp_err_t err = network_send_control((uint8_t *)&announce, sizeof(announce));
     if (err != ESP_OK && err != ESP_ERR_MESH_NO_ROUTE_FOUND) {
         ESP_LOGD(TAG, "Failed to send stream announcement: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "Stream announced: ID=%u, %uHz, %u-bit, %uch, %ums frames",
-                 announce.stream_id, (unsigned int)AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE,
-                 AUDIO_CHANNELS_MONO, (unsigned int)AUDIO_FRAME_MS);
+        ESP_LOGI(TAG,
+                 "Stream announced: ID=%u, %uHz, boundary=%u-bit (internal=%u-bit), %uch, frame=%ums (target=%ums fallback=%d)",
+                 announce.stream_id, (unsigned int)AUDIO_SAMPLE_RATE,
+                 (unsigned int)AUDIO_BOUNDARY_BITS_PER_SAMPLE,
+                 (unsigned int)AUDIO_INTERNAL_BITS_PER_SAMPLE,
+                 AUDIO_CHANNELS_MONO, (unsigned int)AUDIO_FRAME_EFFECTIVE_MS,
+                 (unsigned int)AUDIO_FRAME_TARGET_MS,
+                 AUDIO_FRAME_FALLBACK_ACTIVE ? 1 : 0);
     }
 }
 
@@ -106,6 +112,8 @@ void mesh_heartbeat_task(void *arg) {
 
     while (1) {
         send_heartbeat();
-        vTaskDelay(pdMS_TO_TICKS(HEARTBEAT_INTERVAL_MS));
+        const uint32_t heartbeatDelayMs = HEARTBEAT_INTERVAL_MS - CONTROL_TIMER_JITTER_MS +
+                                          (esp_random() % ((2 * CONTROL_TIMER_JITTER_MS) + 1));
+        vTaskDelay(pdMS_TO_TICKS(heartbeatDelayMs));
     }
 }

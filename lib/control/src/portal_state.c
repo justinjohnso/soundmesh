@@ -3,6 +3,7 @@
 #include "control/serial_dashboard.h"
 #include "control/memory_monitor.h"
 #include "audio/adf_pipeline.h"
+#include "audio/usb_audio.h"
 #include "config/build.h"
 #include "config/build_role.h"
 #include <esp_log.h>
@@ -300,6 +301,16 @@ static const char *portal_mesh_state(void) {
     return network_is_connected() ? "Mesh OK" : "Mesh Degraded";
 }
 
+static const char *portal_input_mode_label(adf_input_mode_t mode) {
+    if (mode == ADF_INPUT_MODE_USB) {
+        return "USB";
+    }
+    if (mode == ADF_INPUT_MODE_TONE) {
+        return "TONE";
+    }
+    return "AUX";
+}
+
 static void portal_state_update_core0_load(void) {
 #if (configUSE_TRACE_FACILITY == 1) && (configGENERATE_RUN_TIME_STATS == 1)
     const int64_t now_us = esp_timer_get_time();
@@ -527,20 +538,49 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         }
     }
 
-    if (off < (int)buf_size - 160) {
+    if (off < (int)buf_size - 320) {
         network_mixer_status_t mixer = {0};
         if (network_get_mixer_status(&mixer) == ESP_OK) {
             off += snprintf(
                 buf + off,
                 buf_size - off,
-                ",\"mixer\":{\"outGainPct\":%u,\"applied\":%s,\"pendingApply\":%s,"
-                "\"lastError\":\"%s\",\"updatedMs\":%lu}",
+                ",\"mixer\":{\"schemaVersion\":%u,\"outGainPct\":%u,\"streamCount\":%u,\"applied\":%s,\"pendingApply\":%s,"
+                "\"lastError\":\"%s\",\"updatedMs\":%lu,\"streams\":[",
+                (unsigned)mixer.schema_version,
                 (unsigned)mixer.out_gain_pct,
+                (unsigned)mixer.stream_count,
                 mixer.applied ? "true" : "false",
                 mixer.pending_apply ? "true" : "false",
                 mixer.last_error,
                 (unsigned long)mixer.updated_ms);
+            for (uint8_t i = 0; i < mixer.stream_count && off < (int)buf_size - 128; i++) {
+                const network_mixer_stream_status_t *stream = &mixer.streams[i];
+                if (i > 0) {
+                    off += snprintf(buf + off, buf_size - off, ",");
+                }
+                off += snprintf(
+                    buf + off,
+                    buf_size - off,
+                    "{\"id\":%u,\"gainPct\":%u,\"enabled\":%s,\"muted\":%s,\"solo\":%s,\"active\":%s}",
+                    (unsigned)stream->stream_id,
+                    (unsigned)stream->gain_pct,
+                    stream->enabled ? "true" : "false",
+                    stream->muted ? "true" : "false",
+                    stream->solo ? "true" : "false",
+                    stream->active ? "true" : "false");
+            }
+            off += snprintf(buf + off, buf_size - off, "]}");
         }
+    }
+
+    if (off < (int)buf_size - 96) {
+        off += snprintf(
+            buf + off,
+            buf_size - off,
+            ",\"usb\":{\"inputMode\":\"%s\",\"ready\":%s,\"active\":%s}",
+            portal_input_mode_label(adf_pipeline_get_input_mode()),
+            usb_audio_is_ready() ? "true" : "false",
+            usb_audio_is_active() ? "true" : "false");
     }
 
     off += snprintf(buf + off, buf_size - off, "}");

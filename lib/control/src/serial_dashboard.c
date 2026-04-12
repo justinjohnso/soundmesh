@@ -109,6 +109,13 @@ void dashboard_render_src(const src_status_t *status) {
            mode, state, (unsigned long)status->connected_nodes, rssi_str);
     printf("  BW:%-4lukbps  Vol:%-.1f  Bat:%u%%  RAM:%s\n",
            (unsigned long)status->bandwidth_kbps, status->output_volume, status->battery_pct, ram);
+
+    if (status->input_mode == INPUT_MODE_USB || status->usb_fallback_to_aux) {
+        printf("  USB:Ready:%s Active:%s Fallback:%s\n",
+               status->usb_ready ? "Y" : "N",
+               status->usb_active ? "Y" : "N",
+               status->usb_fallback_to_aux ? "Y" : "N");
+    }
     
     if (status->input_mode == INPUT_MODE_TONE) {
         printf("  Tone: %lu Hz\n", (unsigned long)status->tone_freq_hz);
@@ -116,14 +123,17 @@ void dashboard_render_src(const src_status_t *status) {
     printf("\n");
 
     // CSV for plotting
-    printf(">rssi:%d,nodes:%lu,tx_kbps:%lu,audio:%d,vol:%.1f,bat:%u,heap_kb:%lu\n",
+    printf(">rssi:%d,nodes:%lu,tx_kbps:%lu,audio:%d,vol:%.1f,bat:%u,heap_kb:%lu,usb_ready:%d,usb_active:%d,usb_fallback:%d\n",
            status->nearest_rssi,
            (unsigned long)status->connected_nodes,
            (unsigned long)status->bandwidth_kbps,
            status->audio_active ? 1 : 0,
            status->output_volume,
            status->battery_pct,
-           (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024));
+           (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),
+           status->usb_ready ? 1 : 0,
+           status->usb_active ? 1 : 0,
+           status->usb_fallback_to_aux ? 1 : 0);
 
     fflush(stdout);
 }

@@ -51,13 +51,14 @@ size_t network_frame_unpack_batch(const uint8_t *payload,
         return 0;
     }
 
-    if (frame_count <= 1) {
+    uint8_t effective_frame_count = frame_count > 0 ? frame_count : 1;
+    if (effective_frame_count <= 1) {
         callback(payload, (uint16_t)payload_len, base_seq, ctx);
         return payload_len;
     }
 
     size_t offset = 0;
-    for (uint8_t idx = 0; idx < frame_count && offset + 2 <= payload_len; idx++) {
+    for (uint8_t idx = 0; idx < effective_frame_count && offset + 2 <= payload_len; idx++) {
         uint16_t frame_len = (uint16_t)(((uint16_t)payload[offset] << 8) | payload[offset + 1]);
         offset += 2;
 

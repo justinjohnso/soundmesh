@@ -55,7 +55,15 @@ network_uplink_status_t s_uplink = {
 char s_uplink_password[UPLINK_PASSWORD_MAX_LEN + 1] = {0};
 
 network_mixer_status_t s_mixer = {
+    .schema_version = MIXER_SCHEMA_VERSION,
     .out_gain_pct = OUT_OUTPUT_GAIN_DEFAULT_PCT,
+    .stream_count = MIXER_MAX_STREAMS,
+    .streams = {
+        {.stream_id = 1, .gain_pct = MIXER_STREAM_GAIN_DEFAULT_PCT, .enabled = true,  .muted = false, .solo = false, .active = true},
+        {.stream_id = 2, .gain_pct = MIXER_STREAM_GAIN_DEFAULT_PCT, .enabled = false, .muted = false, .solo = false, .active = false},
+        {.stream_id = 3, .gain_pct = MIXER_STREAM_GAIN_DEFAULT_PCT, .enabled = false, .muted = false, .solo = false, .active = false},
+        {.stream_id = 4, .gain_pct = MIXER_STREAM_GAIN_DEFAULT_PCT, .enabled = false, .muted = false, .solo = false, .active = false},
+    },
     .applied = false,
     .pending_apply = false,
     .last_error = {0},

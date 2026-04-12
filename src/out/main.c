@@ -97,9 +97,13 @@ static char receiving_from_src_id[NETWORK_SRC_ID_LEN] = {0};
 static int64_t state_change_time_ms = 0;
 static int64_t last_waiting_log_ms = 0;
 
-// Packet tracking for statistics
-static uint32_t packets_received = 0;
-static uint32_t dropped_packets = 0;
+// Packet/loss tracking for statistics
+static uint32_t rx_packets_total = 0;
+static uint32_t rf_loss_frames_total = 0;
+static uint32_t loss_window_prev_packets = 0;
+static uint32_t loss_window_prev_rf_loss = 0;
+static uint32_t loss_window_prev_pipeline_drops = 0;
+static uint32_t loss_window_start_ticks = 0;
 static uint16_t last_seq = 0;
 static bool first_packet = true;
 static uint32_t last_packet_time = 0;
@@ -107,6 +111,7 @@ static uint32_t stream_silence_confirm_start = 0;
 static int64_t last_stream_rx_ms = 0;
 static int64_t last_rejoin_attempt_ms = 0;
 static uint32_t rx_obs_log_tick = 0;
+#define LOSS_WINDOW_MS 60000
 
 // One-way latency estimation from audio frame timestamps
 // Root puts esp_timer ms in each frame header; we compare to our local clock.
@@ -119,8 +124,11 @@ static uint32_t ewma_oneway_ms = 0;         // Smoothed latency estimate
 static uint32_t latency_window_start = 0;   // Tick count when current window started
 #define LATENCY_WINDOW_MS 10000             // Reset min every 10s to track drift
 
-static esp_err_t out_apply_mixer_gain(uint16_t out_gain_pct) {
-    return adf_pipeline_set_out_gain_percent(out_gain_pct);
+static esp_err_t out_apply_mixer_gain(const network_mixer_status_t *mixer) {
+    if (!mixer) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return adf_pipeline_set_out_gain_percent(mixer->out_gain_pct);
 }
 
 // Audio callback for mesh network - called when audio frames are received
@@ -172,7 +180,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
         if (seq != expected_seq) {
             int16_t gap = (int16_t)(seq - expected_seq);
             if (gap > 0 && gap < 100) {
-                dropped_packets += (uint32_t)gap;
+                rf_loss_frames_total += (uint32_t)gap;
             }
         }
     }
@@ -209,7 +217,7 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
             last_stream_rx_ms = esp_timer_get_time() / 1000;
             bool was_receiving = status.receiving_audio;
             status.receiving_audio = true;
-            packets_received++;
+            rx_packets_total++;
             bytes_received_this_second += len;
             last_packet_time = xTaskGetTickCount();
 
@@ -227,9 +235,9 @@ static void audio_rx_callback(const uint8_t *payload, size_t len, uint16_t seq, 
                 rx_set_connection_state(RX_STATE_STREAMING, "audio flow active");
             }
             
-            if ((packets_received & 0x7F) == 0) {
+            if ((rx_packets_total & 0x7F) == 0) {
                 ESP_LOGI(TAG, "OUT packet %lu (seq=%u, len=%zu, lat=%lums)", 
-                         packets_received, seq, len, ewma_oneway_ms);
+                         rx_packets_total, seq, len, ewma_oneway_ms);
             }
         } else {
             ESP_LOGW(TAG, "Pipeline feed failed seq=%u err=%s", seq, esp_err_to_name(ret));
@@ -243,8 +251,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "*** APP_MAIN STARTED - OUT beginning initialization ***");
     ESP_LOGI(TAG, "MeshNet Audio OUT starting (Opus)...");
     ESP_LOGI(TAG, "Build: " __DATE__ " " __TIME__);
-    ESP_LOGI(TAG, "Audio: %dHz, %d-bit, %dms frames",
-             AUDIO_SAMPLE_RATE, AUDIO_BITS_PER_SAMPLE, AUDIO_FRAME_MS);
+    ESP_LOGI(TAG, "Audio: %dHz, boundary=%d-bit (internal=%d-bit), frame=%dms (target=%dms fallback=%d)",
+             AUDIO_SAMPLE_RATE, AUDIO_BOUNDARY_BITS_PER_SAMPLE, AUDIO_INTERNAL_BITS_PER_SAMPLE,
+             AUDIO_FRAME_EFFECTIVE_MS, AUDIO_FRAME_TARGET_MS, AUDIO_FRAME_FALLBACK_ACTIVE ? 1 : 0);
     ESP_LOGI(TAG, "======================================");
     state_change_time_ms = esp_timer_get_time() / 1000;
     last_waiting_log_ms = state_change_time_ms;
@@ -441,14 +450,34 @@ void app_main(void) {
             adf_pipeline_stats_t stats;
             if (adf_pipeline_get_stats(rx_pipeline, &stats) == ESP_OK) {
                 status.buffer_pct = stats.buffer_fill_percent;
-                
+                uint32_t pipeline_drops_total =
+                    stats.rx_opus_buffer_overflows + stats.rx_late_or_duplicate_frames;
+                if (loss_window_start_ticks == 0) {
+                    loss_window_start_ticks = now;
+                }
+
+                uint32_t window_rx_packets = rx_packets_total - loss_window_prev_packets;
+                uint32_t window_rf_loss = rf_loss_frames_total - loss_window_prev_rf_loss;
+                uint32_t window_pipeline_drops =
+                    pipeline_drops_total - loss_window_prev_pipeline_drops;
                 float loss_pct = 0.0f;
-                if (packets_received + dropped_packets > 0) {
-                    loss_pct = (100.0f * dropped_packets) / (packets_received + dropped_packets);
+                uint32_t window_total =
+                    window_rx_packets + window_rf_loss + window_pipeline_drops;
+                if (window_total > 0) {
+                    loss_pct =
+                        (100.0f * (window_rf_loss + window_pipeline_drops)) / window_total;
                 }
                 status.loss_pct = loss_pct;
-                dashboard_log("RX: %lu pkts, %lu drops (%.1f%%), buf=%u%%",
-                             packets_received, dropped_packets, loss_pct, stats.buffer_fill_percent);
+                dashboard_log("RX: win60 pkts=%lu rf=%lu pipe=%lu loss=%.1f%%, buf=%u%%",
+                              window_rx_packets, window_rf_loss, window_pipeline_drops, loss_pct,
+                              stats.buffer_fill_percent);
+
+                if ((now - loss_window_start_ticks) >= pdMS_TO_TICKS(LOSS_WINDOW_MS)) {
+                    loss_window_prev_packets = rx_packets_total;
+                    loss_window_prev_rf_loss = rf_loss_frames_total;
+                    loss_window_prev_pipeline_drops = pipeline_drops_total;
+                    loss_window_start_ticks = now;
+                }
 
                 rx_obs_log_tick++;
                 if ((rx_obs_log_tick % 5U) == 0U) {

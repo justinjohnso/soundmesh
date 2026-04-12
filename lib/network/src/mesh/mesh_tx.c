@@ -99,8 +99,13 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
         }
 
         if (should_log) {
-            ESP_LOGI(TAG, "Mesh TX %s: descendants=%d result=%s total_sent=%lu drops=%lu (%.1f%%)",
-                     TRANSPORT_ROOT_FANOUT_MODE, descendant_count, esp_err_to_name(err), total_sent, total_drops,
+            int packets_per_second = 1000 / (AUDIO_FRAME_EFFECTIVE_MS * MESH_FRAMES_PER_PACKET);
+            int target_packets_per_second = 1000 / (AUDIO_FRAME_TARGET_MS * MESH_FRAMES_PER_PACKET);
+            ESP_LOGI(TAG,
+                     "Mesh TX %s: descendants=%d batch=%d pps=%d (target=%d fallback=%d) total_sent=%lu drops=%lu (%.1f%%)",
+                     TRANSPORT_ROOT_FANOUT_MODE, descendant_count, MESH_FRAMES_PER_PACKET,
+                     packets_per_second, target_packets_per_second, AUDIO_FRAME_FALLBACK_ACTIVE ? 1 : 0,
+                     total_sent, total_drops,
                      (total_sent + total_drops) > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);
             ESP_LOGI(TAG,
                      "TX OBS: audio_ok=%lu fail=%lu qfull=%lu noroute=%lu inv=%lu bp=%lu",

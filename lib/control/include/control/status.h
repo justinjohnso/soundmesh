@@ -32,6 +32,9 @@ typedef struct {
 typedef struct {
     input_mode_t input_mode;
     bool audio_active;
+    bool usb_ready;
+    bool usb_active;
+    bool usb_fallback_to_aux;
     uint32_t connected_nodes;
     uint32_t bandwidth_kbps;
     uint32_t tone_freq_hz;

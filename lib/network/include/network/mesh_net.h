@@ -50,6 +50,9 @@ typedef struct {
     uint32_t rx_audio_invalid_version;
     uint32_t rx_audio_invalid_payload;
     uint32_t rx_audio_forwarded;
+    uint32_t rx_audio_burst_loss_events;
+    uint32_t rx_audio_burst_loss_max;
+    uint32_t rx_audio_interarrival_jitter_us;
     uint32_t rx_heartbeat_packets;
     uint32_t rx_control_packets;
     uint32_t rx_ping_packets;
@@ -181,15 +184,28 @@ esp_err_t network_set_uplink_config(const char *ssid, const char *password, bool
 esp_err_t network_get_uplink_status(network_uplink_status_t *out);
 
 typedef struct {
+    uint8_t stream_id;
+    uint16_t gain_pct;
+    bool enabled;
+    bool muted;
+    bool solo;
+    bool active;
+} network_mixer_stream_status_t;
+
+typedef struct {
+    uint8_t schema_version;
     uint16_t out_gain_pct;
+    uint8_t stream_count;
+    network_mixer_stream_status_t streams[MIXER_MAX_STREAMS];
     bool applied;
     bool pending_apply;
     char last_error[48];
     uint32_t updated_ms;
 } network_mixer_status_t;
 
-typedef esp_err_t (*network_mixer_apply_callback_t)(uint16_t out_gain_pct);
+typedef esp_err_t (*network_mixer_apply_callback_t)(const network_mixer_status_t *mixer);
 esp_err_t network_register_mixer_apply_callback(network_mixer_apply_callback_t callback);
+esp_err_t network_set_mixer_state(const network_mixer_status_t *mixer_state);
 esp_err_t network_set_mixer_config(uint16_t out_gain_pct);
 esp_err_t network_get_mixer_status(network_mixer_status_t *out);
 

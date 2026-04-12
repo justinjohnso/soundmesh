@@ -43,6 +43,8 @@ struct adf_pipeline {
     volatile bool  output_mute;         // RX: zero PCM frame before I2S write
     volatile float input_gain_linear;   // TX: applied per-sample after capture downmix
     volatile bool  input_mute;          // TX: silence captured PCM before encode
+    
+    volatile float x, y, z;             // Positional coordinates for DSP effects
 };
 
 extern int16_t s_capture_stereo_frame[AUDIO_FRAME_SAMPLES * 2];

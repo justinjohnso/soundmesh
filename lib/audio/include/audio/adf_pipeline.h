@@ -180,6 +180,11 @@ void  adf_pipeline_set_output_mute(bool mute);
 bool  adf_pipeline_get_output_mute(void);
 
 /**
+ * Set the node's positional coordinates for DSP effects (e.g. LPF).
+ */
+void  adf_pipeline_set_position(float x, float y, float z);
+
+/**
  * Input gain and mute controls (TX capture trim, applied before Opus encode).
  * db clamped to [-18.0, +18.0].
  */

@@ -471,6 +471,15 @@ void adf_pipeline_set_output_mute(bool mute)
     p->output_mute = mute;
 }
 
+void adf_pipeline_set_position(float x, float y, float z)
+{
+    adf_pipeline_handle_t p = s_latest_pipeline;
+    if (!p) return;
+    p->x = x;
+    p->y = y;
+    p->z = z;
+}
+
 bool adf_pipeline_get_output_mute(void)
 {
     adf_pipeline_handle_t p = s_latest_pipeline;

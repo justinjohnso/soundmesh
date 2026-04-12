@@ -467,6 +467,22 @@ void rx_playback_task(void *arg)
                 }
                 memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES_INTERNAL_MONO);
 
+                // Apply Positional DSP Effects
+                if (pipeline->x != 0.0f || pipeline->y != 0.0f || pipeline->z != 0.0f) {
+                    float dist_sq = pipeline->x * pipeline->x + pipeline->y * pipeline->y + pipeline->z * pipeline->z;
+                    float distance = sqrtf(dist_sq);
+                    
+                    // Distance-based Low Pass Filter (simplistic)
+                    float lpf_alpha = 1.0f / (1.0f + distance * 0.1f);
+                    static float last_sample = 0;
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        float current = (float)mono_frame[i];
+                        float filtered = lpf_alpha * current + (1.0f - lpf_alpha) * last_sample;
+                        mono_frame[i] = (int32_t)filtered;
+                        last_sample = filtered;
+                    }
+                }
+
 #if defined(CONFIG_USE_ES8388)
                 playback_wait_for_slot(&next_play_us, frame_period_us);
                 pcm_convert_mono_s24_to_stereo_s16(mono_frame, stereo_frame, AUDIO_FRAME_SAMPLES);

@@ -6,6 +6,9 @@
   --src: #2196f3;
   --warn: #ffd166;
   --bad: #ff5d73;
+  --accent: #76ff03;
+  --muted: rgba(233, 236, 239, 0.72);
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -282,6 +285,62 @@ body {
   gap: 8px;
 }
 
+.stream-row {
+  border: 1px solid rgba(233, 236, 239, 0.18);
+  padding: 8px;
+  margin-bottom: 8px;
+  border-radius: 3px;
+}
+
+.stream-row:last-child {
+  margin-bottom: 0;
+}
+
+.stream-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stream-row-title {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stream-state {
+  border: 1px solid rgba(118, 255, 3, 0.28);
+  color: var(--out);
+  background: rgba(118, 255, 3, 0.12);
+  padding: 2px 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border-radius: 2px;
+}
+
+.stream-row.stream-row-inactive {
+  opacity: 0.75;
+  border-color: rgba(233, 236, 239, 0.12);
+}
+
+.stream-row.stream-row-inactive .stream-state {
+  border-color: rgba(255, 93, 115, 0.35);
+  color: #ff9aa9;
+  background: rgba(255, 93, 115, 0.14);
+}
+
+.stream-row.stream-row-disabled .stream-controls button {
+  opacity: 0.55;
+}
+
+.stream-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 /* Fader (horizontal range input) */
 .fader {
   flex: 1;
@@ -398,6 +457,16 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: #121212;
+}
+
+.stream-toggle-btn.stream-toggle-btn-active {
+  background: rgba(118, 255, 3, 0.16);
+  border-color: rgba(118, 255, 3, 0.5);
+  color: var(--out);
+}
+
+.stream-toggle-btn[aria-pressed='false'] {
+  opacity: 0.8;
 }
 
 .seg-sub {

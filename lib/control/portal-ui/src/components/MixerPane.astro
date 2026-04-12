@@ -1,55 +1,90 @@
 <section class="pane pane-mixer">
   <div class="pane-title"><span id="mixer-pane-title">MIXER</span></div>
 
-  <!-- ── Global Mixer (SRC/TX/COMBO) ─────────────────────────── -->
-  <div id="mixer-global" class="mixer-role" style="display:none">
-
-    <div class="mixer-block">
-      <div class="mixer-block-label">INPUT TRIM <span id="input-gain-mute-label"></span></div>
-      <div class="mixer-row">
-        <input id="input-gain-slider" class="fader" type="range"
-               min="-18" max="18" step="0.5" value="0"
-               aria-label="Input gain trim" />
-        <span id="input-gain-db" class="fader-db">0.0 dB</span>
-        <button id="input-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
-      </div>
+  <div class="mixer-block">
+    <div class="mixer-block-label">MASTER OUTPUT</div>
+    <div class="mixer-row">
+      <input id="master-out-gain-slider" class="fader" type="range"
+             min="0" max="400" step="1" value="200"
+             aria-label="Master output gain percent" />
+      <span id="master-out-gain-pct" class="fader-db">200%</span>
     </div>
-
-    <div class="mixer-block">
-      <div class="mixer-block-label">MASTER OUTPUT</div>
-      <div class="mixer-row">
-        <input id="output-gain-slider-g" class="fader" type="range"
-               min="-60" max="12" step="0.5" value="6"
-               aria-label="Master output level" />
-        <span id="output-gain-db-g" class="fader-db">+6.0 dB</span>
-        <button id="output-mute-btn-g" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
-      </div>
-    </div>
-
-    <div class="mixer-block">
-      <div class="mixer-block-label">INPUT SOURCE</div>
-      <div class="seg-group">
-        <button id="src-aux-btn"  class="seg-btn seg-btn-active" type="button" data-mode="aux">LINE IN</button>
-        <button id="src-tone-btn" class="seg-btn" type="button" data-mode="tone">TEST TONE</button>
-      </div>
-    </div>
-
   </div>
 
-  <!-- ── Local Mixer (OUT/RX) ─────────────────────────────────── -->
-  <div id="mixer-local" class="mixer-role" style="display:none">
+  <div class="mixer-block">
+    <div class="mixer-block-label">STREAMS</div>
 
-    <div class="mixer-block">
-      <div class="mixer-block-label">OUTPUT LEVEL</div>
+    <div class="stream-row" data-stream-id="1">
+      <div class="stream-row-header">
+        <span class="stream-row-title">STREAM 1</span>
+        <span id="stream-1-state" class="stream-state">ACTIVE</span>
+      </div>
       <div class="mixer-row">
-        <input id="output-gain-slider-l" class="fader" type="range"
-               min="-60" max="12" step="0.5" value="6"
-               aria-label="Output volume" />
-        <span id="output-gain-db-l" class="fader-db">+6.0 dB</span>
-        <button id="output-mute-btn-l" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+        <input id="stream-1-gain-slider" class="fader stream-gain-slider" type="range"
+               min="0" max="400" step="1" value="100"
+               aria-label="Stream 1 gain percent" />
+        <span id="stream-1-gain-pct" class="fader-db">100%</span>
+      </div>
+      <div class="stream-controls">
+        <button id="stream-1-enable-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="true">ENABLED</button>
+        <button id="stream-1-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+        <button id="stream-1-solo-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">SOLO</button>
       </div>
     </div>
 
+    <div class="stream-row" data-stream-id="2">
+      <div class="stream-row-header">
+        <span class="stream-row-title">STREAM 2</span>
+        <span id="stream-2-state" class="stream-state">INACTIVE</span>
+      </div>
+      <div class="mixer-row">
+        <input id="stream-2-gain-slider" class="fader stream-gain-slider" type="range"
+               min="0" max="400" step="1" value="100"
+               aria-label="Stream 2 gain percent" />
+        <span id="stream-2-gain-pct" class="fader-db">100%</span>
+      </div>
+      <div class="stream-controls">
+        <button id="stream-2-enable-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">DISABLED</button>
+        <button id="stream-2-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+        <button id="stream-2-solo-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">SOLO</button>
+      </div>
+    </div>
+
+    <div class="stream-row" data-stream-id="3">
+      <div class="stream-row-header">
+        <span class="stream-row-title">STREAM 3</span>
+        <span id="stream-3-state" class="stream-state">INACTIVE</span>
+      </div>
+      <div class="mixer-row">
+        <input id="stream-3-gain-slider" class="fader stream-gain-slider" type="range"
+               min="0" max="400" step="1" value="100"
+               aria-label="Stream 3 gain percent" />
+        <span id="stream-3-gain-pct" class="fader-db">100%</span>
+      </div>
+      <div class="stream-controls">
+        <button id="stream-3-enable-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">DISABLED</button>
+        <button id="stream-3-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+        <button id="stream-3-solo-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">SOLO</button>
+      </div>
+    </div>
+
+    <div class="stream-row" data-stream-id="4">
+      <div class="stream-row-header">
+        <span class="stream-row-title">STREAM 4</span>
+        <span id="stream-4-state" class="stream-state">INACTIVE</span>
+      </div>
+      <div class="mixer-row">
+        <input id="stream-4-gain-slider" class="fader stream-gain-slider" type="range"
+               min="0" max="400" step="1" value="100"
+               aria-label="Stream 4 gain percent" />
+        <span id="stream-4-gain-pct" class="fader-db">100%</span>
+      </div>
+      <div class="stream-controls">
+        <button id="stream-4-enable-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">DISABLED</button>
+        <button id="stream-4-mute-btn" class="mute-btn" type="button" aria-pressed="false">MUTE</button>
+        <button id="stream-4-solo-btn" class="seg-btn stream-toggle-btn" type="button" aria-pressed="false">SOLO</button>
+      </div>
+    </div>
   </div>
 
   <!-- ── Latency Target (all roles) ──────────────────────────── -->

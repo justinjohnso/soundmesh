@@ -340,6 +340,7 @@ void rx_playback_task(void *arg)
     int64_t next_play_us = 0;
     int64_t prefill_wait_start_ms = 0;
     int64_t last_rebuffer_ms = 0;
+    float lpf_last_sample = 0.0f;
 
     ESP_LOGI(TAG, "RX playback task started (event-driven), stack=%u",
              uxTaskGetStackHighWaterMark(NULL));
@@ -468,29 +469,42 @@ void rx_playback_task(void *arg)
                 memcpy(last_good_mono, mono_frame, AUDIO_FRAME_BYTES_INTERNAL_MONO);
 
                 // Apply Positional DSP Effects
+                float pan_l = 1.0f;
+                float pan_r = 1.0f;
+
                 if (pipeline->x != 0.0f || pipeline->y != 0.0f || pipeline->z != 0.0f) {
                     float dist_sq = pipeline->x * pipeline->x + pipeline->y * pipeline->y + pipeline->z * pipeline->z;
                     float distance = sqrtf(dist_sq);
                     
                     // Distance-based Low Pass Filter (simplistic)
-                    float lpf_alpha = 1.0f / (1.0f + distance * 0.1f);
-                    static float last_sample = 0;
+                    float lpf_alpha = 1.0f / (1.0f + distance * 0.01f);
                     for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
                         float current = (float)mono_frame[i];
-                        float filtered = lpf_alpha * current + (1.0f - lpf_alpha) * last_sample;
+                        float filtered = lpf_alpha * current + (1.0f - lpf_alpha) * lpf_last_sample;
                         mono_frame[i] = (int32_t)filtered;
-                        last_sample = filtered;
+                        lpf_last_sample = filtered;
+                    }
+
+                    // Spatial Panning based on X coordinate (-100 to 100)
+                    pan_l = fmaxf(0.0f, fminf(1.0f, (100.0f - pipeline->x) / 100.0f));
+                    pan_r = fmaxf(0.0f, fminf(1.0f, (100.0f + pipeline->x) / 100.0f));
+                }
+
+                playback_wait_for_slot(&next_play_us, frame_period_us);
+                pcm_convert_mono_s24_to_stereo_s16(mono_frame, stereo_frame, AUDIO_FRAME_SAMPLES);
+
+                // Apply spatial panning to stereo_frame
+                if (pan_l != 1.0f || pan_r != 1.0f) {
+                    for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                        stereo_frame[2*i]   = (int16_t)(stereo_frame[2*i]   * pan_l);
+                        stereo_frame[2*i+1] = (int16_t)(stereo_frame[2*i+1] * pan_r);
                     }
                 }
 
 #if defined(CONFIG_USE_ES8388)
-                playback_wait_for_slot(&next_play_us, frame_period_us);
-                pcm_convert_mono_s24_to_stereo_s16(mono_frame, stereo_frame, AUDIO_FRAME_SAMPLES);
                 es8388_audio_write_stereo(stereo_frame, AUDIO_FRAME_SAMPLES);
 #else
-                playback_wait_for_slot(&next_play_us, frame_period_us);
-                pcm_convert_mono_s24_to_s16(mono_frame, mono_frame_s16, AUDIO_FRAME_SAMPLES);
-                i2s_audio_write_mono_as_stereo(mono_frame_s16, AUDIO_FRAME_SAMPLES);
+                i2s_audio_write_samples(stereo_frame, AUDIO_FRAME_SAMPLES * 2);
 #endif
                 frames_played = 1;
                 played_audio_frame = true;

@@ -59,6 +59,15 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                 is_mesh_root_ready = true;
                 mesh_layer = 0;
                 ESP_LOGI(TAG, "Designated root ready: mesh AP broadcasting on channel %d", MESH_CHANNEL);
+
+                // Root should also join the group to ensure group-send routing is initialized
+                esp_err_t grp_err = esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
+                if (grp_err == ESP_OK) {
+                    ESP_LOGI(TAG, "SRC root: joined audio multicast group");
+                } else {
+                    ESP_LOGW(TAG, "SRC root: failed to join multicast group: %s", esp_err_to_name(grp_err));
+                }
+
                 mesh_state_notify_waiting_tasks();
                 esp_log_level_set("wifi", ESP_LOG_ERROR);
             } else if (my_node_role == NODE_ROLE_OUT) {

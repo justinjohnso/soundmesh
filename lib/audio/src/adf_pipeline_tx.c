@@ -303,7 +303,8 @@ void tx_encode_task(void *arg)
              MESH_FRAMES_PER_PACKET, uxTaskGetStackHighWaterMark(NULL));
 
     while (pipeline->running) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        // Poll every 10ms regardless of notifications to prevent permanent hang
+        ulTaskNotifyTake(pdFALSE, pdMS_TO_TICKS(10));
 
         if (!pipeline->running) {
             break;
@@ -315,15 +316,13 @@ void tx_encode_task(void *arg)
                 break;
             }
 
+#if !TX_CONTINUOUS_STREAMING
             bool signal_present = pipeline->stats.input_signal_present;
-#if !SRC_CONTINUOUS_STREAMING
             if (pipeline->input_mode != ADF_INPUT_MODE_TONE && !signal_present) {
                 batch_count = 0;
                 batch_payload_len = 0;
                 continue;
             }
-#else
-            (void)signal_present;
 #endif
 
             int64_t start_us = esp_timer_get_time();
@@ -362,6 +361,12 @@ void tx_encode_task(void *arg)
                                                1);
                 if (ret == ESP_OK) {
                     pipeline->stats.frames_processed += batch_count;
+                    
+                    static uint32_t net_send_count = 0;
+                    if ((++net_send_count % 100) == 0) {
+                        ESP_LOGI(TAG, "TX Batch sent: seq=%u, frames=%u, bytes=%u", 
+                                 pipeline->tx_seq, batch_count, (unsigned)batch_payload_len);
+                    }
                 } else if (ret != ESP_ERR_MESH_DISCONNECTED && ret != ESP_ERR_INVALID_STATE) {
                     pipeline->stats.frames_dropped += batch_count;
                 }

@@ -135,7 +135,7 @@
 #define MESH_DISABLED_ROUTER_SSID "MESHNET_DISABLED"  // Valid non-empty placeholder required by esp_mesh_set_config
 #define MESH_CHANNEL           11        // Channel 11 for reduced 2.4GHz interference
 #define MESH_ROUTE_TABLE_SIZE  50        // Max nodes in routing table
-#define MESH_AP_ASSOC_EXPIRE_S 120       // Extended auth window to prevent audio-load disconnects
+#define MESH_AP_ASSOC_EXPIRE_S 300       // Extended auth window (5 min) to prevent audio-load disconnects
 #define MESH_MAX_LAYER         6         // Allow relay paths for weak/far OUT nodes
 #define MESH_XON_QSIZE         128       // Increased mesh RX queue for burst tolerance
 // RF power in quarter-dBm units (80 = 20 dBm max, 52 = 13 dBm).
@@ -180,7 +180,7 @@
 // - OUT flag gates RX portal startup (kept OFF during current recovery phase).
 // Portal IP is computed at runtime: 10.48.<mesh_hash>.<node_mac>/30
 // See usb_portal_netif.c portal_netif_setup()
-#define ENABLE_SRC_USB_PORTAL_NETWORK   1
+#define ENABLE_SRC_USB_PORTAL_NETWORK   0
 #define ENABLE_OUT_USB_PORTAL_NETWORK   0
 
 // ============================================================================

@@ -157,6 +157,12 @@ void mesh_rx_task(void *arg) {
 
         if (first_byte == NET_PKT_TYPE_HEARTBEAT) {
             g_transport_stats.rx_heartbeat_packets++;
+            
+            // Periodic self-heal: ensure we are still subscribed to the group
+            if (my_node_role == NODE_ROLE_OUT && (g_transport_stats.rx_heartbeat_packets % 5 == 0)) {
+                esp_mesh_set_group_id((mesh_addr_t *)&audio_multicast_group, 1);
+            }
+
             if (esp_mesh_is_root() && data.size >= sizeof(mesh_heartbeat_t)) {
                 mesh_heartbeat_t *hb = (mesh_heartbeat_t *)data.data;
                 bool same_child = (memcmp(&from, &nearest_child_addr, 6) == 0);

@@ -79,8 +79,41 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
     bool should_log = ((++log_counter & 0x7F) == 0);
 
     if (is_mesh_root) {
-        err = esp_mesh_send((mesh_addr_t *)&audio_multicast_group, &mesh_data,
-                            kAudioRootFanoutFlags, NULL, 0);
+        mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
+        int route_table_size = 0;
+        esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
+        int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
+
+        if (descendant_count > 0 && descendant_count <= 10) {
+            // HIGH RELIABILITY MODE: Send individual P2P packets with hardware ACKs
+            int sent_ok = 0;
+            esp_err_t first_err = ESP_OK;
+            for (int i = 0; i < route_table_size; i++) {
+                if (memcmp(route_table[i].addr, my_sta_mac, 6) == 0) continue;
+                
+                esp_err_t perr = esp_mesh_send(&route_table[i], &mesh_data,
+                                               MESH_DATA_P2P | MESH_DATA_NONBLOCK, NULL, 0);
+                if (perr == ESP_OK) {
+                    sent_ok++;
+                } else if (first_err == ESP_OK) {
+                    first_err = perr;
+                }
+            }
+            err = (sent_ok > 0) ? ESP_OK : (first_err != ESP_OK ? first_err : ESP_ERR_MESH_NO_ROUTE_FOUND);
+        } else if (descendant_count > 10) {
+            // SCALABILITY MODE: Use Multicast Group for large meshes
+            err = esp_mesh_send((mesh_addr_t *)&audio_multicast_group, &mesh_data,
+                                kAudioRootFanoutFlags, NULL, 0);
+        } else {
+            // DISCOVERY MODE: Last-resort global broadcast to all FFs
+            static const mesh_addr_t broadcast_addr = {{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}};
+            err = esp_mesh_send((mesh_addr_t *)&broadcast_addr, &mesh_data,
+                                MESH_DATA_GROUP | MESH_DATA_NONBLOCK, NULL, 0);
+            if (should_log) {
+                ESP_LOGW(TAG, "Audio broadcast: empty routing table, using GLOBAL BROADCAST (err=%s)", esp_err_to_name(err));
+            }
+        }
+
         transport_record_audio_tx_result(err, len);
         if (err == ESP_OK) {
             total_sent++;
@@ -94,16 +127,12 @@ esp_err_t network_send_audio(const uint8_t *data, size_t len) {
         }
 
         if (should_log) {
-            mesh_addr_t route_table[MESH_ROUTE_TABLE_SIZE];
-            int route_table_size = 0;
-            esp_mesh_get_routing_table(route_table, sizeof(route_table), &route_table_size);
-            int descendant_count = route_table_size > 1 ? route_table_size - 1 : 0;
-
             int packets_per_second = 1000 / (AUDIO_FRAME_EFFECTIVE_MS * MESH_FRAMES_PER_PACKET);
             int target_packets_per_second = 1000 / (AUDIO_FRAME_TARGET_MS * MESH_FRAMES_PER_PACKET);
             ESP_LOGI(TAG,
                      "Mesh TX %s: descendants=%d batch=%d pps=%d (target=%d fallback=%d) total_sent=%lu drops=%lu (%.1f%%)",
-                     TRANSPORT_ROOT_FANOUT_MODE, descendant_count, MESH_FRAMES_PER_PACKET,
+                     (descendant_count > 0 && descendant_count <= 10) ? "P2P-HYBRID" : TRANSPORT_ROOT_FANOUT_MODE,
+                     descendant_count, MESH_FRAMES_PER_PACKET,
                      packets_per_second, target_packets_per_second, AUDIO_FRAME_FALLBACK_ACTIVE ? 1 : 0,
                      total_sent, total_drops,
                      (total_sent + total_drops) > 0 ? (100.0f * total_drops / (total_sent + total_drops)) : 0.0f);

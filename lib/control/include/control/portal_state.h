@@ -20,6 +20,7 @@ typedef struct {
     uint8_t stream_active;
     uint8_t parent_mac[6];
     uint32_t uptime_ms;
+    float x, y, z;          // Positional coordinates
     int64_t last_seen_us;   // esp_timer_get_time() when last heartbeat received
     bool stale;
 } portal_node_t;
@@ -32,6 +33,7 @@ typedef struct {
 
 esp_err_t portal_state_init(void);
 void portal_state_update_from_heartbeat(const uint8_t *sender_mac, const mesh_heartbeat_t *hb);
+void portal_state_update_position(const uint8_t *mac, float x, float y, float z);
 void portal_state_update_self(void);
 void portal_state_expire_stale(void);
 int portal_state_serialize_json(char *buf, size_t buf_size);

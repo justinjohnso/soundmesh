@@ -292,7 +292,14 @@ static esp_err_t handle_api_uplink(httpd_req_t *req) {
         }
     }
 
-    esp_err_t ret = network_set_uplink_config(ssid, password, enabled);
+    uplink_ctrl_message_t msg = {
+        .subtype = enabled ? UPLINK_CTRL_SET : UPLINK_CTRL_CLEAR,
+        .enabled = enabled,
+    };
+    strncpy(msg.ssid, ssid, sizeof(msg.ssid) - 1);
+    strncpy(msg.password, password, sizeof(msg.password) - 1);
+
+    esp_err_t ret = network_set_uplink_config(&msg);
     if (ret != ESP_OK) {
         portal_control_plane_record_apply_failure(PORTAL_CONTROL_ENDPOINT_UPLINK);
         httpd_resp_set_status(req, "409 Conflict");
@@ -435,7 +442,7 @@ static bool parse_mixer_stream_updates(const char *body, network_mixer_status_t 
 static esp_err_t handle_api_mixer(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
         network_mixer_status_t st = {0};
-        if (network_get_mixer_status(&st) != ESP_OK) {
+        if (network_get_mixer_state(&st) != ESP_OK) {
             httpd_resp_set_status(req, "500 Internal Server Error");
             httpd_resp_send(req, "{\"error\":\"mixer_status_failed\"}", HTTPD_RESP_USE_STRLEN);
             return ESP_OK;
@@ -501,7 +508,7 @@ static esp_err_t handle_api_mixer(httpd_req_t *req) {
     }
 
     network_mixer_status_t next = {0};
-    if (network_get_mixer_status(&next) != ESP_OK) {
+    if (network_get_mixer_state(&next) != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_send(req, "{\"error\":\"mixer_status_failed\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -559,6 +566,70 @@ static esp_err_t handle_api_mixer(httpd_req_t *req) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_send(req, "{\"error\":\"mixer apply failed\"}", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t handle_api_mesh_positions(httpd_req_t *req) {
+    if (req->method != HTTP_POST) {
+        httpd_resp_set_status(req, "405 Method Not Allowed");
+        httpd_resp_send(req, "{}", 2);
+        return ESP_OK;
+    }
+
+    char body[1024] = {0};
+    int rcvd = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rcvd <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "{\"error\":\"empty body\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // Parse and update node positions
+    mesh_positions_t mesh_pos = { .type = NET_PKT_TYPE_POSITIONS, .count = 0 };
+    const char *array_start = NULL;
+    const char *array_end = NULL;
+    if (json_extract_array_field_span(body, "positions", &array_start, &array_end)) {
+        const char *cursor = NULL;
+        while (mesh_pos.count < MESH_MAX_POSITIONS) {
+            const char *obj_start = NULL;
+            const char *obj_end = NULL;
+            if (!json_extract_next_array_object_span(array_start, array_end, &cursor, &obj_start, &obj_end)) break;
+            if (!obj_start || !obj_end) break;
+
+            size_t obj_len = (size_t)(obj_end - obj_start + 1);
+            char obj_json[256];
+            if (obj_len >= sizeof(obj_json)) continue;
+            memcpy(obj_json, obj_start, obj_len);
+            obj_json[obj_len] = '\0';
+
+            char mac_str[18];
+            float x = 0, y = 0, z = 0;
+            if (json_extract_string_field(obj_json, "mac", mac_str, sizeof(mac_str)) &&
+                json_extract_float_field(obj_json, "x", &x) &&
+                json_extract_float_field(obj_json, "y", &y)) {
+                
+                uint8_t mac[6];
+                if (sscanf(mac_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
+                           &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                    json_extract_float_field(obj_json, "z", &z);
+                    portal_state_update_position(mac, x, y, z);
+                    
+                    memcpy(mesh_pos.positions[mesh_pos.count].mac, mac, 6);
+                    mesh_pos.positions[mesh_pos.count].x = x;
+                    mesh_pos.positions[mesh_pos.count].y = y;
+                    mesh_pos.positions[mesh_pos.count].z = z;
+                    mesh_pos.count++;
+                }
+            }
+        }
+    }
+
+    if (mesh_pos.count > 0 && network_is_root()) {
+        network_broadcast_positions(&mesh_pos);
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -699,12 +770,18 @@ esp_err_t portal_http_start(void) {
         .method = HTTP_POST,
         .handler = handle_api_mixer
     };
+    httpd_uri_t uri_mesh_positions = {
+        .uri = "/api/mesh/positions",
+        .method = HTTP_POST,
+        .handler = handle_api_mesh_positions
+    };
     httpd_register_uri_handler(server, &uri_ota_get);
     httpd_register_uri_handler(server, &uri_ota_post);
     httpd_register_uri_handler(server, &uri_uplink_get);
     httpd_register_uri_handler(server, &uri_uplink_post);
     httpd_register_uri_handler(server, &uri_mixer_get);
     httpd_register_uri_handler(server, &uri_mixer_post);
+    httpd_register_uri_handler(server, &uri_mesh_positions);
     
     httpd_uri_t uri_ws = {
         .uri = "/ws",

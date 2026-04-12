@@ -224,6 +224,25 @@ void portal_state_update_from_heartbeat(const uint8_t *sender_mac, const mesh_he
     node->stale = false;
 }
 
+void portal_state_update_position(const uint8_t *mac, float x, float y, float z) {
+    portal_node_t *node = find_node(mac);
+    if (!node) {
+        node = add_node(mac);
+        if (!node) return;
+        memset(node, 0, sizeof(*node));
+        memcpy(node->mac, mac, 6);
+    }
+    node->x = x;
+    node->y = y;
+    node->z = z;
+    node->last_seen_us = esp_timer_get_time();
+    node->stale = false;
+
+    if (memcmp(mac, state.self_mac, 6) == 0) {
+        adf_pipeline_set_position(x, y, z);
+    }
+}
+
 void portal_state_update_self(void) {
     portal_node_t *node = find_node(state.self_mac);
     if (!node) {
@@ -461,14 +480,15 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
         off += snprintf(buf + off, buf_size - off,
             "{\"mac\":\"%s\",\"role\":\"%s\",\"root\":%s,"
             "\"layer\":%d,\"rssi\":%d,\"children\":%d,"
-            "\"streaming\":%s,",
+            "\"streaming\":%s,\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,",
             mac_str,
             n->role == 1 ? "SRC" : "OUT",
             n->is_root ? "true" : "false",
             n->layer,
             n->rssi,
             n->children_count,
-            n->stream_active ? "true" : "false");
+            n->stream_active ? "true" : "false",
+            (double)n->x, (double)n->y, (double)n->z);
         
         if (is_zero_mac(n->parent_mac)) {
             off += snprintf(buf + off, buf_size - off, "\"parent\":null,");
@@ -540,7 +560,8 @@ int portal_state_serialize_json(char *buf, size_t buf_size) {
 
     if (off < (int)buf_size - 320) {
         network_mixer_status_t mixer = {0};
-        if (network_get_mixer_status(&mixer) == ESP_OK) {
+        if (network_get_mixer_state(&mixer) == ESP_OK) {
+
             off += snprintf(
                 buf + off,
                 buf_size - off,

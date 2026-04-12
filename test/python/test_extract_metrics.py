@@ -91,9 +91,8 @@ class ExtractMetricsTests(unittest.TestCase):
         src_log = "I (100) network_mesh: Network ready\n"
         out_log = "\n".join(
             [
-                "I (200) dashboard: RX OBS: gap=4/10 late=2 hard=1 fec=3 plc=2/4 ovf=5 dec=6 und=7 rebuf=2 miss_pk=9 prefill=3 wait_ms=1200 buf_peak=88%",
-                "I (210) dashboard: RX NET: rx=100 dup=11 ttl0=5 inv=1/2/3 batch=4/8 cb_miss=1 recv=2/3 ctrl=4/5/6/7/8 churn=9/10/11/12 rj=13/14/15",
-                "I (220) dashboard: TX OBS: sent=16 fail=3 qfull=2 bp=1, ctrl=7/2, churn(pc=1 pd=2 np=3 rj=4/5/6)",
+                "I (200) dashboard: RX OBS: audio=300 fwd=290 dup=11 ttl0=5 inv={hdr:1 ver:2 pay:3} batch={pkts:4 frames:8} cb_miss=1 recv={err:2 empty:3} burst_loss=6 burst_max=9 jitter_us=1200 ctrl={hb:4 ctl:5 ping:6 pong:7 ann:8} churn={pc:9 pd:10 np:11 sc:12 rj:13/14/15}",
+                "I (220) dashboard: TX OBS: audio_ok=16 fail=3 qfull=2 noroute=5 inv=7 bp=1",
             ]
         )
 
@@ -103,16 +102,46 @@ class ExtractMetricsTests(unittest.TestCase):
         self.assertEqual(raw["tx_obs_send_failures"], 3)
         self.assertEqual(raw["tx_obs_queue_full"], 2)
         self.assertEqual(raw["tx_obs_backpressure_level_max"], 1)
-        self.assertEqual(raw["rx_obs_gap_events"], 4)
-        self.assertEqual(raw["rx_obs_gap_frames"], 10)
-        self.assertEqual(raw["rx_obs_decode_errors"], 6)
-        self.assertEqual(raw["rx_obs_underrun_rebuffers"], 2)
-        self.assertEqual(raw["rx_obs_prefill_wait_ms"], 1200)
-        self.assertEqual(raw["rx_obs_buffer_peak_pct"], 88)
+        self.assertEqual(raw["tx_obs_audio_ok"], 16)
+        self.assertEqual(raw["tx_obs_no_route"], 5)
+        self.assertEqual(raw["tx_obs_invalid_state"], 7)
         self.assertEqual(raw["rx_net_duplicates"], 11)
         self.assertEqual(raw["rx_net_ttl_expired"], 5)
         self.assertEqual(raw["rx_net_mesh_recv_errors"], 2)
         self.assertEqual(raw["rx_net_mesh_recv_empty"], 3)
+        self.assertEqual(raw["rx_obs_burst_loss_events"], 6)
+        self.assertEqual(raw["rx_obs_burst_loss_max"], 9)
+        self.assertEqual(raw["rx_obs_jitter_us"], 1200)
+
+    def test_outputs_cadence_and_backpressure_counters(self) -> None:
+        src_log = "\n".join(
+            [
+                "I (1000) wifi: disconnected reason:201",
+                "I (4000) wifi: disconnected reason:201",
+                "I (7000) wifi: disconnected reason:201",
+            ]
+        )
+        out_log = "\n".join(
+            [
+                "I (1500) dashboard: RX: 100 pkts, 1 drops (1.0%), buf=0%",
+                "W (2000) adf_pipeline: underrun detected",
+                "I (4500) dashboard: TX OBS: audio_ok=16 fail=3 qfull=2 noroute=0 inv=0 bp=1",
+                "I (5000) dashboard: RX: 200 pkts, 2 drops (2.0%), buf=0%",
+                "W (6000) adf_pipeline: underrun detected",
+                "I (7500) dashboard: TX OBS: audio_ok=32 fail=3 qfull=2 noroute=0 inv=0 bp=2",
+                "I (8500) dashboard: RX: 300 pkts, 3 drops (3.0%), buf=0%",
+                "W (10000) adf_pipeline: underrun detected",
+            ]
+        )
+
+        metrics = metrics_module.compute_metrics(src_log, out_log, duration_s=120)
+
+        self.assertEqual(metrics["reason201_cadence_s"], 3.0)
+        self.assertEqual(metrics["buf0_cadence_s"], 3.5)
+        self.assertEqual(metrics["underrun_cadence_s"], 4.0)
+        self.assertEqual(metrics["tx_backpressure_cadence_s"], 3.0)
+        self.assertEqual(metrics["tx_backpressure_nonzero_samples_per_min"], 1.0)
+        self.assertEqual(metrics["raw"]["tx_obs_backpressure_nonzero_samples"], 2)
 
 
 if __name__ == "__main__":

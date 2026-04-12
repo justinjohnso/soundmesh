@@ -22,8 +22,19 @@ TX_OBS_RE = re.compile(
     r"TX OBS:\s*sent=(\d+)\s+fail=(\d+)\s+qfull=(\d+)\s+bp=(\d+)",
     re.IGNORECASE,
 )
+TX_OBS_V2_RE = re.compile(
+    r"TX OBS:\s*audio_ok=(\d+)\s+fail=(\d+)\s+qfull=(\d+)\s+noroute=(\d+)\s+inv=(\d+)\s+bp=(\d+)",
+    re.IGNORECASE,
+)
 RX_OBS_RE = re.compile(
     r"RX OBS:\s*gap=(\d+)/(\d+)\s+late=(\d+)\s+hard=(\d+)\s+fec=(\d+)\s+plc=(\d+)/(\d+)\s+ovf=(\d+)\s+dec=(\d+)\s+und=(\d+)\s+rebuf=(\d+)\s+miss_pk=(\d+)\s+prefill=(\d+)\s+wait_ms=(\d+)\s+buf_peak=(\d+)%",
+    re.IGNORECASE,
+)
+RX_OBS_V2_RE = re.compile(
+    r"RX OBS:\s*audio=(\d+)\s+fwd=(\d+)\s+dup=(\d+)\s+ttl0=(\d+)\s+inv=\{hdr:(\d+)\s+ver:(\d+)\s+pay:(\d+)\}\s+"
+    r"batch=\{pkts:(\d+)\s+frames:(\d+)\}\s+cb_miss=(\d+)\s+recv=\{err:(\d+)\s+empty:(\d+)\}\s+"
+    r"burst_loss=(\d+)\s+burst_max=(\d+)\s+jitter_us=(\d+)\s+ctrl=\{hb:(\d+)\s+ctl:(\d+)\s+ping:(\d+)\s+pong:(\d+)\s+ann:(\d+)\}\s+"
+    r"churn=\{pc:(\d+)\s+pd:(\d+)\s+np:(\d+)\s+sc:(\d+)\s+rj:(\d+)/(\d+)/(\d+)\}",
     re.IGNORECASE,
 )
 RX_NET_RE = re.compile(
@@ -94,6 +105,59 @@ def first_rejoin_recovery_time_s(out_text: str) -> float | None:
     return None
 
 
+def event_timestamps_ms(text: str, pattern: re.Pattern[str]) -> list[int]:
+    timestamps: list[int] = []
+    for line in text.splitlines():
+        if not pattern.search(line):
+            continue
+        ms = parse_log_ms(line)
+        if ms is not None:
+            timestamps.append(ms)
+    return timestamps
+
+
+def cadence_stats(timestamps_ms: list[int]) -> dict[str, float | int | None]:
+    if len(timestamps_ms) < 2:
+        return {
+            "event_count": len(timestamps_ms),
+            "interval_count": 0,
+            "mean_s": None,
+            "median_s": None,
+            "p95_s": None,
+            "min_s": None,
+            "max_s": None,
+        }
+    intervals_s = [
+        (timestamps_ms[idx] - timestamps_ms[idx - 1]) / 1000.0
+        for idx in range(1, len(timestamps_ms))
+        if timestamps_ms[idx] >= timestamps_ms[idx - 1]
+    ]
+    if not intervals_s:
+        return {
+            "event_count": len(timestamps_ms),
+            "interval_count": 0,
+            "mean_s": None,
+            "median_s": None,
+            "p95_s": None,
+            "min_s": None,
+            "max_s": None,
+        }
+    return {
+        "event_count": len(timestamps_ms),
+        "interval_count": len(intervals_s),
+        "mean_s": round(sum(intervals_s) / len(intervals_s), 3),
+        "median_s": round(percentile(intervals_s, 0.5), 3),
+        "p95_s": round(percentile(intervals_s, 0.95), 3),
+        "min_s": round(min(intervals_s), 3),
+        "max_s": round(max(intervals_s), 3),
+    }
+
+
+def cadence_median_seconds(cadence: dict[str, float | int | None]) -> float | None:
+    value = cadence.get("median_s")
+    return value if isinstance(value, (int, float)) else None
+
+
 def compute_metrics(src_text: str, out_text: str, duration_s: int) -> dict:
     src_text_clean = strip_ansi(src_text)
     out_text_clean = strip_ansi(out_text)
@@ -120,25 +184,91 @@ def compute_metrics(src_text: str, out_text: str, duration_s: int) -> dict:
 
     tx_obs_samples = [TX_OBS_RE.search(line) for line in out_lines]
     tx_obs_samples = [sample for sample in tx_obs_samples if sample is not None]
-    tx_obs_send_failures = max((int(sample.group(2)) for sample in tx_obs_samples), default=0)
-    tx_obs_queue_full = max((int(sample.group(3)) for sample in tx_obs_samples), default=0)
-    tx_obs_backpressure_level_max = max((int(sample.group(4)) for sample in tx_obs_samples), default=0)
+    tx_obs_v2_samples = [TX_OBS_V2_RE.search(line) for line in out_lines]
+    tx_obs_v2_samples = [sample for sample in tx_obs_v2_samples if sample is not None]
+
+    tx_obs_send_failures = max(
+        [int(sample.group(2)) for sample in tx_obs_samples]
+        + [int(sample.group(2)) for sample in tx_obs_v2_samples],
+        default=0,
+    )
+    tx_obs_queue_full = max(
+        [int(sample.group(3)) for sample in tx_obs_samples]
+        + [int(sample.group(3)) for sample in tx_obs_v2_samples],
+        default=0,
+    )
+    tx_obs_backpressure_level_max = max(
+        [int(sample.group(4)) for sample in tx_obs_samples]
+        + [int(sample.group(6)) for sample in tx_obs_v2_samples],
+        default=0,
+    )
+    tx_obs_audio_ok = max((int(sample.group(1)) for sample in tx_obs_v2_samples), default=0)
+    tx_obs_no_route = max((int(sample.group(4)) for sample in tx_obs_v2_samples), default=0)
+    tx_obs_invalid_state = max((int(sample.group(5)) for sample in tx_obs_v2_samples), default=0)
+    tx_obs_backpressure_nonzero_samples = sum(
+        1
+        for sample in tx_obs_samples
+        if int(sample.group(4)) > 0
+    ) + sum(
+        1
+        for sample in tx_obs_v2_samples
+        if int(sample.group(6)) > 0
+    )
 
     rx_obs_samples = [RX_OBS_RE.search(line) for line in out_lines]
     rx_obs_samples = [sample for sample in rx_obs_samples if sample is not None]
+    rx_obs_v2_samples = [RX_OBS_V2_RE.search(line) for line in out_lines]
+    rx_obs_v2_samples = [sample for sample in rx_obs_v2_samples if sample is not None]
     rx_obs_gap_events = max((int(sample.group(1)) for sample in rx_obs_samples), default=0)
     rx_obs_gap_frames = max((int(sample.group(2)) for sample in rx_obs_samples), default=0)
     rx_obs_decode_errors = max((int(sample.group(9)) for sample in rx_obs_samples), default=0)
     rx_obs_underrun_rebuffers = max((int(sample.group(11)) for sample in rx_obs_samples), default=0)
     rx_obs_prefill_wait_ms = max((int(sample.group(14)) for sample in rx_obs_samples), default=0)
     rx_obs_buffer_peak_pct = max((int(sample.group(15)) for sample in rx_obs_samples), default=0)
+    rx_obs_duplicates = max((int(sample.group(3)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_ttl_expired = max((int(sample.group(4)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_mesh_recv_errors = max((int(sample.group(11)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_mesh_recv_empty = max((int(sample.group(12)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_burst_loss_events = max((int(sample.group(13)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_burst_loss_max = max((int(sample.group(14)) for sample in rx_obs_v2_samples), default=0)
+    rx_obs_jitter_us = max((int(sample.group(15)) for sample in rx_obs_v2_samples), default=0)
 
     rx_net_samples = [RX_NET_RE.search(line) for line in out_lines]
     rx_net_samples = [sample for sample in rx_net_samples if sample is not None]
-    rx_net_duplicates = max((int(sample.group(2)) for sample in rx_net_samples), default=0)
-    rx_net_ttl_expired = max((int(sample.group(3)) for sample in rx_net_samples), default=0)
-    rx_net_mesh_recv_errors = max((int(sample.group(10)) for sample in rx_net_samples), default=0)
-    rx_net_mesh_recv_empty = max((int(sample.group(11)) for sample in rx_net_samples), default=0)
+    rx_net_duplicates = max(
+        [int(sample.group(2)) for sample in rx_net_samples] + [rx_obs_duplicates],
+        default=0,
+    )
+    rx_net_ttl_expired = max(
+        [int(sample.group(3)) for sample in rx_net_samples] + [rx_obs_ttl_expired],
+        default=0,
+    )
+    rx_net_mesh_recv_errors = max(
+        [int(sample.group(10)) for sample in rx_net_samples] + [rx_obs_mesh_recv_errors],
+        default=0,
+    )
+    rx_net_mesh_recv_empty = max(
+        [int(sample.group(11)) for sample in rx_net_samples] + [rx_obs_mesh_recv_empty],
+        default=0,
+    )
+
+    reason201_cadence = cadence_stats(event_timestamps_ms(src_text_clean, REASON201_RE))
+    buf0_cadence = cadence_stats(event_timestamps_ms(out_text_clean, BUF0_RE))
+    underrun_cadence = cadence_stats(event_timestamps_ms(out_text_clean, UNDER_RE))
+    tx_backpressure_timestamps = []
+    for line in out_lines:
+        legacy = TX_OBS_RE.search(line)
+        if legacy is not None and int(legacy.group(4)) > 0:
+            ms = parse_log_ms(line)
+            if ms is not None:
+                tx_backpressure_timestamps.append(ms)
+            continue
+        current = TX_OBS_V2_RE.search(line)
+        if current is not None and int(current.group(6)) > 0:
+            ms = parse_log_ms(line)
+            if ms is not None:
+                tx_backpressure_timestamps.append(ms)
+    tx_backpressure_cadence = cadence_stats(tx_backpressure_timestamps)
 
     losses = [float(m.group(1)) for m in LOSS_RE.finditer(out_text_clean)]
     loss_pct = max(losses) if losses else 0.0
@@ -151,6 +281,7 @@ def compute_metrics(src_text: str, out_text: str, duration_s: int) -> dict:
     decode_failures_per_min = decode_failures / minutes
     reason201_per_min = reason201_count / minutes
     buf0_events_per_min = buf0_events / minutes
+    tx_backpressure_nonzero_samples_per_min = tx_obs_backpressure_nonzero_samples / minutes
 
     stream_continuity_pct = 100.0
     if rejoin_events > 0:
@@ -178,6 +309,11 @@ def compute_metrics(src_text: str, out_text: str, duration_s: int) -> dict:
         "loss_p95_pct": round(loss_p95_pct, 3),
         "reason201_per_min": round(reason201_per_min, 3),
         "buf0_events_per_min": round(buf0_events_per_min, 3),
+        "tx_backpressure_nonzero_samples_per_min": round(tx_backpressure_nonzero_samples_per_min, 3),
+        "reason201_cadence_s": cadence_median_seconds(reason201_cadence),
+        "buf0_cadence_s": cadence_median_seconds(buf0_cadence),
+        "underrun_cadence_s": cadence_median_seconds(underrun_cadence),
+        "tx_backpressure_cadence_s": cadence_median_seconds(tx_backpressure_cadence),
         "raw": {
             "src_join_events": src_join_events,
             "out_join_events": out_join_events,
@@ -204,16 +340,27 @@ def compute_metrics(src_text: str, out_text: str, duration_s: int) -> dict:
             "tx_obs_send_failures": tx_obs_send_failures,
             "tx_obs_queue_full": tx_obs_queue_full,
             "tx_obs_backpressure_level_max": tx_obs_backpressure_level_max,
+            "tx_obs_audio_ok": tx_obs_audio_ok,
+            "tx_obs_no_route": tx_obs_no_route,
+            "tx_obs_invalid_state": tx_obs_invalid_state,
+            "tx_obs_backpressure_nonzero_samples": tx_obs_backpressure_nonzero_samples,
             "rx_obs_gap_events": rx_obs_gap_events,
             "rx_obs_gap_frames": rx_obs_gap_frames,
             "rx_obs_decode_errors": rx_obs_decode_errors,
             "rx_obs_underrun_rebuffers": rx_obs_underrun_rebuffers,
             "rx_obs_prefill_wait_ms": rx_obs_prefill_wait_ms,
             "rx_obs_buffer_peak_pct": rx_obs_buffer_peak_pct,
+            "rx_obs_burst_loss_events": rx_obs_burst_loss_events,
+            "rx_obs_burst_loss_max": rx_obs_burst_loss_max,
+            "rx_obs_jitter_us": rx_obs_jitter_us,
             "rx_net_duplicates": rx_net_duplicates,
             "rx_net_ttl_expired": rx_net_ttl_expired,
             "rx_net_mesh_recv_errors": rx_net_mesh_recv_errors,
             "rx_net_mesh_recv_empty": rx_net_mesh_recv_empty,
+            "reason201_cadence": reason201_cadence,
+            "buf0_cadence": buf0_cadence,
+            "underrun_cadence": underrun_cadence,
+            "tx_backpressure_cadence": tx_backpressure_cadence,
         },
     }
 

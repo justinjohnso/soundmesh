@@ -21,7 +21,13 @@ spec.loader.exec_module(gate)  # type: ignore[arg-type]
 
 
 class RunDemoQualityGateTests(unittest.TestCase):
-    def _gate_args(self, output_dir: str, *, transport_node_metrics: str | None = None) -> SimpleNamespace:
+    def _gate_args(
+        self,
+        output_dir: str,
+        *,
+        transport_node_metrics: str | None = None,
+        transport_baseline_metrics: str | None = None,
+    ) -> SimpleNamespace:
         return SimpleNamespace(
             src_port=None,
             out_port=None,
@@ -36,6 +42,7 @@ class RunDemoQualityGateTests(unittest.TestCase):
             soak_summary="soak.json",
             markdown_output=None,
             transport_node_metrics=transport_node_metrics,
+            transport_baseline_metrics=transport_baseline_metrics,
         )
 
     def _remove_tree(self, path: Path) -> None:
@@ -113,6 +120,56 @@ class RunDemoQualityGateTests(unittest.TestCase):
         result = gate.evaluate_transport_slos(metrics)
         self.assertFalse(result["passed"])
         self.assertIn("join_time_s", result["failed_metrics"])
+
+    def test_evaluate_transport_non_regression_pass(self) -> None:
+        baseline = {
+            "underruns_per_min": 1.0,
+            "decode_failures_per_min": 0.5,
+            "loss_pct": 2.0,
+            "reason201_per_min": 1.0,
+            "buf0_events_per_min": 1.0,
+            "tx_backpressure_nonzero_samples_per_min": 1.0,
+            "reason201_cadence_s": 2.0,
+            "buf0_cadence_s": 2.0,
+            "underrun_cadence_s": 2.0,
+            "tx_backpressure_cadence_s": 2.0,
+            "raw": {"tx_obs_backpressure_level_max": 2},
+        }
+        candidate = {
+            "underruns_per_min": 0.5,
+            "decode_failures_per_min": 0.2,
+            "loss_pct": 1.5,
+            "reason201_per_min": 0.2,
+            "buf0_events_per_min": 0.5,
+            "tx_backpressure_nonzero_samples_per_min": 0.5,
+            "reason201_cadence_s": 3.0,
+            "buf0_cadence_s": 2.5,
+            "underrun_cadence_s": 2.3,
+            "tx_backpressure_cadence_s": 2.2,
+            "raw": {"tx_obs_backpressure_level_max": 1},
+        }
+
+        result = gate.evaluate_transport_non_regression(candidate, baseline)
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["failed_metrics"], [])
+
+    def test_evaluate_transport_non_regression_detects_failures(self) -> None:
+        baseline = {
+            "underruns_per_min": 1.0,
+            "reason201_cadence_s": 3.0,
+            "raw": {"tx_obs_backpressure_level_max": 1},
+        }
+        candidate = {
+            "underruns_per_min": 2.0,
+            "reason201_cadence_s": 2.0,
+            "raw": {"tx_obs_backpressure_level_max": 2},
+        }
+
+        result = gate.evaluate_transport_non_regression(candidate, baseline)
+        self.assertFalse(result["passed"])
+        self.assertIn("underruns_per_min", result["failed_metrics"])
+        self.assertIn("reason201_cadence_s", result["failed_metrics"])
+        self.assertIn("raw.tx_obs_backpressure_level_max", result["failed_metrics"])
 
     def test_evaluate_quality_gate_requires_pass_band(self) -> None:
         quality_metrics = {
@@ -383,6 +440,84 @@ class RunDemoQualityGateTests(unittest.TestCase):
         transport = summary["gates"]["transport_slo"]
         self.assertEqual(transport["selected_candidate"], "node:OUT_B")
         self.assertIn("loss_pct", transport["failed_metrics"])
+        self.assertEqual(summary["final_verdict"]["result"], "FAIL")
+        self._remove_tree(output_dir)
+
+    def test_main_applies_transport_non_regression_policy_when_baseline_provided(self) -> None:
+        output_dir = Path("test/python/.gate-main-non-regression")
+        self._remove_tree(output_dir)
+
+        args = self._gate_args(str(output_dir), transport_baseline_metrics="baseline.json")
+        soak_payload = {
+            "result": "PASS",
+            "nodes": {
+                "SRC": {"ok_hits": 1, "panic_hits": 0, "late_reset_hits": 0},
+                "OUT": {"ok_hits": 1, "panic_hits": 0, "late_reset_hits": 0},
+            },
+        }
+        aggregate_metrics = {
+            "join_time_s": 10.0,
+            "rejoin_time_s": 0.0,
+            "stream_continuity_pct": 100.0,
+            "underruns_per_min": 1.1,
+            "decode_failures_per_min": 0.0,
+            "loss_pct": 0.5,
+            "reason201_per_min": 0.0,
+            "buf0_events_per_min": 0.0,
+            "tx_backpressure_nonzero_samples_per_min": 0.5,
+            "reason201_cadence_s": 3.0,
+            "buf0_cadence_s": 3.0,
+            "underrun_cadence_s": 3.0,
+            "tx_backpressure_cadence_s": 3.0,
+            "raw": {"line_count": 10, "src_line_count": 5, "out_line_count": 5, "tx_obs_backpressure_level_max": 2},
+        }
+        baseline_metrics = {
+            "underruns_per_min": 0.5,
+            "decode_failures_per_min": 0.0,
+            "loss_pct": 0.5,
+            "reason201_per_min": 0.0,
+            "buf0_events_per_min": 0.0,
+            "tx_backpressure_nonzero_samples_per_min": 0.5,
+            "reason201_cadence_s": 3.0,
+            "buf0_cadence_s": 3.0,
+            "underrun_cadence_s": 3.0,
+            "tx_backpressure_cadence_s": 3.0,
+            "raw": {"tx_obs_backpressure_level_max": 1},
+        }
+        quality_payload = {
+            "quality_score": 90.0,
+            "threshold_evaluation": {
+                "overall_band": "pass",
+                "failed_metrics": [],
+                "warned_metrics": [],
+            },
+        }
+
+        with (
+            mock.patch.object(gate, "parse_args", return_value=args),
+            mock.patch.object(gate, "require_existing_file", return_value=None),
+            mock.patch.object(gate, "run_command", side_effect=[0, 0]),
+            mock.patch.object(gate, "resolve_path", side_effect=lambda raw_path: Path(raw_path)),
+            mock.patch.object(
+                gate,
+                "read_required_json_artifact",
+                side_effect=[
+                    (soak_payload, None),
+                    (aggregate_metrics, None),
+                    (baseline_metrics, None),
+                    (quality_payload, None),
+                ],
+            ),
+        ):
+            exit_code = gate.main([])
+
+        self.assertEqual(exit_code, 2)
+        summary = json.loads((output_dir / "demo-quality-gate-summary.json").read_text(encoding="utf-8"))
+        non_regression = summary["gates"]["transport_slo"]["non_regression"]
+        self.assertTrue(non_regression["enabled"])
+        self.assertFalse(non_regression["passed"])
+        self.assertIn("underruns_per_min", non_regression["failed_metrics"])
+        self.assertIn("raw.tx_obs_backpressure_level_max", non_regression["failed_metrics"])
         self.assertEqual(summary["final_verdict"]["result"], "FAIL")
         self._remove_tree(output_dir)
 

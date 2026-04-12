@@ -20,6 +20,19 @@ SLO_THRESHOLDS: dict[str, tuple[str, float]] = {
     "decode_failures_per_min": ("<=", 0.5),
     "loss_pct": ("<=", 2.0),
 }
+NON_REGRESSION_THRESHOLDS: dict[str, str] = {
+    "underruns_per_min": "max",
+    "decode_failures_per_min": "max",
+    "loss_pct": "max",
+    "reason201_per_min": "max",
+    "buf0_events_per_min": "max",
+    "tx_backpressure_nonzero_samples_per_min": "max",
+    "reason201_cadence_s": "min",
+    "buf0_cadence_s": "min",
+    "underrun_cadence_s": "min",
+    "tx_backpressure_cadence_s": "min",
+    "raw.tx_obs_backpressure_level_max": "max",
+}
 
 SCRIPT_NAME = "run_demo_quality_gate.py"
 DEFAULT_QUALITY_THRESHOLDS_PATH = Path(__file__).resolve().with_name("output_quality_thresholds.json")
@@ -102,6 +115,15 @@ def _to_non_negative_int(value: Any) -> int | None:
             return None
         return parsed if parsed >= 0 else None
     return None
+
+
+def _metric_value(metrics: dict[str, Any], dotted_path: str) -> float | None:
+    node: Any = metrics
+    for key in dotted_path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return _to_number(node)
 
 
 def _check_optional_non_negative_int(raw_obj: dict[str, Any], key: str, issues: list[str]) -> None:
@@ -335,6 +357,49 @@ def evaluate_transport_slos(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evaluate_transport_non_regression(candidate: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    checks: dict[str, dict[str, Any]] = {}
+    failed_metrics: list[str] = []
+    skipped_metrics: list[str] = []
+
+    for metric, policy in NON_REGRESSION_THRESHOLDS.items():
+        candidate_value = _metric_value(candidate, metric)
+        baseline_value = _metric_value(baseline, metric)
+        if candidate_value is None or baseline_value is None:
+            skipped_metrics.append(metric)
+            checks[metric] = {
+                "policy": policy,
+                "baseline": baseline_value,
+                "candidate": candidate_value,
+                "passed": None,
+                "skipped": True,
+            }
+            continue
+
+        if policy == "max":
+            passed = candidate_value <= baseline_value
+        elif policy == "min":
+            passed = candidate_value >= baseline_value
+        else:
+            raise ValueError(f"Unsupported non-regression policy: {policy}")
+        checks[metric] = {
+            "policy": policy,
+            "baseline": baseline_value,
+            "candidate": candidate_value,
+            "passed": passed,
+            "skipped": False,
+        }
+        if not passed:
+            failed_metrics.append(metric)
+
+    return {
+        "passed": not failed_metrics,
+        "failed_metrics": failed_metrics,
+        "skipped_metrics": skipped_metrics,
+        "checks": checks,
+    }
+
+
 def evaluate_quality_gate(quality_metrics: dict[str, Any]) -> dict[str, Any]:
     threshold_eval = quality_metrics.get("threshold_evaluation")
     if not isinstance(threshold_eval, dict):
@@ -489,6 +554,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "When provided, transport gate evaluates against the worst candidate node."
         ),
     )
+    parser.add_argument(
+        "--transport-baseline-metrics",
+        default=None,
+        help=(
+            "Optional baseline transport metrics JSON used for cadence/backpressure non-regression policy."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.duration <= 0:
         parser.error("--duration must be > 0")
@@ -556,6 +628,9 @@ def main(argv: list[str] | None = None) -> int:
             "output_dir": str(output_dir),
             "soak_summary_override": str(resolve_path(args.soak_summary)) if args.soak_summary else None,
             "transport_node_metrics": str(resolve_path(args.transport_node_metrics)) if args.transport_node_metrics else None,
+            "transport_baseline_metrics": (
+                str(resolve_path(args.transport_baseline_metrics)) if args.transport_baseline_metrics else None
+            ),
         }
 
         artifacts: dict[str, str] = {}
@@ -658,6 +733,55 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
         selected_transport = select_worst_transport_candidate(transport_candidates) if transport_candidates else None
+        baseline_non_regression: dict[str, Any] = {
+            "enabled": False,
+            "passed": True,
+            "failed_metrics": [],
+            "skipped_metrics": [],
+            "checks": {},
+            "issues": [],
+        }
+        if args.transport_baseline_metrics:
+            baseline_metrics_path = resolve_path(args.transport_baseline_metrics)
+            artifacts["transport_baseline_metrics_json"] = str(baseline_metrics_path)
+            baseline_non_regression["enabled"] = True
+            baseline_payload, baseline_error = read_required_json_artifact(
+                baseline_metrics_path,
+                "transport baseline metrics",
+            )
+            if baseline_error is not None:
+                baseline_non_regression["passed"] = False
+                baseline_non_regression["issues"] = [baseline_error]
+            elif selected_transport is None:
+                baseline_non_regression["passed"] = False
+                baseline_non_regression["issues"] = ["transport evaluation produced no candidate metrics"]
+            else:
+                selected_name = str(selected_transport.get("candidate"))
+                selected_metrics = metrics_payload
+                if selected_name.startswith("node:") and args.transport_node_metrics:
+                    node_payload, node_error = read_required_json_artifact(
+                        resolve_path(args.transport_node_metrics),
+                        "transport node metrics",
+                    )
+                    if node_error is not None:
+                        baseline_non_regression["passed"] = False
+                        baseline_non_regression["issues"] = [node_error]
+                    else:
+                        node_metrics_map = extract_transport_node_metrics(node_payload)
+                        selected_metrics = node_metrics_map.get(selected_name.split(":", 1)[1], {})
+
+                if baseline_non_regression["passed"]:
+                    non_regression = evaluate_transport_non_regression(selected_metrics, baseline_payload)
+                    baseline_non_regression["passed"] = bool(non_regression["passed"])
+                    baseline_non_regression["failed_metrics"] = list(non_regression["failed_metrics"])
+                    baseline_non_regression["skipped_metrics"] = list(non_regression["skipped_metrics"])
+                    baseline_non_regression["checks"] = dict(non_regression["checks"])
+                    if non_regression["failed_metrics"]:
+                        baseline_non_regression["issues"] = [
+                            "transport non-regression failures: "
+                            + ", ".join(map(str, non_regression["failed_metrics"]))
+                        ]
+
         transport_issues: list[str] = []
         if metrics_exit_code != 0:
             transport_issues.append(f"extract_metrics.py exit code {metrics_exit_code}")
@@ -665,6 +789,8 @@ def main(argv: list[str] | None = None) -> int:
             transport_issues.append(metrics_error)
         if transport_node_metrics_error:
             transport_issues.append(transport_node_metrics_error)
+        for non_regression_issue in baseline_non_regression.get("issues", []):
+            transport_issues.append(str(non_regression_issue))
         if selected_transport is None:
             transport_issues.append("transport evaluation produced no candidate metrics")
         else:
@@ -690,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
             and transport_node_metrics_error is None
             and selected_transport is not None
             and bool(selected_transport.get("passed"))
+            and bool(baseline_non_regression.get("passed", True))
             and not transport_issues
         )
         summary["gates"]["transport_slo"] = {
@@ -704,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             "integrity_issues": selected_transport.get("integrity_issues", []) if selected_transport else [],
             "sanity_issues": selected_transport.get("sanity_issues", []) if selected_transport else [],
             "candidate_results": transport_candidates,
+            "non_regression": baseline_non_regression,
             "issues": transport_issues,
             "error": "; ".join(transport_issues) if transport_issues else None,
         }

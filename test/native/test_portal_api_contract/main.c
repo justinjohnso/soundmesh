@@ -307,26 +307,93 @@ static bool validate_uplink_contract(const char *json)
 
 static bool validate_mixer_contract(const char *json)
 {
+    long schema_version = -1;
     long out_gain_pct = -1;
+    long stream_count = -1;
     bool applied = false;
     bool pending_apply = false;
     char last_error[96] = {0};
     long updated_ms = -1;
+    const char *streams_start = NULL;
+    const char *streams_end = NULL;
 
-    if (!field_int(json, "outGainPct", &out_gain_pct) ||
+    if (!field_int(json, "schemaVersion", &schema_version) ||
+        !field_int(json, "outGainPct", &out_gain_pct) ||
+        !field_int(json, "streamCount", &stream_count) ||
         !field_bool(json, "applied", &applied) ||
         !field_bool(json, "pendingApply", &pending_apply) ||
         !field_string(json, "lastError", last_error, sizeof(last_error)) ||
-        !field_int(json, "updatedMs", &updated_ms)) {
+        !field_int(json, "updatedMs", &updated_ms) ||
+        !field_array_span(json, "streams", &streams_start, &streams_end)) {
         return false;
     }
 
+    if (schema_version != 2) {
+        return false;
+    }
     (void)applied;
     (void)pending_apply;
     if (out_gain_pct < 0 || out_gain_pct > 400) {
         return false;
     }
+    if (stream_count < 0 || stream_count > 4) {
+        return false;
+    }
     if (strlen(last_error) > 47) {
+        return false;
+    }
+
+    bool seen_ids[4] = {false};
+    long parsed_streams = 0;
+    const char *cursor = NULL;
+    while (1) {
+        const char *obj_start = NULL;
+        const char *obj_end = NULL;
+        if (!json_extract_next_array_object_span(
+                streams_start, streams_end, &cursor, &obj_start, &obj_end)) {
+            return false;
+        }
+        if (!obj_start || !obj_end) {
+            break;
+        }
+
+        size_t len = (size_t)(obj_end - obj_start + 1);
+        char stream_json[192];
+        if (len >= sizeof(stream_json)) {
+            return false;
+        }
+        memcpy(stream_json, obj_start, len);
+        stream_json[len] = '\0';
+
+        long stream_id = -1;
+        long gain_pct = -1;
+        bool enabled = false;
+        bool muted = false;
+        bool solo = false;
+        bool active = false;
+        if (!field_int(stream_json, "id", &stream_id) ||
+            !field_int(stream_json, "gainPct", &gain_pct) ||
+            !field_bool(stream_json, "enabled", &enabled) ||
+            !field_bool(stream_json, "muted", &muted) ||
+            !field_bool(stream_json, "solo", &solo) ||
+            !field_bool(stream_json, "active", &active)) {
+            return false;
+        }
+        if (stream_id < 1 || stream_id > 4 || gain_pct < 0 || gain_pct > 400) {
+            return false;
+        }
+        if (seen_ids[stream_id - 1]) {
+            return false;
+        }
+        seen_ids[stream_id - 1] = true;
+        (void)enabled;
+        (void)muted;
+        (void)solo;
+        (void)active;
+        parsed_streams++;
+    }
+
+    if (parsed_streams != stream_count) {
         return false;
     }
     return updated_ms >= 0;
@@ -420,6 +487,23 @@ static bool validate_fft_bins_field(const char *json)
     return true;
 }
 
+static bool validate_usb_status_contract(const char *json)
+{
+    char input_mode[16] = {0};
+    bool ready = false;
+    bool active = false;
+    if (!field_string(json, "inputMode", input_mode, sizeof(input_mode)) ||
+        !field_bool(json, "ready", &ready) ||
+        !field_bool(json, "active", &active)) {
+        return false;
+    }
+    (void)ready;
+    (void)active;
+    return strcmp(input_mode, "AUX") == 0 ||
+           strcmp(input_mode, "TONE") == 0 ||
+           strcmp(input_mode, "USB") == 0;
+}
+
 static bool validate_status_contract(const char *json)
 {
     long schema_version = -1;
@@ -436,6 +520,8 @@ static bool validate_status_contract(const char *json)
     double bpm_number = 0;
     const char *nodes_start = NULL;
     const char *nodes_end = NULL;
+    const char *usb_start = NULL;
+    const char *usb_end = NULL;
 
     if (!field_int(json, "schemaVersion", &schema_version) ||
         !field_int(json, "ts", &ts) ||
@@ -447,7 +533,8 @@ static bool validate_status_contract(const char *json)
         !field_string(json, "buildLabel", build_label, sizeof(build_label)) ||
         !field_string(json, "meshState", mesh_state, sizeof(mesh_state)) ||
         !field_null_or_number(json, "bpm", &bpm_is_null, &bpm_number) ||
-        !field_array_span(json, "nodes", &nodes_start, &nodes_end)) {
+        !field_array_span(json, "nodes", &nodes_start, &nodes_end) ||
+        !field_object_span(json, "usb", &usb_start, &usb_end)) {
         return false;
     }
 
@@ -569,6 +656,17 @@ static bool validate_status_contract(const char *json)
         return false;
     }
 
+    size_t usb_len = (size_t)(usb_end - usb_start + 1);
+    if (usb_len == 0 || usb_len >= 128) {
+        return false;
+    }
+    char usb_json[128];
+    memcpy(usb_json, usb_start, usb_len);
+    usb_json[usb_len] = '\0';
+    if (!validate_usb_status_contract(usb_json)) {
+        return false;
+    }
+
     const char *uplink_start = NULL;
     const char *uplink_end = NULL;
     if (field_object_span(json, "uplink", &uplink_start, &uplink_end)) {
@@ -588,7 +686,7 @@ static bool validate_status_contract(const char *json)
     const char *mixer_end = NULL;
     if (field_object_span(json, "mixer", &mixer_start, &mixer_end)) {
         size_t len = (size_t)(mixer_end - mixer_start + 1);
-        char mixer_json[256];
+        char mixer_json[512];
         if (len >= sizeof(mixer_json)) {
             return false;
         }
@@ -666,18 +764,134 @@ static api_result_t simulate_uplink_post(const char *body, bool apply_ok)
     return (api_result_t){.status = 200, .error = NULL, .ok = true};
 }
 
+static bool body_has_field_token(const char *body, const char *field)
+{
+    if (!body || !field) {
+        return false;
+    }
+    char key[64];
+    int written = snprintf(key, sizeof(key), "\"%s\":", field);
+    if (written <= 0 || (size_t)written >= sizeof(key)) {
+        return false;
+    }
+    return strstr(body, key) != NULL;
+}
+
+static bool parse_stream_updates_for_post(const char *body, bool *has_streams)
+{
+    *has_streams = false;
+    if (!body_has_field_token(body, "streams")) {
+        return true;
+    }
+
+    const char *array_start = NULL;
+    const char *array_end = NULL;
+    if (!json_extract_array_field_span(body, "streams", &array_start, &array_end)) {
+        return false;
+    }
+
+    bool seen_ids[4] = {false};
+    int parsed = 0;
+    const char *cursor = NULL;
+    while (1) {
+        const char *obj_start = NULL;
+        const char *obj_end = NULL;
+        if (!json_extract_next_array_object_span(array_start, array_end, &cursor, &obj_start, &obj_end)) {
+            return false;
+        }
+        if (!obj_start || !obj_end) {
+            break;
+        }
+
+        size_t len = (size_t)(obj_end - obj_start + 1);
+        char stream_json[192];
+        if (len >= sizeof(stream_json)) {
+            return false;
+        }
+        memcpy(stream_json, obj_start, len);
+        stream_json[len] = '\0';
+
+        uint16_t stream_id = 0;
+        uint16_t gain_pct = 0;
+        bool enabled = false;
+        bool muted = false;
+        bool solo = false;
+        if (!json_extract_uint16_field(stream_json, "id", &stream_id)) {
+            return false;
+        }
+        if (!json_extract_uint16_field(stream_json, "gainPct", &gain_pct) &&
+            !json_extract_uint16_field(stream_json, "gain", &gain_pct)) {
+            return false;
+        }
+        if (!json_extract_bool_field(stream_json, "enabled", &enabled) &&
+            !json_extract_bool_field(stream_json, "enable", &enabled)) {
+            return false;
+        }
+        if (!json_extract_bool_field(stream_json, "muted", &muted) &&
+            !json_extract_bool_field(stream_json, "mute", &muted)) {
+            return false;
+        }
+        if (!json_extract_bool_field(stream_json, "solo", &solo)) {
+            return false;
+        }
+        bool active = enabled && !muted;
+        if (body_has_field_token(stream_json, "active") &&
+            !json_extract_bool_field(stream_json, "active", &active)) {
+            return false;
+        }
+        if (stream_id < 1 || stream_id > 4 || gain_pct > 400) {
+            return false;
+        }
+        if (seen_ids[stream_id - 1]) {
+            return false;
+        }
+        seen_ids[stream_id - 1] = true;
+        (void)enabled;
+        (void)muted;
+        (void)solo;
+        (void)active;
+        parsed++;
+    }
+
+    if (parsed == 0) {
+        return false;
+    }
+    *has_streams = true;
+    return true;
+}
+
 static api_result_t simulate_mixer_post(const char *body, bool apply_ok)
 {
     if (!body || body[0] == '\0') {
         return (api_result_t){.status = 400, .error = "empty body", .ok = false};
     }
 
-    uint16_t out_gain_pct = 0;
-    if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
-        return (api_result_t){.status = 400, .error = "missing outGainPct", .ok = false};
+    bool has_out_gain = false;
+    if (body_has_field_token(body, "outGainPct")) {
+        uint16_t out_gain_pct = 0;
+        if (!json_extract_uint16_field(body, "outGainPct", &out_gain_pct)) {
+            return (api_result_t){.status = 400, .error = "missing outGainPct", .ok = false};
+        }
+        if (out_gain_pct > 400) {
+            return (api_result_t){.status = 400, .error = "invalid outGainPct", .ok = false};
+        }
+        has_out_gain = true;
     }
-    if (out_gain_pct > 400) {
-        return (api_result_t){.status = 400, .error = "invalid outGainPct", .ok = false};
+
+    if (body_has_field_token(body, "schemaVersion")) {
+        uint16_t schema_version = 0;
+        if (!json_extract_uint16_field(body, "schemaVersion", &schema_version) || schema_version != 2) {
+            return (api_result_t){.status = 400, .error = "invalid schemaVersion", .ok = false};
+        }
+    }
+
+    bool has_streams = false;
+    if (!parse_stream_updates_for_post(body, &has_streams)) {
+        return (api_result_t){.status = 400, .error = "invalid streams", .ok = false};
+    }
+
+    if (!has_out_gain && !has_streams) {
+        return (api_result_t){.status = 400, .error = "missing outGainPct", .ok = false};
     }
     if (!apply_ok) {
         return (api_result_t){.status = 409, .error = "mixer apply failed", .ok = false};
@@ -839,8 +1053,14 @@ static const char *VALID_STATUS_JSON =
       "\"ssid\":\"<configured>\",\"lastError\":\"\",\"updatedMs\":99"
     "},"
     "\"mixer\":{"
-      "\"outGainPct\":200,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":101"
-    "}"
+      "\"schemaVersion\":2,\"outGainPct\":200,\"streamCount\":2,\"applied\":true,\"pendingApply\":false,"
+      "\"lastError\":\"\",\"updatedMs\":101,"
+      "\"streams\":["
+        "{\"id\":1,\"gainPct\":110,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":true},"
+        "{\"id\":2,\"gainPct\":90,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":false}"
+      "]"
+    "},"
+    "\"usb\":{\"inputMode\":\"USB\",\"ready\":true,\"active\":true}"
     "}";
 
 static const char *STATUS_WITH_ADDITIONAL_FIELDS =
@@ -863,7 +1083,8 @@ static const char *STATUS_WITH_ADDITIONAL_FIELDS =
       "\"children\":0,\"streaming\":false,\"parent\":null,\"uptime\":1,\"stale\":false,"
       "\"futureNodeFlag\":true"
       "}"
-    "]"
+    "],"
+    "\"usb\":{\"inputMode\":\"AUX\",\"ready\":false,\"active\":false,\"futureUsb\":1}"
     "}";
 
 void test_status_required_fields_types_and_invariants(void)
@@ -874,6 +1095,21 @@ void test_status_required_fields_types_and_invariants(void)
 void test_status_allows_additional_fields(void)
 {
     TEST_ASSERT_TRUE(validate_status_contract(STATUS_WITH_ADDITIONAL_FIELDS));
+}
+
+void test_status_rejects_invalid_usb_status_fields(void)
+{
+    const char *json =
+        "{"
+        "\"schemaVersion\":1,\"ts\":1,\"self\":\"AA:BB:CC:DD:EE:FF\",\"heapKb\":1,\"core0LoadPct\":10,"
+        "\"latencyMs\":1,\"netIf\":\"n\",\"buildLabel\":\"SRC\",\"meshState\":\"Mesh OK\","
+        "\"bpm\":null,\"fftBins\":null,"
+        "\"nodes\":["
+        "{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"role\":\"SRC\",\"root\":true,\"layer\":0,\"rssi\":-1,\"children\":0,\"streaming\":true,\"parent\":null,\"uptime\":1,\"stale\":false}"
+        "],"
+        "\"usb\":{\"inputMode\":\"BAD\",\"ready\":true,\"active\":true}"
+        "}";
+    TEST_ASSERT_FALSE(validate_status_contract(json));
 }
 
 void test_status_rejects_duplicate_node_mac(void)
@@ -948,7 +1184,9 @@ void test_mixer_get_required_fields_contract(void)
 {
     const char *json =
         "{"
-        "\"outGainPct\":200,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":42"
+        "\"schemaVersion\":2,\"outGainPct\":200,\"streamCount\":1,\"applied\":true,\"pendingApply\":false,"
+        "\"lastError\":\"\",\"updatedMs\":42,"
+        "\"streams\":[{\"id\":1,\"gainPct\":100,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":true}]"
         "}";
     TEST_ASSERT_TRUE(validate_mixer_contract(json));
 }
@@ -957,7 +1195,20 @@ void test_mixer_get_rejects_out_of_range(void)
 {
     const char *json =
         "{"
-        "\"outGainPct\":401,\"applied\":true,\"pendingApply\":false,\"lastError\":\"\",\"updatedMs\":42"
+        "\"schemaVersion\":2,\"outGainPct\":401,\"streamCount\":1,\"applied\":true,\"pendingApply\":false,"
+        "\"lastError\":\"\",\"updatedMs\":42,"
+        "\"streams\":[{\"id\":1,\"gainPct\":100,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":true}]"
+        "}";
+    TEST_ASSERT_FALSE(validate_mixer_contract(json));
+}
+
+void test_mixer_get_rejects_stream_count_mismatch(void)
+{
+    const char *json =
+        "{"
+        "\"schemaVersion\":2,\"outGainPct\":200,\"streamCount\":2,\"applied\":true,\"pendingApply\":false,"
+        "\"lastError\":\"\",\"updatedMs\":42,"
+        "\"streams\":[{\"id\":1,\"gainPct\":100,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":true}]"
         "}";
     TEST_ASSERT_FALSE(validate_mixer_contract(json));
 }
@@ -1039,6 +1290,22 @@ void test_mixer_post_valid(void)
     TEST_ASSERT_TRUE(res.ok);
 }
 
+void test_mixer_post_extended_schema_valid(void)
+{
+    api_result_t res = simulate_mixer_post(
+        "{"
+        "\"schemaVersion\":2,"
+        "\"outGainPct\":230,"
+        "\"streams\":["
+          "{\"id\":1,\"gainPct\":100,\"enabled\":true,\"muted\":false,\"solo\":false,\"active\":true},"
+          "{\"id\":2,\"gainPct\":80,\"enabled\":true,\"muted\":true,\"solo\":false,\"active\":false}"
+        "]"
+        "}",
+        true);
+    TEST_ASSERT_EQUAL_INT(200, res.status);
+    TEST_ASSERT_TRUE(res.ok);
+}
+
 void test_mixer_post_missing_field_400(void)
 {
     api_result_t res = simulate_mixer_post("{\"enabled\":true}", true);
@@ -1058,6 +1325,61 @@ void test_mixer_post_apply_failure_409(void)
     api_result_t res = simulate_mixer_post("{\"outGainPct\":220}", false);
     TEST_ASSERT_EQUAL_INT(409, res.status);
     TEST_ASSERT_EQUAL_STRING("mixer apply failed", res.error);
+}
+
+void test_mixer_post_streams_only_valid(void)
+{
+    api_result_t res = simulate_mixer_post(
+        "{"
+        "\"schemaVersion\":2,"
+        "\"streams\":[{\"id\":1,\"gainPct\":120,\"enabled\":true,\"muted\":false,\"solo\":true,\"active\":true}]"
+        "}",
+        true);
+    TEST_ASSERT_EQUAL_INT(200, res.status);
+    TEST_ASSERT_TRUE(res.ok);
+}
+
+void test_mixer_post_streams_allow_missing_active(void)
+{
+    api_result_t res = simulate_mixer_post(
+        "{"
+        "\"schemaVersion\":2,"
+        "\"streams\":[{\"id\":1,\"gainPct\":120,\"enabled\":true,\"muted\":false,\"solo\":true}]"
+        "}",
+        true);
+    TEST_ASSERT_EQUAL_INT(200, res.status);
+    TEST_ASSERT_TRUE(res.ok);
+}
+
+void test_mixer_post_streams_accept_control_alias_fields(void)
+{
+    api_result_t res = simulate_mixer_post(
+        "{"
+        "\"schemaVersion\":2,"
+        "\"streams\":[{\"id\":1,\"gain\":120,\"enable\":true,\"mute\":false,\"solo\":true}]"
+        "}",
+        true);
+    TEST_ASSERT_EQUAL_INT(200, res.status);
+    TEST_ASSERT_TRUE(res.ok);
+}
+
+void test_mixer_post_rejects_invalid_schema_version(void)
+{
+    api_result_t res = simulate_mixer_post("{\"schemaVersion\":3,\"outGainPct\":200}", true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("invalid schemaVersion", res.error);
+}
+
+void test_mixer_post_rejects_invalid_stream_payload(void)
+{
+    api_result_t res = simulate_mixer_post(
+        "{"
+        "\"schemaVersion\":2,"
+        "\"streams\":[{\"id\":1,\"gainPct\":100,\"enabled\":true}]"
+        "}",
+        true);
+    TEST_ASSERT_EQUAL_INT(400, res.status);
+    TEST_ASSERT_EQUAL_STRING("invalid streams", res.error);
 }
 
 void test_ota_get_required_fields_contract(void)
@@ -1218,6 +1540,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_status_required_fields_types_and_invariants);
     RUN_TEST(test_status_allows_additional_fields);
+    RUN_TEST(test_status_rejects_invalid_usb_status_fields);
     RUN_TEST(test_status_rejects_duplicate_node_mac);
     RUN_TEST(test_status_rejects_root_node_nonzero_layer);
     RUN_TEST(test_status_rejects_invalid_parent_mac);
@@ -1226,6 +1549,7 @@ int main(void)
     RUN_TEST(test_uplink_get_allows_additional_fields);
     RUN_TEST(test_mixer_get_required_fields_contract);
     RUN_TEST(test_mixer_get_rejects_out_of_range);
+    RUN_TEST(test_mixer_get_rejects_stream_count_mismatch);
     RUN_TEST(test_uplink_contract_rejects_exposed_ssid_when_configured);
     RUN_TEST(test_uplink_post_enable_valid);
     RUN_TEST(test_uplink_post_disable_valid);
@@ -1238,9 +1562,15 @@ int main(void)
     RUN_TEST(test_uplink_post_rejects_non_boolean_enabled);
     RUN_TEST(test_uplink_post_rejects_overlong_ssid);
     RUN_TEST(test_mixer_post_valid);
+    RUN_TEST(test_mixer_post_extended_schema_valid);
     RUN_TEST(test_mixer_post_missing_field_400);
     RUN_TEST(test_mixer_post_invalid_range_400);
     RUN_TEST(test_mixer_post_apply_failure_409);
+    RUN_TEST(test_mixer_post_streams_only_valid);
+    RUN_TEST(test_mixer_post_streams_allow_missing_active);
+    RUN_TEST(test_mixer_post_streams_accept_control_alias_fields);
+    RUN_TEST(test_mixer_post_rejects_invalid_schema_version);
+    RUN_TEST(test_mixer_post_rejects_invalid_stream_payload);
     RUN_TEST(test_ota_get_required_fields_contract);
     RUN_TEST(test_ota_get_allows_additional_fields);
     RUN_TEST(test_ota_contract_rejects_exposed_last_url);

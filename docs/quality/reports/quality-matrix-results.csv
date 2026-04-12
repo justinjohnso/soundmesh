@@ -1,0 +1,2 @@
+name,status,quality_score,dropout_ratio_pct,lag_ms_mean,lag_ms_std,spectral_deviation_db,overall_band,result_json,error
+baseline,ok,80.0,0.0,0.0,0.0,35.582,pass,/Users/justin/Library/CloudStorage/Dropbox/NYU/semester-3-2025-fall/project-development-studio/meshnet-audio/docs/quality/reports/baseline-quality.json,

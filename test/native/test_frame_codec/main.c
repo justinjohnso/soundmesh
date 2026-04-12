@@ -122,6 +122,18 @@ void test_unpack_batch_returns_zero_for_null_inputs(void)
     TEST_ASSERT_EQUAL_UINT32(0, network_frame_unpack_batch(payload, 1, 1, 0, NULL, &capture));
 }
 
+void test_unpack_batch_zero_frame_count_falls_back_to_single_frame(void)
+{
+    uint8_t payload[] = {0xDE, 0xAD, 0xBE};
+    frame_capture_t capture = {0};
+    size_t consumed = network_frame_unpack_batch(payload, sizeof(payload), 0, 33, capture_frame, &capture);
+
+    TEST_ASSERT_EQUAL_UINT32(sizeof(payload), consumed);
+    TEST_ASSERT_EQUAL_INT(1, capture.calls);
+    TEST_ASSERT_EQUAL_UINT16(33, capture.seqs[0]);
+    TEST_ASSERT_EQUAL_UINT16(sizeof(payload), capture.lens[0]);
+}
+
 void test_unpack_batch_yields_all_valid_frames(void)
 {
     uint8_t payload[] = {
@@ -153,6 +165,24 @@ void test_unpack_batch_skips_zero_length_frames(void)
     TEST_ASSERT_EQUAL_UINT16(2, capture.lens[0]);
 }
 
+void test_unpack_batch_keeps_sequence_positions_when_middle_frame_is_empty(void)
+{
+    uint8_t payload[] = {
+        0x00, 0x01, 0xA1,
+        0x00, 0x00,
+        0x00, 0x01, 0xC3
+    };
+    frame_capture_t capture = {0};
+    size_t consumed = network_frame_unpack_batch(payload, sizeof(payload), 3, 200, capture_frame, &capture);
+
+    TEST_ASSERT_EQUAL_UINT32(sizeof(payload), consumed);
+    TEST_ASSERT_EQUAL_INT(2, capture.calls);
+    TEST_ASSERT_EQUAL_UINT16(200, capture.seqs[0]);
+    TEST_ASSERT_EQUAL_UINT16(202, capture.seqs[1]);
+    TEST_ASSERT_EQUAL_UINT16(1, capture.lens[0]);
+    TEST_ASSERT_EQUAL_UINT16(1, capture.lens[1]);
+}
+
 void test_unpack_batch_all_zero_length_frames_produces_no_callbacks(void)
 {
     uint8_t payload[] = {
@@ -178,6 +208,21 @@ void test_unpack_batch_skips_invalid_truncated_frame(void)
     TEST_ASSERT_EQUAL_INT(1, capture.calls);
     TEST_ASSERT_EQUAL_UINT16(50, capture.seqs[0]);
     TEST_ASSERT_EQUAL_UINT16(2, capture.lens[0]);
+}
+
+void test_unpack_batch_frame_count_larger_than_payload_only_consumes_decodable_prefix(void)
+{
+    uint8_t payload[] = {
+        0x00, 0x01, 0xA0,
+        0x00
+    };
+    frame_capture_t capture = {0};
+    size_t consumed = network_frame_unpack_batch(payload, sizeof(payload), 4, 10, capture_frame, &capture);
+
+    TEST_ASSERT_EQUAL_UINT32(3, consumed);
+    TEST_ASSERT_EQUAL_INT(1, capture.calls);
+    TEST_ASSERT_EQUAL_UINT16(10, capture.seqs[0]);
+    TEST_ASSERT_EQUAL_UINT16(1, capture.lens[0]);
 }
 
 void test_unpack_batch_all_truncated_frames_produces_no_callbacks(void)
@@ -226,10 +271,13 @@ int main(void)
     RUN_TEST(test_extract_frame_count_uses_legacy_offset);
     RUN_TEST(test_extract_frame_count_defaults_to_one_when_offset_invalid);
     RUN_TEST(test_unpack_batch_returns_zero_for_null_inputs);
+    RUN_TEST(test_unpack_batch_zero_frame_count_falls_back_to_single_frame);
     RUN_TEST(test_unpack_batch_yields_all_valid_frames);
     RUN_TEST(test_unpack_batch_skips_zero_length_frames);
+    RUN_TEST(test_unpack_batch_keeps_sequence_positions_when_middle_frame_is_empty);
     RUN_TEST(test_unpack_batch_all_zero_length_frames_produces_no_callbacks);
     RUN_TEST(test_unpack_batch_skips_invalid_truncated_frame);
+    RUN_TEST(test_unpack_batch_frame_count_larger_than_payload_only_consumes_decodable_prefix);
     RUN_TEST(test_unpack_batch_all_truncated_frames_produces_no_callbacks);
     RUN_TEST(test_unpack_batch_single_frame_passthrough);
     RUN_TEST(test_unpack_batch_single_frame_empty_payload_still_records_call);

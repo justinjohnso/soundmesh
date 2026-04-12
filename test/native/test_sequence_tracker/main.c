@@ -59,7 +59,8 @@ void test_multi_gap_requests_plc_capped(void)
     TEST_ASSERT_FALSE(result.late_or_duplicate);
     TEST_ASSERT_FALSE(result.hard_reset);
     TEST_ASSERT_TRUE(result.request_fec);
-    TEST_ASSERT_EQUAL_UINT8(TEST_PLC_CAP, result.plc_frames_to_inject);
+    uint8_t expected_plc = (4u > TEST_PLC_CAP) ? TEST_PLC_CAP : 4u;
+    TEST_ASSERT_EQUAL_UINT8(expected_plc, result.plc_frames_to_inject);
 }
 
 void test_large_gap_is_ignored_as_nonrecoverable(void)

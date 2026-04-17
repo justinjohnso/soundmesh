@@ -1,13 +1,14 @@
 #pragma once
 
 #if defined(CONFIG_SRC_BUILD)
+#include "config/build.h"
 #define BUILD_IS_SOURCE 1
 #define BUILD_IS_OUTPUT 0
 #define BUILD_NODE_LABEL "SRC"
 #define BUILD_HAS_CAPTURE 1
 #define BUILD_HAS_ENCODER 1
 #define BUILD_HAS_LOCAL_MONITOR 1
-#define BUILD_HAS_PORTAL 1
+#define BUILD_HAS_PORTAL ENABLE_SRC_USB_PORTAL_NETWORK
 #define BUILD_IS_MESH_ROOT 1
 #elif defined(CONFIG_OUT_BUILD)
 #define BUILD_IS_SOURCE 0

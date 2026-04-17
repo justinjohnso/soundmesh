@@ -26,10 +26,10 @@
 // ---- Base Stream Parameters ----
 #define AUDIO_SAMPLE_RATE          48000
 #define AUDIO_BOUNDARY_BITS_PER_SAMPLE 16  // Opus + codec/I2S boundary depth
-#define AUDIO_INTERNAL_BITS_PER_SAMPLE 24  // Internal processing target
+#define AUDIO_INTERNAL_BITS_PER_SAMPLE 16  // Internal processing target (pure 16-bit for CPU relief)
 #define AUDIO_BITS_PER_SAMPLE      AUDIO_BOUNDARY_BITS_PER_SAMPLE
 #define AUDIO_BYTES_PER_SAMPLE     (AUDIO_BOUNDARY_BITS_PER_SAMPLE / 8)   // 2 bytes
-#define AUDIO_INTERNAL_BYTES_PER_SAMPLE 4  // Stored in int32_t lanes
+#define AUDIO_INTERNAL_BYTES_PER_SAMPLE 2  // Stored in int16_t lanes
 #define AUDIO_CHANNELS_MONO        1    // Internal pipeline (Opus)
 #define AUDIO_CHANNELS_STEREO      2    // I2S / ES8388
 
@@ -75,7 +75,7 @@
 // ============================================================================
 
 #define OPUS_BITRATE               64000     // 64 kbps for 'crystal clear' audio; multicast keeps airtime constant
-#define OPUS_COMPLEXITY            2         // Reduced complexity to ensure Core 1 tasks (capture/encode/decode/play) aren't starved
+#define OPUS_COMPLEXITY            0         // Minimal complexity for maximum CPU relief on S3
 #define OPUS_EXPECTED_LOSS_PCT     20         // conservative retune: modest FEC hint bump for GROUP|NONBLOCK loss bursts
 #define OPUS_ENABLE_INBAND_FEC     1         // Improves concealment for isolated packet loss
 

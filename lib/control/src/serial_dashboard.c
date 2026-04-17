@@ -105,8 +105,8 @@ void dashboard_render_src(const src_status_t *status) {
         snprintf(rssi_str, sizeof(rssi_str), "%ddBm", status->nearest_rssi);
 
     printf("--- SRC | %s ------------------------------------\n", up);
-    printf("  In:%-4s  Audio:%-3s  Nodes:%-3lu  RSSI:%-7s\n",
-           mode, state, (unsigned long)status->connected_nodes, rssi_str);
+    printf("  In:%-4s  Audio:%-3s  Peak:%-5u  Nodes:%-3lu  RSSI:%-7s\n",
+           mode, state, (unsigned)status->input_peak, (unsigned long)status->connected_nodes, rssi_str);
     printf("  BW:%-4lukbps  Vol:%-.1f  Bat:%u%%  RAM:%s\n",
            (unsigned long)status->bandwidth_kbps, status->output_volume, status->battery_pct, ram);
 
@@ -123,11 +123,12 @@ void dashboard_render_src(const src_status_t *status) {
     printf("\n");
 
     // CSV for plotting
-    printf(">rssi:%d,nodes:%lu,tx_kbps:%lu,audio:%d,vol:%.1f,bat:%u,heap_kb:%lu,usb_ready:%d,usb_active:%d,usb_fallback:%d\n",
+    printf(">rssi:%d,nodes:%lu,tx_kbps:%lu,audio:%d,input_peak:%u,vol:%.1f,bat:%u,heap_kb:%lu,usb_ready:%d,usb_active:%d,usb_fallback:%d\n",
            status->nearest_rssi,
            (unsigned long)status->connected_nodes,
            (unsigned long)status->bandwidth_kbps,
-           status->audio_active ? 1 : 0,
+            status->audio_active ? 1 : 0,
+           (unsigned)status->input_peak,
            status->output_volume,
            status->battery_pct,
            (unsigned long)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024),

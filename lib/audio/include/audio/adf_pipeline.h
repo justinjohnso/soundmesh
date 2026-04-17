@@ -174,30 +174,30 @@ esp_err_t adf_pipeline_get_latest_fft_bins(float *bins_out, size_t bin_count, bo
  * Changes take effect on the next audio frame; no restart required.
  * db clamped to [-60.0, +12.0]. Values <= -60 dB are treated as –inf (silence).
  */
-void  adf_pipeline_set_output_gain_db(float db);
-float adf_pipeline_get_output_gain_db(void);
-void  adf_pipeline_set_output_mute(bool mute);
-bool  adf_pipeline_get_output_mute(void);
+void  adf_pipeline_set_output_gain_db(adf_pipeline_handle_t pipeline, float db);
+float adf_pipeline_get_output_gain_db(adf_pipeline_handle_t pipeline);
+void  adf_pipeline_set_output_mute(adf_pipeline_handle_t pipeline, bool mute);
+bool  adf_pipeline_get_output_mute(adf_pipeline_handle_t pipeline);
 
 /**
  * Set the node's positional coordinates for DSP effects (e.g. LPF).
  */
-void  adf_pipeline_set_position(float x, float y, float z);
+void  adf_pipeline_set_position(adf_pipeline_handle_t pipeline, float x, float y, float z);
 
 /**
  * Input gain and mute controls (TX capture trim, applied before Opus encode).
  * db clamped to [-18.0, +18.0].
  */
-void  adf_pipeline_set_input_gain_db(float db);
-float adf_pipeline_get_input_gain_db(void);
-void  adf_pipeline_set_input_mute(bool mute);
-bool  adf_pipeline_get_input_mute(void);
+void  adf_pipeline_set_input_gain_db(adf_pipeline_handle_t pipeline, float db);
+float adf_pipeline_get_input_gain_db(adf_pipeline_handle_t pipeline);
+void  adf_pipeline_set_input_mute(adf_pipeline_handle_t pipeline, bool mute);
+bool  adf_pipeline_get_input_mute(adf_pipeline_handle_t pipeline);
 
 /**
  * Query the current input mode of the active pipeline (for portal serialization).
  * Returns ADF_INPUT_MODE_AUX when no pipeline is active.
  */
-adf_input_mode_t adf_pipeline_get_input_mode(void);
+adf_input_mode_t adf_pipeline_get_input_mode(adf_pipeline_handle_t pipeline);
 
 /**
  * Set the input mode on the active (latest) pipeline without needing the handle.

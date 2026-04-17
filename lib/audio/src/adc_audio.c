@@ -1,190 +1,70 @@
 #include "audio/adc_audio.h"
-
+#include "audio/pcm_convert.h"
 #include <esp_log.h>
 #include <esp_adc/adc_continuous.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <string.h>
-#include "config/pins.h"
-#include "config/build.h"
-#include "audio/pcm_convert.h"
 
-static const char *TAG = "adc_audio";
-
-// DMA buffer size - enough for multiple frames
-#define ADC_READ_LEN           1024
-#define ADC_CONV_FRAME_SIZE    1024
-
-// ADC continuous handle
 static adc_continuous_handle_t adc_handle = NULL;
-
-// Static buffers to avoid stack overflow
-static int16_t mono_samples[ADC_READ_LEN / 4];
-static int32_t mono_samples_s24[ADC_READ_LEN / 4];
-
-// ADC mid-point with preamp biasing circuit (1.65V bias, ~2048 with DB_11 attenuation)
-// Measure actual value with no input signal and adjust if needed
-#define ADC_MID_CODE           2048
-
-// Simple low-pass filter to reduce high-frequency noise
-#define LPF_ALPHA              0.1f  // 1.0 = no filtering
-static int32_t lpf_prev = 0;
+static bool adc_ready = false;
 
 esp_err_t adc_audio_init(void) {
-    if (adc_handle != NULL) {
-        ESP_LOGW(TAG, "ADC already initialized");
-        return ESP_OK;
-    }
-
-    // Configure ADC continuous mode for stereo capture
+    if (adc_ready) return ESP_OK;
+    
     adc_continuous_handle_cfg_t adc_config = {
-        .max_store_buf_size = ADC_CONV_FRAME_SIZE * 2,
-        .conv_frame_size = ADC_CONV_FRAME_SIZE,
+        .max_store_buf_size = 1024,
+        .conv_frame_size = 256,
     };
-
     esp_err_t ret = adc_continuous_new_handle(&adc_config, &adc_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create ADC handle: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    if (ret != ESP_OK) return ret;
 
-    // Configure two-channel pattern (L and R interleaved)
-    adc_digi_pattern_config_t adc_pattern[1] = {
-        {
-            .atten = ADC_ATTEN_DB_11,
-            .channel = ADC_LEFT_CHANNEL,
-            .unit = ADC_UNIT_1,
-            .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
-        }
-    };
-
-    // Update to 48 kHz mono for v0.1 spec compliance
-    adc_continuous_config_t dig_cfg = {
-        .pattern_num = 1,  // Mono input
-        .adc_pattern = adc_pattern,
-        .sample_freq_hz = 48000,  // 48 kHz mono
+    adc_continuous_config_t config = {
+        .sample_freq_hz = 48000,
         .conv_mode = ADC_CONV_SINGLE_UNIT_1,
-        .format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,
+        .format = ADC_DIGI_OUTPUT_FORMAT_TYPE1,
     };
+    
+    adc_digi_pattern_config_t adc_pattern[2] = {
+        {.atten = ADC_ATTEN_DB_12, .channel = 0, .unit = ADC_UNIT_1, .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH},
+        {.atten = ADC_ATTEN_DB_12, .channel = 1, .unit = ADC_UNIT_1, .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH}
+    };
+    config.pattern_num = 2;
+    config.adc_pattern = adc_pattern;
 
-    ret = adc_continuous_config(adc_handle, &dig_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to config ADC: %s", esp_err_to_name(ret));
-        adc_continuous_deinit(adc_handle);
-        adc_handle = NULL;
-        return ret;
-    }
+    ret = adc_continuous_config(adc_handle, &config);
+    if (ret != ESP_OK) return ret;
 
     ret = adc_continuous_start(adc_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start ADC continuous: %s", esp_err_to_name(ret));
-        adc_continuous_deinit(adc_handle);
-        adc_handle = NULL;
-        return ret;
-    }
+    if (ret == ESP_OK) adc_ready = true;
+    return ret;
+}
 
-    ESP_LOGI(TAG, "ADC continuous mode initialized and started (mono, 48 kHz, 24-bit)");
+esp_err_t adc_audio_read_stereo(int16_t *buffer, size_t max_frames, size_t *read) {
+    if (!adc_ready) return ESP_ERR_INVALID_STATE;
+    uint8_t raw[1024];
+    uint32_t out_len = 0;
+    esp_err_t ret = adc_continuous_read(adc_handle, raw, sizeof(raw), &out_len, 10);
+    if (ret != ESP_OK) return ret;
+
+    size_t count = out_len / 4; // 2 channels * 2 bytes
+    if (count > max_frames) count = max_frames;
+
+    for (size_t i = 0; i < count; i++) {
+        int16_t l = (((int16_t)((raw[i*4+1] << 8) | raw[i*4])) & 0x0FFF) - 2048;
+        int16_t r = (((int16_t)((raw[i*4+3] << 8) | raw[i*4+2])) & 0x0FFF) - 2048;
+        buffer[i*2] = l << 4;
+        buffer[i*2+1] = r << 4;
+    }
+    *read = count;
     return ESP_OK;
 }
 
 esp_err_t adc_audio_deinit(void) {
-    if (adc_handle == NULL) {
-        return ESP_OK;
+    if (adc_handle) {
+        adc_continuous_stop(adc_handle);
+        adc_continuous_deinit(adc_handle);
+        adc_handle = NULL;
     }
-
-    esp_err_t ret = adc_continuous_stop(adc_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to stop ADC: %s", esp_err_to_name(ret));
-    }
-    ret = adc_continuous_deinit(adc_handle);
-    adc_handle = NULL;
-
-    ESP_LOGI(TAG, "ADC deinitialized");
-    return ret;
-}
-
-esp_err_t adc_audio_start(void) {
-    // ADC is always started
+    adc_ready = false;
     return ESP_OK;
 }
-
-esp_err_t adc_audio_stop(void) {
-    // ADC is always running
-    return ESP_OK;
-}
-
-esp_err_t adc_audio_read_stereo(int16_t *stereo_buffer, size_t num_samples, size_t *samples_read) {
-    if (adc_handle == NULL) {
-        ESP_LOGE(TAG, "ADC not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (!stereo_buffer || !samples_read) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    *samples_read = 0;
-
-    // Read raw ADC data
-    uint8_t adc_raw_data[ADC_READ_LEN];
-    uint32_t bytes_read = 0;
-    
-    esp_err_t ret = adc_continuous_read(adc_handle, adc_raw_data, ADC_READ_LEN, &bytes_read, 0);
-    
-    if (ret == ESP_ERR_TIMEOUT) {
-        // No data available yet
-        return ESP_OK;
-    }
-    
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ADC read failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // Parse ADC data (mono channel)
-    size_t mono_count = 0;
-
-    for (uint32_t i = 0; i < bytes_read; i += SOC_ADC_DIGI_RESULT_BYTES) {
-        adc_digi_output_data_t *p = (adc_digi_output_data_t *)&adc_raw_data[i];
-
-    // Check if valid data (TYPE2 format for ESP32-S3)
-    uint32_t chan_num = p->type2.channel;
-    uint32_t data = p->type2.data;
-
-        // Only process the configured channel (left)
-        if (chan_num == ADC_LEFT_CHANNEL) {
-            // Remove DC bias and normalize 12-bit ADC to signed 24-bit lane in int32.
-            // 12-bit centered range: +/-2048; shifting by 12 maps near full-scale 24-bit.
-            int32_t sample_s24 = ((int32_t)data - ADC_MID_CODE) << 12;
-            sample_s24 = pcm_clamp_s24_in_s32(sample_s24);
-
-            // Apply low-pass filter to reduce high-frequency noise
-            int32_t filtered_sample_s24 =
-                (int32_t)(LPF_ALPHA * sample_s24 + (1.0f - LPF_ALPHA) * lpf_prev);
-            filtered_sample_s24 = pcm_clamp_s24_in_s32(filtered_sample_s24);
-            lpf_prev = filtered_sample_s24;
-
-            mono_samples_s24[mono_count] = filtered_sample_s24;
-            mono_samples[mono_count] = pcm_s24_in_s32_to_s16(filtered_sample_s24);
-            mono_count++;
-        }
-    }
-
-    // Duplicate mono to stereo (no upsampling needed, direct 48 kHz)
-    size_t out_samples = mono_count;
-    if (out_samples > num_samples) out_samples = num_samples;
-
-    for (size_t i = 0; i < out_samples; i++) {
-        stereo_buffer[i * 2] = mono_samples[i];     // Left
-        stereo_buffer[i * 2 + 1] = mono_samples[i]; // Right
-    }
-
-    *samples_read = out_samples;
-
-    if (mono_count > 0) {
-    ESP_LOGD(TAG, "Read %zu mono samples (duplicated to stereo) from %lu bytes",
-    mono_count, bytes_read);
-    }
-
-    return ESP_OK;
-}
+bool adc_audio_is_ready(void) { return adc_ready; }

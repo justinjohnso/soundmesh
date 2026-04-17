@@ -47,16 +47,13 @@ struct adf_pipeline {
     volatile float x, y, z;             // Positional coordinates for DSP effects
 };
 
+// Standardized 16-bit internal buffers
 extern int16_t s_capture_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
-extern int32_t s_capture_mono_frame[AUDIO_FRAME_SAMPLES];
-extern int16_t s_capture_mono_frame_s16[AUDIO_FRAME_SAMPLES];
-extern int32_t s_encode_pcm_frame[AUDIO_FRAME_SAMPLES];
-extern int16_t s_encode_pcm_frame_s16[AUDIO_FRAME_SAMPLES];
+extern int16_t s_capture_mono_frame[AUDIO_FRAME_SAMPLES];
+extern int16_t s_encode_pcm_frame[AUDIO_FRAME_SAMPLES];
 extern uint8_t s_encode_opus_frame[OPUS_MAX_FRAME_BYTES];
 extern int16_t s_decode_pcm_frame[AUDIO_FRAME_SAMPLES];
-extern int32_t s_decode_mono_frame[AUDIO_FRAME_SAMPLES];
-extern int32_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];
-extern int32_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
-extern int16_t s_playback_mono_frame_s16[AUDIO_FRAME_SAMPLES];
+extern int16_t s_playback_mono_frame[AUDIO_FRAME_SAMPLES];
+extern int16_t s_playback_last_good_mono[AUDIO_FRAME_SAMPLES];
 extern int16_t s_playback_stereo_frame[AUDIO_FRAME_SAMPLES * 2];
 extern int16_t s_playback_silence[AUDIO_FRAME_SAMPLES * 2];

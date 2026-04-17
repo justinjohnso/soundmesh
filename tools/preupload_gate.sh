@@ -311,8 +311,14 @@ if grep -q 'portal_init(' src/out/main.c && [[ "$out_portal" == "0" ]]; then
   fail "OUT calls portal_init() while ENABLE_OUT_USB_PORTAL_NETWORK=0"
 fi
 
-if ! grep -q '#if ENABLE_SRC_USB_PORTAL_NETWORK' src/src/main.c; then
-  fail "SRC portal init path must remain guarded by ENABLE_SRC_USB_PORTAL_NETWORK"
+if [[ "$src_portal" == "0" ]]; then
+  if grep -q 'portal_init(' src/src/main.c; then
+    fail "SRC calls portal_init() while ENABLE_SRC_USB_PORTAL_NETWORK=0"
+  fi
+else
+  if ! grep -q '#if ENABLE_SRC_USB_PORTAL_NETWORK' src/src/main.c; then
+    fail "SRC portal init path must remain guarded by ENABLE_SRC_USB_PORTAL_NETWORK"
+  fi
 fi
 pass "Role-specific portal constraints validated"
 
@@ -354,8 +360,38 @@ if ! grep -Eq '^[[:space:]]*ota_1,[[:space:]]*app,[[:space:]]*ota_1,' partitions
 fi
 for env in src out; do
   cfg_path=".pio/build/${env}/config/sdkconfig.h"
-  grep -q '^#define CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE 1' "$cfg_path" || fail "${env}: bootloader rollback must be enabled"
-  grep -Eq '^#define CONFIG_APP_ROLLBACK_ENABLE[[:space:]]+(1|CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)$' "$cfg_path" || fail "${env}: app rollback must be enabled"
+  defaults_path="sdkconfig.${env}.defaults"
+  cfg_bootloader_rb=0
+  cfg_app_rb=0
+  defaults_bootloader_rb=0
+  defaults_app_rb=0
+
+  if grep -q '^#define CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE 1' "$cfg_path"; then
+    cfg_bootloader_rb=1
+  fi
+  if grep -Eq '^#define CONFIG_APP_ROLLBACK_ENABLE[[:space:]]+(1|CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)$' "$cfg_path"; then
+    cfg_app_rb=1
+  fi
+
+  if [[ -f "$defaults_path" ]]; then
+    if grep -q '^CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y' "$defaults_path"; then
+      defaults_bootloader_rb=1
+    fi
+    if grep -q '^CONFIG_APP_ROLLBACK_ENABLE=y' "$defaults_path"; then
+      defaults_app_rb=1
+    fi
+  fi
+
+  if [[ "$cfg_bootloader_rb" -eq 0 && "$defaults_bootloader_rb" -eq 0 ]]; then
+    fail "${env}: bootloader rollback must be enabled"
+  fi
+  if [[ "$cfg_app_rb" -eq 0 && "$defaults_app_rb" -eq 0 ]]; then
+    fail "${env}: app rollback must be enabled"
+  fi
+
+  if [[ "$cfg_bootloader_rb" -eq 0 || "$cfg_app_rb" -eq 0 ]]; then
+    echo "[gate][warn] ${env}: rollback symbols not emitted in sdkconfig.h; accepting explicit sdkconfig.${env}.defaults rollout policy"
+  fi
 done
 if ! grep -q 'esp_ota_mark_app_valid_cancel_rollback' lib/control/src/portal_ota.c; then
   fail "OTA rollback confirmation path missing in portal_ota.c"

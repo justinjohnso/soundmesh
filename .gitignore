@@ -45,6 +45,10 @@ screenlog.0
 
 # Runtime capture logs (generated during local HIL runs)
 docs/operations/runtime-evidence/**/*.log
+docs/operations/runtime-evidence/
+/boot_debug.txt
+/out_hang.txt
+/src_hang.txt
 
 # AMP AI
 .aider*

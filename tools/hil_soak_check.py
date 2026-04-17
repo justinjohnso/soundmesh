@@ -121,6 +121,7 @@ def read_port(
     tail_lines: int,
     result: PortResult,
     fault_schedule: list[dict] | None = None,
+    skip_reset_toggle: bool = False,
 ) -> None:
     try:
         ser = serial.Serial(port, baudrate=baud_rate, timeout=0.25)
@@ -128,7 +129,8 @@ def read_port(
         result.open_error = str(exc)
         return
 
-    maybe_reset_port(ser)
+    if not skip_reset_toggle:
+        maybe_reset_port(ser)
     started_at = time.time()
 
     ok_pattern = SRC_OK_PATTERN if node_name == "SRC" else OUT_OK_PATTERN
@@ -148,8 +150,13 @@ def read_port(
             label = step["label"] or action
             result.fault_fired.append(f"{action}:{label}@{elapsed:0.2f}s")
             if action == "serial_reset":
-                maybe_reset_port(ser)
-                result.tail.append(f"[fault] fired {label} at {elapsed:0.2f}s ({node_name})")
+                if skip_reset_toggle:
+                    result.tail.append(
+                        f"[fault] skipped serial_reset '{label}' at {elapsed:0.2f}s ({node_name})"
+                    )
+                else:
+                    maybe_reset_port(ser)
+                    result.tail.append(f"[fault] fired {label} at {elapsed:0.2f}s ({node_name})")
             elif action == "log_marker":
                 result.tail.append(f"[fault] marker {label} at {elapsed:0.2f}s ({node_name})")
             if len(result.tail) > tail_lines:
@@ -220,6 +227,16 @@ def main() -> int:
         default=None,
         help="Optional path to write machine-readable soak summary JSON",
     )
+    parser.add_argument(
+        "--skip-reset-toggle",
+        action="store_true",
+        help="Do not toggle DTR/RTS when opening ports (avoids entering bootloader on some USB setups)",
+    )
+    parser.add_argument(
+        "--allow-zero-ok-hits",
+        action="store_true",
+        help="Do not fail solely because OK-pattern hits are zero (useful for quieter runtime log profiles)",
+    )
     args = parser.parse_args()
 
     results = {"SRC": PortResult(), "OUT": PortResult()}
@@ -239,6 +256,7 @@ def main() -> int:
                 args.tail_lines,
                 results["SRC"],
                 src_schedule,
+                args.skip_reset_toggle,
             ),
             daemon=True,
         ),
@@ -253,6 +271,7 @@ def main() -> int:
                 args.tail_lines,
                 results["OUT"],
                 out_schedule,
+                args.skip_reset_toggle,
             ),
             daemon=True,
         ),
@@ -272,7 +291,9 @@ def main() -> int:
             f"late_rsts={len(data.late_reset_hits)}, heap_kb_min={data.heap_kb_min}, "
             f"faults={len(data.fault_fired)}/{data.planned_faults}"
         )
-        if data.open_error or data.ok_hits == 0 or data.panic_hits or data.late_reset_hits:
+        if data.open_error or data.panic_hits or data.late_reset_hits:
+            failed = True
+        if data.ok_hits == 0 and not args.allow_zero_ok_hits:
             failed = True
         if data.planned_faults > 0 and len(data.fault_fired) == 0:
             print(f"{node}: scheduled faults were configured but none were fired")
